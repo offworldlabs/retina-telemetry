@@ -1,0 +1,672 @@
+openapi: 3.1.0
+
+# Received 2026-08-04 as `node-ingest-v1-for-josh.yml`. This is the server-side
+# contract; treat it as read-only input to this repo. Proposed changes go in
+# docs/open-questions.md, not here.
+#
+# Only edit from the original: a handful of mojibake `Â°` sequences restored to `°`.
+
+info:
+  title: RETINA node ingest
+  version: "1.0.0"
+  summary: Initial node API
+  description: |
+    The node registers once, then streams detections and heartbeats, and resends its
+    configuration when it changes or it is asked.
+
+    | Endpoint | Auth | When | Cadence |
+    |---|---|---|---|
+    | `POST /nodes/register` | none | once per node lifetime, plus reflash recovery | one-off |
+    | `POST /nodes/detection` | bearer | while detecting | server-issued, 2 Hz today |
+    | `POST /nodes/heartbeat` | bearer | process start to shutdown, always | server-issued, 1/60Hz today |
+    | `PUT /nodes/config` | bearer | on configuration change, and when told to | event-driven |
+
+    ## For the node to persist
+
+    **Persisted:** the bearer token, at mode 0600 under `/data`, so it survives an OS update. Losing it
+    means re-registering, which needs an operator to open a reflash window (see `POST /nodes/register`),
+    so it's the one piece of durable state that really matters.
+
+    **Read on boot rather than derived:** `node_id` comes from `/data/mender/node_id`, the file the
+    identity script writes on first boot and returns unconditionally thereafter. It's better not to
+    re-derive it from `/proc/cpuinfo` or fall back to a MAC-based value. If the file is missing or
+    unreadable, the node has either not enrolled with Mender or has fallen back to a `mac=` identity;
+    either way, surfacing a local error in retina-gui seems better than constructing a value, since a
+    node that invents its own identity causes more trouble than one that simply won't start.
+
+    **Cached for display only:** `node_ref`, the public identifier. The node shows it to the owner so
+    they can find their data on the map. It is never sent back to the server on any request, and it can
+    change without warning, so ideally nothing functional depends on it. The cached copy can just be
+    overwritten whenever a heartbeat response carries a different value.
+
+    ## Transport and general behaviour
+
+    - **HTTPS only**, through Cloudflare.
+    - **One kept-alive connection** for the detection stream.
+    - **The node clock is the timestamp source** for `t`, and it is not otherwise trusted. Comparing
+      against `server_time` on each response and logging a large offset would help. NTP should have
+      settled by the time a node streams, but a freshly flashed board can be badly wrong before it does.
+    - **Rate limits** are per token for detections and generous for heartbeat and configuration, since both are needed
+      precisely when a node is in trouble.
+
+    ## A few things I'd like your read on
+
+    1. **The frame shape**, particularly whether the four arrays are genuinely parallel and equal-length in every
+       case blah2 can produce and anything you think is missing/should be excluded.
+    2. **What the node currently does when `/data/mender/node_id` is absent.** The behaviour sketched
+       above is a hard local error, and I'd like to be sure nothing falls back to a MAC-derived value,
+       since that changes on a network hardware change and would present to the server as a new node.
+
+servers:
+  - url: https://api.retina.fm/v1
+    description: Production ingest.
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: registration
+    description: One-off handshake that mints the node's bearer token.
+  - name: streaming
+    description: The hot path, plus the liveness signal that runs alongside it.
+  - name: configuration
+    description: Receiver and transmitter geometry, versioned by the server.
+
+paths:
+  /nodes/register:
+    post:
+      tags: [registration]
+      summary: Register a node and obtain its bearer token.
+      operationId: registerNode
+      security: []
+      description: |
+        Unauthenticated. Called once, when the node has a `node_id` but no token.
+
+        ## Preconditions
+
+        The node must be enrolled with and accepted by Mender before it registers. A node that registers in the gap
+        between Mender accepting it and our sweep noticing will be refused, and must retry.
+
+        ## Failure handling
+
+        Registration failures are deliberately opaque: unknown device, device not yet accepted by
+        Mender, node already registered and holding a valid token, and an identity in cooldown all
+        return the same `403`, at the same latency, carrying `Retry-After`. This is to prevent
+        attackers getting private info about the fleet.
+
+        Roughly what the node wants to do with each:
+
+        | Status | Node behaviour |
+        |---|---|
+        | `200` | Store the token, cache `node_ref`, move on to heartbeat and detections |
+        | `400` | Configuration failed validation. Worth surfacing in retina-gui, and retrying unchanged won't help |
+        | `403` | Honour `Retry-After`, then retry, backing off with jitter. This is also the normal response while the mirror catches up |
+        | `429` | Honour `Retry-After`. This is a volumetric limit, not a per-node one |
+        | `5xx`, timeout | Retry with exponential backoff and jitter |
+
+        Registration is rate-limited per `node_id` at 5 per hour and 20 per day, then an escalating
+        cooldown. An ordinary node uses a handful of attempts in its lifetime, so this only really
+        bites on a retry loop with no backoff. It's worth the backoff being real and jittered: a CGNAT
+        pool rebooting together is a case the server sizes for, but a hot loop isn't.
+
+        The counters exclude attempts that could never have succeeded (unknown identity, or an identity
+        that already holds a valid token), so a node retrying because Mender's acceptance hasn't propagated yet isn't punished for being early.
+
+        ## Reflash recovery
+
+        A reflashed board comes back with the same `node_id`, a new Mender keypair and no token. On the
+        wire that is indistinguishable from somebody enrolling a keypair of their own under that
+        identity, so it is gated on operator intent rather than on Mender acceptance alone.
+
+        Practically, from the node's side: a token-less registration for an identity the server has
+        already seen succeeds only if an operator has opened a 24-hour reflash window. Otherwise it gets
+        the same `403` as everything else, and the node is held until someone opens one. Nothing to
+        build for this, but worth knowing when a reflashed board sits in a retry loop and the logs say
+        nothing useful. The real reason is on the server side.
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '200':
+          description: Registered. Store the token, cache `node_ref`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegisterResponse'
+        '400':
+          description: |
+            Configuration failed validation. Worth surfacing in retina-gui, and retrying unchanged
+            won't help.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: |
+            Refused, without saying why: unknown device, not yet accepted by Mender, already holding a
+            valid token, or in cooldown all look identical and answer at the same latency. Also the
+            normal response while the Mender mirror catches up.
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '5XX':
+          $ref: '#/components/responses/ServerError'
+
+  /nodes/detection:
+    post:
+      tags: [streaming]
+      summary: Send one detection frame.
+      operationId: postDetections
+      description: |
+        The four arrays are parallel, so they need to be the same length. An empty frame is valid and worth sending.
+
+        ## Sending behaviour
+
+        **Latest wins.** The shape we're after is at most one request in flight and no queue: while a
+        POST is slow, a newer frame replaces the pending one rather than joining a queue behind it, and
+        a request that exceeds its timeout (a few seconds) gets abandoned so the next frame goes in a
+        fresh request. The live tracker cannot use stale detections anyway: the multi-node association
+        window in `retina-analytics` is 4 s, so a frame arriving after it has closed will be associated
+        wrongly rather than simply ignored.
+
+        **Connection reuse.** One kept-alive TLS connection per node. At 50 nodes and 2 Hz this is about
+        100 small requests per second against one droplet, which is comfortable, but cheaper if we are not
+        paying a TLS handshake per frame.
+
+        ## The response, and acting on it
+
+        Every response carries derived state, restated in full each time. Anything the server needs to tell the node is a level rather than an
+        edge, repeated until the node notices. It's worth reading on every response.
+
+        Revocation is a `401` rather than a control field, because it has to work whether or not the
+        node is cooperating. The one thing to avoid is treating a `401` as a trigger to re-register:
+        that turns a deliberate revocation into a registration storm.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DetectionFrame'
+      responses:
+        '202':
+          description: Accepted. Carry on.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetectionAck'
+        '401':
+          description: |
+            Token bad, revoked or expired. Stop streaming, but ideally without re-registering:
+            surfacing it locally and continuing to heartbeat keeps the failure visible.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Unknown `config_version`. `PUT /nodes/config`, then resume.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: |
+            Rate limited. Honour `Retry-After`. The skipped frames are best dropped rather than
+            accumulated.
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '5XX':
+          description: |
+            Server side. Abandon the frame and send the next one fresh, backing off if it persists.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /nodes/heartbeat:
+    post:
+      tags: [streaming]
+      summary: Report liveness and health.
+      operationId: postHeartbeat
+      description: |
+        Sent from process start until shutdown, unconditionally: whether or not detections are flowing,
+        whether or not the last frame was empty, and whether or not `streaming_allowed` is false. 60 s
+        by default, server-issued.
+
+        `node_ref` on the response is the only place the node learns its public identifier has rotated.
+        `config_stale` and `streaming_allowed` mean the same as on the detection response, and are
+        repeated here so that a paused node still learns when it may resume.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HeartbeatRequest'
+      responses:
+        '200':
+          description: Acknowledged. The `errors` list can be cleared.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HeartbeatResponse'
+        '401':
+          description: |
+            Token bad, revoked or expired. Surface locally rather than re-registering.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '5XX':
+          $ref: '#/components/responses/ServerError'
+
+  /nodes/config:
+    put:
+      tags: [configuration]
+      summary: Resend the full configuration.
+      operationId: putConfig
+      description: |
+        The full configuration, in the same shape as the `config` object in registration. Sent when the
+        node's configuration changes locally, and whenever a response carries `config_stale: true` or a
+        detection POST returns `409`.
+
+        The server creates a new version if the configuration differs from the active one, and returns
+        the active `config_version` either way. The node adopts whatever comes back and uses it on
+        subsequent frames.
+
+        One thing to know: a configuration that moves `rx_lat` or `rx_lon` by more than 0.005° rotates
+        the node's public `node_ref`, which the node learns from its next heartbeat. The response to
+        this call does not mention it, and nothing about streaming depends on the node noticing.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NodeConfig'
+      responses:
+        '200':
+          description: |
+            The active configuration version, whether or not this call created it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigResponse'
+        '400':
+          description: Configuration failed validation. Retrying unchanged won't help.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Token bad, revoked or expired.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '5XX':
+          $ref: '#/components/responses/ServerError'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        The token minted by `POST /nodes/register`, persisted at mode 0600 under `/data`. Sent as
+        `Authorization: Bearer <token>`.
+
+  headers:
+    RetryAfter:
+      description: Seconds to wait before retrying. Honour it, then back off with jitter.
+      required: true
+      schema:
+        type: integer
+        minimum: 0
+
+  responses:
+    RateLimited:
+      description: Rate limited. Honour `Retry-After`.
+      headers:
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    ServerError:
+      description: Server side. Retry with exponential backoff and jitter.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    NodeId:
+      type: string
+      description: |
+        Read from `/data/mender/node_id` on boot, never derived locally. `ret` plus eight hex
+        characters.
+      pattern: '^ret[0-9a-f]{8}$'
+      examples: ["ret1a2b3c4d"]
+
+    NodeRef:
+      type: string
+      description: |
+        The node's public identifier, shown to the owner so they can find their data on the map. Cached
+        for display only, never sent back to the server, and it can rotate without warning.
+      examples: ["nd4f2k9xq7m3b8vc"]
+
+    ConfigVersion:
+      type: integer
+      minimum: 1
+      description: |
+        Server-owned version of the node's configuration. Returned rather than assumed: on reflash
+        recovery the server already holds configuration history for that board, so the node's first
+        version after a reflash will not be 1.
+      examples: [7]
+
+    ServerTime:
+      type: string
+      format: date-time
+      description: |
+        RFC 3339 UTC. It's there so the node can measure its clock offset and log a warning if it is
+        large, since detection timestamps are node-clock and a Pi 5 has no battery-backed RTC.
+      examples: ["2026-07-31T09:12:01Z"]
+
+    ConfigStale:
+      type: boolean
+      description: |
+        The server's active `config_version` is not the one the node reported, so a `PUT /nodes/config`
+        is due.
+
+    StreamingAllowed:
+      type: boolean
+      description: |
+        While `false`, detections can pause while the heartbeat carries on, resuming once it goes
+        `true`.
+
+    Agreement:
+      type: object
+      description: |
+        What terms the owner accepted, and when. It is from the retina-gui onboarding flow. This gates
+        streaming detections.
+      required: [version, accepted_at]
+      properties:
+        version:
+          type: string
+          examples: ["2026-07-01"]
+        accepted_at:
+          type: string
+          format: date-time
+          examples: ["2026-07-31T09:12:00Z"]
+
+    NodeConfig:
+      type: object
+      description: |
+        The receiver and transmitter geometry the solver needs. Every field is needed.
+      required:
+        - rx_lat
+        - rx_lon
+        - rx_alt_ft
+        - tx_lat
+        - tx_lon
+        - tx_alt_ft
+        - tx_callsign
+        - fc_hz
+        - fs_hz
+        - beam_width_deg
+        - beam_azimuth_deg
+        - max_range_km
+      properties:
+        rx_lat:
+          type: number
+          description: Receiver latitude, degrees. Moving this by more than 0.005° rotates `node_ref`.
+          examples: [51.42]
+        rx_lon:
+          type: number
+          description: Receiver longitude, degrees. Moving this by more than 0.005° rotates `node_ref`.
+          examples: [-0.91]
+        rx_alt_ft:
+          type: number
+          description: Receiver altitude, feet.
+          examples: [120]
+        tx_lat:
+          type: number
+          description: Illuminator latitude, degrees.
+          examples: [51.37]
+        tx_lon:
+          type: number
+          description: Illuminator longitude, degrees.
+          examples: [-0.88]
+        tx_alt_ft:
+          type: number
+          description: Illuminator altitude, feet.
+          examples: [900]
+        tx_callsign:
+          type: string
+          description: Illuminator callsign.
+        fc_hz:
+          type: number
+          description: Centre frequency, Hz.
+          examples: [570000000]
+        fs_hz:
+          type: number
+          description: Sample rate, Hz.
+          examples: [2000000]
+        beam_width_deg:
+          type: number
+          description: Antenna beam width, degrees.
+          examples: [60]
+        beam_azimuth_deg:
+          type: [number, "null"]
+          description: |
+            Antenna boresight, degrees. `null` means broadside/omnidirectional; send `null` rather than
+            `0.0` if you can.
+          examples: [null]
+        max_range_km:
+          type: number
+          description: Maximum range of interest, km.
+          examples: [150]
+
+    RegisterRequest:
+      type: object
+      required: [node_id, board_model, agreement, config]
+      properties:
+        node_id:
+          $ref: '#/components/schemas/NodeId'
+        board_model:
+          type: string
+          description: Node-reported and diagnostic only.
+          examples: ["raspberrypi5-4gb"]
+        agreement:
+          $ref: '#/components/schemas/Agreement'
+        config:
+          $ref: '#/components/schemas/NodeConfig'
+
+    RegisterResponse:
+      type: object
+      required: [token, node_ref, config_version, server_time]
+      properties:
+        token:
+          type: string
+          description: |
+            The bearer token. Persist it at mode 0600 under `/data`; losing it means re-registering,
+            which needs an operator to open a reflash window.
+        node_ref:
+          $ref: '#/components/schemas/NodeRef'
+        config_version:
+          $ref: '#/components/schemas/ConfigVersion'
+        server_time:
+          $ref: '#/components/schemas/ServerTime'
+
+    DetectionFrame:
+      type: object
+      description: |
+        One CPI's worth of detections. `delay`, `doppler`, `snr` and `adsb_hex` are parallel and must be
+        the same length; all four empty is a valid frame and worth sending.
+      required: [t, seq, config_version, delay, doppler, snr, adsb_hex]
+      properties:
+        t:
+          type: number
+          description: Unix epoch seconds, node clock, the capture time of the CPI.
+          examples: [1753900000.123]
+        seq:
+          type: integer
+          description: Per-node monotonic counter, incremented once per frame, for gap detection.
+          examples: [918273]
+        config_version:
+          $ref: '#/components/schemas/ConfigVersion'
+        delay:
+          type: array
+          description: Bistatic delay in microseconds, one per detection.
+          items:
+            type: number
+          examples: [[12.4, 30.1]]
+        doppler:
+          type: array
+          description: Bistatic Doppler in Hz, one per detection.
+          items:
+            type: number
+          examples: [[-118.0, 44.5]]
+        snr:
+          type: array
+          description: SNR in dB, one per detection.
+          items:
+            type: number
+          examples: [[14.2, 9.8]]
+        adsb_hex:
+          type: array
+          description: |
+            ICAO 24-bit hex of the associated aircraft, or `null` if unassociated. Association only:
+            ADS-B positions are better off elsewhere, on a separate lower-rate report which is not in
+            v1. The field exists now so that the option survives.
+          items:
+            type: [string, "null"]
+          examples: [["4ca1f2", null]]
+
+    DetectionAck:
+      type: object
+      required: [accepted, config_stale, streaming_allowed]
+      properties:
+        accepted:
+          type: integer
+          description: |
+            Number of detections accepted. A mismatch against what was sent is worth logging.
+          examples: [2]
+        config_stale:
+          $ref: '#/components/schemas/ConfigStale'
+        streaming_allowed:
+          $ref: '#/components/schemas/StreamingAllowed'
+
+    NodeHealth:
+      type: object
+      description: |
+        Diagnostic only. The server does not use it to decide whether a node is working: `blah2: "up"`
+        and `queue_depth: 0` read identically on a wedged node and a working one.
+      properties:
+        cpu_pct:
+          type: number
+          examples: [31]
+        disk_free_mb:
+          type: integer
+          examples: [9100]
+        temp_c:
+          type: number
+          examples: [58]
+        blah2:
+          type: string
+          examples: ["up"]
+        adsb:
+          type: string
+          examples: ["up"]
+        queue_depth:
+          type: integer
+          examples: [0]
+
+    NodeVersions:
+      type: object
+      properties:
+        owl_os:
+          type: string
+        retina_node:
+          type: string
+        blah2_image:
+          type: string
+
+    HeartbeatRequest:
+      type: object
+      required: [state, uptime_s, config_version]
+      properties:
+        state:
+          type: string
+          description: |
+            The node's own account of itself. The server does not trust it: a node reporting `streaming`
+            while no frames have arrived is flagged as wedged, using the server's own record of frame
+            arrivals rather than anything in the health block.
+          examples: ["streaming"]
+        uptime_s:
+          type: integer
+          examples: [84213]
+        config_version:
+          $ref: '#/components/schemas/ConfigVersion'
+        health:
+          $ref: '#/components/schemas/NodeHealth'
+        versions:
+          $ref: '#/components/schemas/NodeVersions'
+        errors:
+          type: array
+          description: |
+            A bounded list accumulated since the last beat, not a single slot, so transient faults
+            between beats are not lost. It can be cleared once a beat is acknowledged.
+          items:
+            type: string
+          examples: [[]]
+
+    HeartbeatResponse:
+      type: object
+      required: [server_time, config_stale, streaming_allowed, node_ref]
+      properties:
+        server_time:
+          $ref: '#/components/schemas/ServerTime'
+        config_stale:
+          $ref: '#/components/schemas/ConfigStale'
+        streaming_allowed:
+          $ref: '#/components/schemas/StreamingAllowed'
+        node_ref:
+          $ref: '#/components/schemas/NodeRef'
+
+    ConfigResponse:
+      type: object
+      required: [config_version]
+      properties:
+        config_version:
+          $ref: '#/components/schemas/ConfigVersion'
+
+    Error:
+      type: object
+      description: |
+        Registration errors carry no detail by design; the others may name the condition.
+      required: [error]
+      properties:
+        error:
+          type: string
+          examples: ["forbidden"]
+        detail:
+          type: string
