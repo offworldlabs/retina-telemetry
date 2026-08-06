@@ -15,9 +15,14 @@ assumes, and two of the three fail silently if you get them wrong:
   describes the node, and a node pegged by blah2 is the case worth reporting.
   Do not "fix" this by switching to cgroup accounting.
 * ``statvfs`` **is** namespaced by mount, so calling it on ``/`` measures the
-  container's overlay filesystem and tells you nothing. It must be called on a
-  path that resolves to the node's real storage, which is why the default is
-  ``/data``.
+  container's overlay filesystem. It must be called on a path that resolves to
+  the node's real storage, which is why the default is ``/data``.
+
+  Beware of testing this on the current fleet: Docker's data-root is
+  ``/data/docker``, so a container's overlay happens to sit on the very
+  filesystem we want and ``statvfs("/")`` returns the right answer by accident.
+  It is still wrong — move the data-root, or give a node a separate Docker
+  partition, and it silently starts reporting something else.
 * ``/proc/uptime`` likewise gives *host* uptime, not this process's.
 
 Every read is independently best-effort and yields ``None`` on failure. All of
