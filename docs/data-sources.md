@@ -258,8 +258,34 @@ Source of truth on the node: `/data/retina-node/config/config.yml`, produced by
 | `fc_hz` | `capture.fc` | — |
 | `fs_hz` | `capture.fs` | — |
 | `max_range_km` | `process.ambiguity.delayMax` | `delayMax × c / fs / 1000` = 60 km at 400 bins / 2 MHz — Q6 |
-| `beam_width_deg` | **does not exist** | Q1 — blocking |
-| `beam_azimuth_deg` | **does not exist** | Q1 — blocking |
+| `beam_width_deg` | `location.rx.beam_width` — **not written yet** | Q1 — blocking |
+| `beam_azimuth_deg` | `location.rx.beam_azimuth` — **not written yet** | Q1 — blocking |
+
+### Beam geometry: scaffolded, not sourced
+
+Both are required by the spec and neither exists on a node. Re-verified 2026-08-06:
+one hit across all four repos, `boresight: 0.0` in
+`blah2-arm/config/sdr-variants/config-kraken.yml` — the KrakenSDR variant, a 5-channel
+coherent array where boresight is meaningful because there is real array geometry. It is
+referenced nowhere in retina-node or retina-gui and no node in this fleet runs it.
+
+That is the shape of the problem: this fleet is a two-channel SDR with whatever antenna
+the operator physically attached, and nothing in the stack has ever needed its beam
+pattern. blah2 does not use it for the bistatic solve. So it is new config keys, a
+retina-gui form, probably a wizard step, and an operator who knows their antenna.
+
+`collect/node_config.py` carries the seam: `BEAM_WIDTH_KEY` and `BEAM_AZIMUTH_KEY` name
+the expected paths under `location.rx` (the antenna is a receiver property and there is
+no antenna section), both read as optional, and landing the retina-gui work should be a
+config change rather than a code change. If retina-gui puts them elsewhere, those two
+constants are the only edit.
+
+**The two `None`s do not mean the same thing.** A missing `beam_width_deg` is
+unconfigured and blocks registration. A missing `beam_azimuth_deg` is
+broadside/omnidirectional and is a *valid* wire value — the spec asks for `null` rather
+than `0.0` for exactly that case. So an unconfigured azimuth and a deliberate
+omnidirectional one are indistinguishable, which is acceptable because Q1 proposes
+omnidirectional as the fleet default anyway.
 
 `beam_width_deg` and `beam_azimuth_deg` returned zero hits across owl-os, retina-node,
 retina-gui and blah2-arm. These are new config fields plus GUI plumbing, not a mapping.
@@ -368,12 +394,42 @@ presence of the `adsb` key on returned frames says whether it is actually workin
 distinguishes "off by configuration" from "enabled but broken" without reaching for
 tar1090 or adsb2dd directly.
 
-### versions come from compose, not from docker
+### versions: all three live in Mender's provides database
 
-`retina-node/docker-compose.yml` already pins every image through an env var with a
-default — `BLAH2_V`, `TAR1090_V`, `ADSB2DD_V`, `CONFIG_MERGER_V`, `RETINA_TRACKER_V`.
-Passing the relevant ones into this container as environment is a compose change of a
-few lines and needs no privileged access to anything.
+`NodeVersions` is optional and so is every field in it, so none of this blocks anything.
+Verified on Owl, 2026-08-06 — `mender-update show-provides` returns:
+
+```
+rootfs-image.owl-os-pi5.version          = v0.11.1-dev
+data-docker.mender-docker-compose.retina-node.version = retina-node-v0.4.1.4-dev
+artifact_name                            = owl-os-pi5-v0.11.1-dev
+device_type                              = pi5-v3-arm64
+```
+
+So `owl_os` and `retina_node` both come from there, and it confirms `device_type` (§3).
+
+**But it is a binary, not a file.** `/usr/share/mender/inventory/mender-inventory-provides`
+just shells out to `/usr/bin/mender-update show-provides`. The backing store is LMDB at
+`/data/mender/mender-store`, mode `0600` root-only. A container runs as root and already
+mounts that directory, so it is *reachable* — but parsing Mender's internal LMDB schema
+would need an `lmdb` C extension and would break whenever they change their key layout.
+Not worth it.
+
+**Proposal: have owl-os publish a snapshot.** The identity script already writes
+`/data/mender/node_id`; writing `mender-update show-provides` output to
+`/data/mender/provides` on deployment is the same pattern, the same directory we already
+mount, and gives all three versions as a plain `key=value` file with no new mount and no
+new dependency.
+
+Until that exists:
+
+| Field | Interim |
+|---|---|
+| `blah2_image` | `BLAH2_V` compose env var — the compose file already pins every image through one (`BLAH2_V`, `TAR1090_V`, `ADSB2DD_V`, `CONFIG_MERGER_V`, `RETINA_TRACKER_V`), so passing them in is a few lines and needs no privilege |
+| `owl_os` | `/etc/mender/artifact_info` is a plain `artifact_name=…` file, but in `/etc` rather than `/data`, so it costs a fifth mount |
+| `retina_node` | Nothing readable. The compose deployment dir carries `project_name`, `image_ids` and a log, but no version |
+
+Omit what we cannot read. An absent optional field is more honest than a fabricated one.
 
 ### `state` has a vocabulary clash
 

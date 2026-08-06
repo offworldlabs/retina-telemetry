@@ -64,6 +64,59 @@ def test_delay_max_stays_in_bins(tmp_path):
     assert read_config(write(tmp_path, DEFAULTS)).delay_max_bins == 400
 
 
+# ── beam geometry scaffolding (Q1) ───────────────────────────────────
+
+
+def test_beam_fields_are_absent_on_a_node_today(tmp_path):
+    """Nothing writes them yet, so reading must not raise — raising would make
+    every node in the fleet unreadable."""
+    config = read_config(write(tmp_path, DEFAULTS))
+
+    assert config.beam_width_deg is None
+    assert config.beam_azimuth_deg is None
+
+
+def test_beam_fields_are_read_when_present(tmp_path):
+    """The seam retina-gui's work lands in: config change, not code change."""
+    document = copy.deepcopy(DEFAULTS)
+    document["location"]["rx"]["beam_width"] = 60
+    document["location"]["rx"]["beam_azimuth"] = 135.5
+
+    config = read_config(write(tmp_path, document))
+
+    assert config.beam_width_deg == 60.0
+    assert config.beam_azimuth_deg == 135.5
+
+
+def test_omnidirectional_azimuth_is_indistinguishable_from_unset(tmp_path):
+    """Both are None, and that is fine — the spec asks for null rather than 0.0
+    for broadside, and Q1 proposes omnidirectional as the fleet default."""
+    document = copy.deepcopy(DEFAULTS)
+    document["location"]["rx"]["beam_width"] = 60
+
+    config = read_config(write(tmp_path, document))
+
+    assert config.beam_width_deg == 60.0
+    assert config.beam_azimuth_deg is None
+
+
+def test_a_configured_beam_counts_as_a_change(tmp_path):
+    directional = copy.deepcopy(DEFAULTS)
+    directional["location"]["rx"]["beam_width"] = 60
+
+    assert read_config(write(tmp_path / "a", DEFAULTS)) != read_config(
+        write(tmp_path / "b", directional)
+    )
+
+
+def test_non_numeric_beam_width_raises(tmp_path):
+    document = copy.deepcopy(DEFAULTS)
+    document["location"]["rx"]["beam_width"] = "wide"
+
+    with pytest.raises(ConfigUnavailable, match="must be numeric"):
+        read_config(write(tmp_path, document))
+
+
 def test_collects_only_what_is_sent(tmp_path):
     """Ten fields, every one of them feeding NodeConfig. cpi, the ADS-B flag and
     the association tolerances were all collected at some point and are not any
@@ -81,6 +134,8 @@ def test_collects_only_what_is_sent(tmp_path):
         "fc_hz",
         "fs_hz",
         "delay_max_bins",
+        "beam_width_deg",
+        "beam_azimuth_deg",
     }
 
 
