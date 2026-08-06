@@ -398,9 +398,34 @@ with mounts and dependencies it cannot justify.
 | `/capture/overload-status`, `/capture/rf-status` | Not in the spec. Relevant to the RF overload incident on Owl, but that is a local diagnosis problem |
 | Pi throttle flags | No field. `vcgencmd get_throttled` works but needs `/dev/vcio` mounted plus the Pi userland binary in the image; `/sys/class/hwmon/*/name == rpi_volt` exposes `in0_lcrit_alarm` for free, but with nowhere to send it that is moot |
 | `truth.adsb.delay_tolerance`, `doppler_tolerance` | Q7 proposes sending them so the server knows what it is comparing. Until it does, nothing local needs them |
+| `truth.adsb.enabled` | Redundant. `api/server.js:328` gates the whole enrichment on it, so the `adsb` key is present on a polled frame if and only if the flag is set — key presence *is* the flag |
+| `process.data.cpi` | Its only consumer was a staleness window that no longer exists (see below). Q3 proposes sending it |
 
 If any of these become genuinely necessary, the route is an open question to the server
 author, not a field we invent.
+
+### `NodeHealth.blah2` is `up` or `down`, nothing else
+
+Deferred, not rejected: a third value for a blah2 that answers but whose timestamp has
+stopped advancing. Three things argued against it for now.
+
+- It feeds **one optional free-text field** whose own description says the server does
+  not use it to decide whether a node is working — the server derives wedged-ness from
+  its own record of frame arrivals.
+- **The fleet already detects and fixes it.** `/etc/cron.d/blah2-rspduo-watchdog` runs
+  `blah2_rspduo_restart.bash` every five minutes and restarts the stack when
+  `/api/map`'s timestamp is more than 60 s old. Acting on the condition beats describing
+  it a minute later.
+- Doing it correctly needs more than a timer: the same script guards against three
+  states where blah2 is *deliberately* stopped — `/data/retina-gui/mode.txt` set to
+  `spectrum` or `sdrconnect`, an active `calibrate.lock` (Auto-Calibrate owns the SDR),
+  and `restart.lock` during a config apply.
+
+If it comes back, measure age against a **monotonic** clock since the last observed
+timestamp change, not wall clock — the spec is explicit that the node clock is the
+timestamp source and is not otherwise trusted. Note also that `mode.txt` matters more
+for `HeartbeatRequest.state` than for this field: a node claiming `streaming` while no
+frames arrive is what the server flags.
 
 ---
 

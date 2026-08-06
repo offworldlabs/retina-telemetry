@@ -51,19 +51,6 @@ class FakeSession:
         self.closed = True
 
 
-class FakeClock:
-    """A monotonic clock the test drives by hand."""
-
-    def __init__(self, now: float = 0.0) -> None:
-        self.now = now
-
-    def __call__(self) -> float:
-        return self.now
-
-    def advance(self, seconds: float) -> None:
-        self.now += seconds
-
-
 def frame(
     timestamp_ms: int = 1753900000123,
     *,

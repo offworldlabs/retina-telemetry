@@ -9,16 +9,15 @@ in bins, under names that say so; ``wire/`` converts to the spec's feet and
 derives ``max_range_km``. Deriving rather than storing that last one means it
 can never disagree with what blah2 actually computes.
 
-Change detection hashes the *mapped values*, not the file. A comment, a
-reordering, or an edit to a key we do not send should not cause a
-``PUT /nodes/config``.
+Every field here is sent. Change detection is dataclass equality — mapping the
+document to a frozen dataclass already discards everything we do not send, so a
+comment, a reformat, or an edit to an unmapped key produces an equal object and
+cannot trigger a ``PUT /nodes/config``.
 """
 
 from __future__ import annotations
 
-import hashlib
-import json
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +41,8 @@ class NodeConfigRaw:
 
     Field names carry the source unit wherever it differs from the spec's, so
     that a missing conversion in stage 2 is visible at the call site.
+
+    Frozen, so ``==`` is the change check.
     """
 
     rx_lat: float
@@ -53,22 +54,11 @@ class NodeConfigRaw:
     tx_name: str
     fc_hz: float
     fs_hz: float
-    cpi_s: float
     delay_max_bins: int
-    adsb_enabled: bool
 
 
-@dataclass(frozen=True)
-class ConfigSnapshot:
-    config: NodeConfigRaw
-    digest: str
-
-    def changed_from(self, other: ConfigSnapshot | None) -> bool:
-        return other is None or self.digest != other.digest
-
-
-def read_config(path: Path | str = DEFAULT_CONFIG_PATH) -> ConfigSnapshot:
-    """Read, validate and hash the merged node configuration.
+def read_config(path: Path | str = DEFAULT_CONFIG_PATH) -> NodeConfigRaw:
+    """Read and validate the merged node configuration.
 
     Raises:
         ConfigUnavailable: if the file is missing, unparseable, or lacks a
@@ -91,11 +81,6 @@ def read_config(path: Path | str = DEFAULT_CONFIG_PATH) -> ConfigSnapshot:
     if not isinstance(document, dict):
         raise ConfigUnavailable(f"{path} does not contain a mapping")
 
-    config = _map(document)
-    return ConfigSnapshot(config=config, digest=_digest(config))
-
-
-def _map(document: dict[str, Any]) -> NodeConfigRaw:
     return NodeConfigRaw(
         rx_lat=_require(document, "location.rx.latitude", float),
         rx_lon=_require(document, "location.rx.longitude", float),
@@ -108,17 +93,9 @@ def _map(document: dict[str, Any]) -> NodeConfigRaw:
         tx_name=_require(document, "location.tx.name", str),
         fc_hz=_require(document, "capture.fc", float),
         fs_hz=_require(document, "capture.fs", float),
-        # Not sent — the spec has no field for it (Q3 proposes one). Collected
-        # because it seeds the staleness window that derives NodeHealth.blah2.
-        cpi_s=_require(document, "process.data.cpi", float),
         # Bins, not kilometres. Stage 2 derives max_range_km as
         # delay_max_bins * c / fs / 1000. See Q6.
         delay_max_bins=_require(document, "process.ambiguity.delayMax", int),
-        # Not sent. Needed locally to tell "ADS-B is off" from "ADS-B is broken"
-        # when a polled frame carries no adsb key, which is what NodeHealth.adsb
-        # reports. The association tolerances beside it in config are not
-        # collected: Q7 proposes sending them, but the spec has no field today.
-        adsb_enabled=_optional(document, "truth.adsb.enabled", bool) or False,
     )
 
 
@@ -135,21 +112,7 @@ def _require(document: dict[str, Any], dotted: str, kind: type) -> Any:
     value = _walk(document, dotted)
     if value is None:
         raise ConfigUnavailable(f"required key {dotted} is missing")
-    return _coerce(value, dotted, kind)
 
-
-def _optional(document: dict[str, Any], dotted: str, kind: type) -> Any:
-    value = _walk(document, dotted)
-    if value is None:
-        return None
-    return _coerce(value, dotted, kind)
-
-
-def _coerce(value: Any, dotted: str, kind: type) -> Any:
-    if kind is bool:
-        if not isinstance(value, bool):
-            raise ConfigUnavailable(f"{dotted} must be a boolean, got {value!r}")
-        return value
     if kind is str:
         if not isinstance(value, str):
             raise ConfigUnavailable(f"{dotted} must be a string, got {value!r}")
@@ -157,8 +120,3 @@ def _coerce(value: Any, dotted: str, kind: type) -> Any:
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise ConfigUnavailable(f"{dotted} must be numeric, got {value!r}")
     return kind(value)
-
-
-def _digest(config: NodeConfigRaw) -> str:
-    canonical = json.dumps(asdict(config), sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()

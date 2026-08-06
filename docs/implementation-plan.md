@@ -220,18 +220,19 @@ turns a deliberate revocation into a registration storm.
 The four incoming interfaces and the one outgoing one. Full inventory in
 `docs/data-sources.md` §0.
 
-- `blah2.py` — poll `/api/detection` at ~4 Hz and dedupe on `timestamp`. Derives liveness
-  from the same poll: a failed poll is `down`, an advancing timestamp is `up`, and a
-  stale one is `wedged` — the state container health cannot see. **Only that endpoint**;
-  `/api/timing` and the capture status endpoints have no field in the spec (§5 of
-  `data-sources.md`).
+- `blah2.py` — poll `/api/detection` and dedupe on `timestamp`. Reports whether the poll
+  reached blah2-api; stage 2 turns that into `NodeHealth.blah2`. No time-dependent
+  behaviour and no spec vocabulary. **Only that endpoint** — `/api/timing` and the
+  capture status endpoints have no field in the spec (§5 of `data-sources.md`).
 
   **The equal-length assertion lives here, not in `wire/`.** It is a claim about whether
   the source is internally coherent, it needs no knowledge of the server, and checking at
   the read point means a malformed frame never enters the slot at all. Mapping
   associations down to `.hex` and synthesising nulls stay in `wire/`, because those are
   facts about the spec rather than about blah2.
-- `node_config.py` — read the read-only mount, hash for change detection.
+- `node_config.py` — read the read-only mount. Change detection is frozen-dataclass
+  equality: mapping the document already discards everything we do not send, so a
+  reformat or an unmapped edit cannot trigger a `PUT /nodes/config`.
 - `identity.py` — the hard-error behaviour, and a test that `'Unknown'` can never
   appear in a payload.
 - `consent.py` — opt-in state and the agreement record, read from

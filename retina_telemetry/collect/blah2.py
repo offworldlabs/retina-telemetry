@@ -8,53 +8,40 @@ association when that is enabled, and serves the latest one at
 Polling a latest-value register is normally the wrong shape, but the transport
 this feeds is explicitly latest-wins with at most one request in flight, so the
 two semantics match exactly — and it costs zero changes to blah2 or blah2-api.
-We poll faster than the producer (~4 Hz against 2 Hz) to reduce aliasing misses
-and dedupe on ``timestamp``. Missed frames are expected and correct.
+We poll faster than the producer to reduce aliasing misses and dedupe on
+``timestamp``. Missed frames are expected and correct.
 
 **No unit conversion happens here.** ``delay`` is kilometres of bistatic range
 and ``timestamp`` is epoch milliseconds, because that is what blah2 produces;
 the field names say so, and ``wire/`` converts.
 
-Only ``/api/detection`` is polled. blah2-api also serves ``/api/timing`` and the
-capture status endpoints, and its ``cpi`` total would reveal that the ring buffer
-is dropping samples — but the ingest spec has no field for any of it, so we do
-not collect it.
+**No spec vocabulary here either.** This module reports whether the poll worked;
+turning that into ``NodeHealth.blah2``'s ``"up"`` or ``"down"`` is stage 2's job.
+
+Scope is the spec and nothing else. blah2-api also serves ``/api/timing`` — whose
+``cpi`` total is the only view of ring-buffer loss — and the capture status
+endpoints, and neither has a field to go in.
+
+*Deferred, not rejected:* a third health value for a blah2 that answers but whose
+timestamp has stopped advancing. The fleet's own watchdog
+(``/etc/cron.d/blah2-rspduo-watchdog``) treats 60 s of staleness as broken and
+restarts the stack, so the condition is already detected and fixed elsewhere; and
+the server derives wedged-ness from its own record of frame arrivals rather than
+from this field. Reinstating it means tracking the last timestamp *change* against
+a monotonic clock — not wall clock, which the spec says not to trust — plus reading
+``/data/retina-gui/mode.txt``, since blah2 is deliberately stopped in ``spectrum``
+and ``sdrconnect`` modes.
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from enum import StrEnum
-from time import monotonic
 from typing import Any
 
 log = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "http://127.0.0.1:3000"
-
-#: How many CPIs may pass without the timestamp advancing before we call blah2
-#: wedged. Ten is deliberately slack: the point is to catch a hung detector, not
-#: to flap on a single slow CPI.
-DEFAULT_STALE_AFTER_CPIS = 10
-
-#: Floor for the staleness window, so an unusually short CPI cannot make the
-#: check hair-trigger.
-MIN_STALE_AFTER_S = 3.0
-
-
-class Liveness(StrEnum):
-    """What the detection poll tells us about blah2.
-
-    The third state is the whole reason this is derived from the poll rather
-    than read from container state: a wedged blah2 has a perfectly healthy
-    container, so anything watching the docker socket reports it as up.
-    """
-
-    UNKNOWN = "unknown"  #: not polled yet
-    DOWN = "down"  #: the poll itself failed
-    WEDGED = "wedged"  #: poll succeeds, timestamp is not advancing
-    UP = "up"  #: poll succeeds, timestamp is advancing
 
 
 class MalformedFrame(ValueError):
@@ -74,9 +61,14 @@ class DetectionPoll:
 
     ``adsb`` distinguishes two cases that must not be conflated:
 
-    * ``None`` — blah2-api sent no ``adsb`` key at all, meaning ADS-B
-      association is disabled on this node. Stage 2 synthesises ``[None] * n``.
-    * ``[]`` — ADS-B is enabled and this frame simply has no detections.
+    * ``None`` — blah2-api sent no ``adsb`` key at all. The enrichment is gated
+      entirely on ``truth.adsb.enabled`` (``api/server.js``), so an absent key
+      means ADS-B association is off on this node. Stage 2 synthesises
+      ``[None] * n`` for the wire, and reports ``NodeHealth.adsb`` as absent.
+    * ``[]`` — ADS-B is on and this frame simply has no detections.
+
+    Because key presence tracks the config flag exactly, nothing needs to read
+    ``truth.adsb.enabled`` to interpret this.
     """
 
     timestamp_ms: int
@@ -89,11 +81,6 @@ class DetectionPoll:
     def n_detections(self) -> int:
         return len(self.delay_km)
 
-    @property
-    def is_empty(self) -> bool:
-        """An empty frame is a normal, meaningful state and is worth sending."""
-        return not self.delay_km
-
 
 def parse_frame(payload: object) -> DetectionPoll:
     """Validate and shape one ``/api/detection`` body.
@@ -104,9 +91,9 @@ def parse_frame(payload: object) -> DetectionPoll:
     if not isinstance(payload, dict):
         raise MalformedFrame(f"expected a JSON object, got {type(payload).__name__}")
 
-    # Verified as an integer by reading Detection.cpp, but accepting an
-    # integral float too: a type surprise on a real node should not stop the
-    # stream outright, and a fractional millisecond would be the real signal
+    # Verified as an integer by reading Detection.cpp and confirmed on a live
+    # node, but accepting an integral float too: a type surprise should not stop
+    # the stream outright, and a fractional millisecond would be the real signal
     # that something changed upstream.
     timestamp = payload.get("timestamp")
     if isinstance(timestamp, bool) or not isinstance(timestamp, int | float):
@@ -150,27 +137,21 @@ def parse_frame(payload: object) -> DetectionPoll:
 
 
 class Blah2Client:
-    """Polls blah2-api, dedupes on timestamp, and tracks liveness.
+    """Polls blah2-api and dedupes on timestamp.
 
-    ``cpi_s`` is injected rather than read from config here: judging staleness
-    needs it, and injecting keeps the derivation next to the data it derives
-    from without ``collect.blah2`` importing ``collect.node_config``.
+    Has no time-dependent behaviour: every answer it gives is about the most
+    recent poll.
     """
 
     def __init__(
         self,
         base_url: str = DEFAULT_BASE_URL,
         *,
-        cpi_s: float,
         timeout_s: float = 2.0,
-        stale_after_cpis: int = DEFAULT_STALE_AFTER_CPIS,
         session: Any = None,
-        clock: Any = monotonic,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout_s = timeout_s
-        self._stale_after_s = max(stale_after_cpis * cpi_s, MIN_STALE_AFTER_S)
-        self._clock = clock
 
         if session is None:
             import requests
@@ -179,13 +160,8 @@ class Blah2Client:
         self._session = session
 
         self._last_timestamp_ms: int | None = None
-        self._last_change_at: float | None = None
-        self._first_ok_at: float | None = None
         self._last_poll_ok: bool | None = None
         self._last_error: str | None = None
-        self._consecutive_failures = 0
-
-    # ── polling ──────────────────────────────────────────────────────
 
     def poll_detection(self) -> DetectionPoll | None:
         """Fetch the current frame.
@@ -194,28 +170,24 @@ class Blah2Client:
             The frame, or ``None`` if the poll failed, the payload was
             malformed, or the timestamp is one we have already seen. All three
             are ordinary outcomes on this path — the caller publishes what it
-            gets and reads :attr:`liveness` separately.
+            gets and reads :attr:`last_poll_ok` separately.
         """
         try:
             response = self._session.get(f"{self._base_url}/api/detection", timeout=self._timeout_s)
             response.raise_for_status()
             payload = response.json()
         except Exception as exc:  # noqa: BLE001 - the poll loop must never die
-            self._record_failure(f"detection poll failed: {exc}")
+            self._last_poll_ok = False
+            self._last_error = f"detection poll failed: {exc}"
+            log.debug("%s", self._last_error)
             return None
 
-        now = self._clock()
         self._last_poll_ok = True
-        self._consecutive_failures = 0
-        if self._first_ok_at is None:
-            self._first_ok_at = now
 
         try:
             frame = parse_frame(payload)
         except MalformedFrame as exc:
-            # blah2-api answered, so it is up; the data is the problem. Leaving
-            # the change clock untouched means persistent garbage eventually
-            # reads as wedged, which is the honest description.
+            # blah2-api answered, so it is reachable; the data is the problem.
             self._last_error = f"malformed frame: {exc}"
             log.warning("discarding malformed detection frame: %s", exc)
             return None
@@ -224,7 +196,6 @@ class Blah2Client:
             return None  # polled twice inside one CPI, which is expected
 
         self._last_timestamp_ms = frame.timestamp_ms
-        self._last_change_at = now
         self._last_error = None
         return frame
 
@@ -233,37 +204,15 @@ class Blah2Client:
         if closer is not None:
             closer()
 
-    # ── derived health ───────────────────────────────────────────────
-
     @property
-    def liveness(self) -> Liveness:
-        if self._last_poll_ok is None:
-            return Liveness.UNKNOWN
-        if not self._last_poll_ok:
-            return Liveness.DOWN
+    def last_poll_ok(self) -> bool | None:
+        """Whether the most recent poll reached blah2-api.
 
-        # Falling back to the first successful poll gives the same grace period
-        # to a node that has answered but never yet produced a usable frame.
-        reference = self._last_change_at if self._last_change_at is not None else self._first_ok_at
-        assert reference is not None  # implied by _last_poll_ok being True
-        if self._clock() - reference > self._stale_after_s:
-            return Liveness.WEDGED
-        return Liveness.UP
+        ``None`` before the first attempt — stage 2 omits ``NodeHealth.blah2``
+        rather than guessing, which is what the field being optional is for.
+        """
+        return self._last_poll_ok
 
     @property
     def last_error(self) -> str | None:
         return self._last_error
-
-    @property
-    def consecutive_failures(self) -> int:
-        return self._consecutive_failures
-
-    @property
-    def last_timestamp_ms(self) -> int | None:
-        return self._last_timestamp_ms
-
-    def _record_failure(self, message: str) -> None:
-        self._last_poll_ok = False
-        self._consecutive_failures += 1
-        self._last_error = message
-        log.debug("%s", message)

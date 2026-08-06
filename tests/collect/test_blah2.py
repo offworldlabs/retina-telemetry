@@ -1,27 +1,18 @@
 import pytest
 
-from retina_telemetry.collect.blah2 import (
-    Blah2Client,
-    Liveness,
-    MalformedFrame,
-    parse_frame,
-)
+from retina_telemetry.collect.blah2 import Blah2Client, MalformedFrame, parse_frame
 from tests.fakes.blah2_api import (
     ASSOCIATION,
-    FakeClock,
     FakeResponse,
     FakeSession,
     empty_frame,
     frame,
 )
 
-CPI_S = 0.5
 
-
-def client(*responses, cpi_s=CPI_S, clock=None, **kwargs):
-    clock = clock or FakeClock()
+def client(*responses, **kwargs):
     session = FakeSession(*responses)
-    return Blah2Client(cpi_s=cpi_s, session=session, clock=clock, **kwargs), session, clock
+    return Blah2Client(session=session, **kwargs), session
 
 
 # ── parse_frame ──────────────────────────────────────────────────────
@@ -39,16 +30,16 @@ def test_parses_a_frame_without_conversion():
 
 
 def test_empty_frame_is_valid():
+    """Detector running, nothing detected — 41 of 101 frames on a live node."""
     poll = parse_frame(empty_frame())
 
-    assert poll.is_empty
     assert poll.n_detections == 0
     assert poll.delay_km == []
 
 
 def test_absent_adsb_key_is_none_not_empty_list():
-    """`None` means ADS-B is disabled, so stage 2 must synthesise [None] * n.
-    An empty list would mean ADS-B is on and the frame has no detections."""
+    """The enrichment is gated entirely on truth.adsb.enabled, so an absent key
+    means ADS-B is off — which is why nothing needs to read that config flag."""
     assert parse_frame(frame()).adsb is None
 
 
@@ -95,12 +86,9 @@ def test_bad_timestamps_rejected(payload):
 
 def test_integral_float_timestamp_accepted():
     """A type surprise on a real node should not stop the stream outright."""
-    assert (
-        parse_frame(
-            {"timestamp": 1753900000123.0, "delay": [], "doppler": [], "snr": []}
-        ).timestamp_ms
-        == 1753900000123
-    )
+    poll = parse_frame({"timestamp": 1753900000123.0, "delay": [], "doppler": [], "snr": []})
+
+    assert poll.timestamp_ms == 1753900000123
 
 
 def test_non_numeric_detection_values_rejected():
@@ -122,7 +110,7 @@ def test_non_object_payload_rejected():
 
 
 def test_poll_returns_the_frame():
-    blah2, session, _ = client(frame(1000))
+    blah2, session = client(frame(1000))
 
     poll = blah2.poll_detection()
 
@@ -132,15 +120,15 @@ def test_poll_returns_the_frame():
 
 
 def test_repeat_timestamp_is_deduped():
-    """Polling at ~4 Hz against a 2 Hz producer means seeing each CPI twice."""
-    blah2, _, _ = client(frame(1000))
+    """We poll faster than the producer, so seeing each CPI twice is normal."""
+    blah2, _ = client(frame(1000))
 
     assert blah2.poll_detection() is not None
     assert blah2.poll_detection() is None
 
 
 def test_new_timestamp_after_duplicate_is_returned():
-    blah2, _, _ = client(frame(1000), frame(1000), frame(1500))
+    blah2, _ = client(frame(1000), frame(1000), frame(1500))
 
     assert blah2.poll_detection().timestamp_ms == 1000
     assert blah2.poll_detection() is None
@@ -149,122 +137,77 @@ def test_new_timestamp_after_duplicate_is_returned():
 
 def test_poll_failure_returns_none_rather_than_raising():
     """The poll loop must never die: a dead blah2 is a payload, not an outage."""
-    blah2, _, _ = client(ConnectionError("connection refused"))
+    blah2, _ = client(ConnectionError("connection refused"))
 
     assert blah2.poll_detection() is None
     assert "connection refused" in blah2.last_error
 
 
-def test_http_error_is_a_failure():
-    blah2, _, _ = client(FakeResponse(status_code=503))
-
-    assert blah2.poll_detection() is None
-    assert blah2.liveness is Liveness.DOWN
-
-
 def test_malformed_frame_is_discarded_without_raising():
-    blah2, _, _ = client({"timestamp": 1000, "delay": [1.0], "doppler": [], "snr": []})
+    blah2, _ = client({"timestamp": 1000, "delay": [1.0], "doppler": [], "snr": []})
 
     assert blah2.poll_detection() is None
     assert "malformed frame" in blah2.last_error
 
 
-def test_consecutive_failures_counted_then_reset():
-    blah2, _, _ = client(OSError("boom"), OSError("boom"), frame(1000))
+# ── what the heartbeat reads ─────────────────────────────────────────
+
+
+def test_poll_state_is_unknown_before_the_first_attempt():
+    """Stage 2 omits NodeHealth.blah2 rather than guessing — which is what the
+    field being optional is for."""
+    blah2, _ = client(frame(1000))
+
+    assert blah2.last_poll_ok is None
+
+
+def test_poll_state_true_after_success():
+    blah2, _ = client(frame(1000))
+    blah2.poll_detection()
+
+    assert blah2.last_poll_ok is True
+
+
+def test_poll_state_false_when_unreachable():
+    blah2, _ = client(ConnectionError("refused"))
+    blah2.poll_detection()
+
+    assert blah2.last_poll_ok is False
+
+
+def test_http_error_counts_as_unreachable():
+    blah2, _ = client(FakeResponse(status_code=503))
+    blah2.poll_detection()
+
+    assert blah2.last_poll_ok is False
+
+
+def test_malformed_frame_does_not_mean_unreachable():
+    """blah2-api answered; the data is the problem."""
+    blah2, _ = client({"timestamp": 1000, "delay": [1.0], "doppler": [], "snr": []})
+    blah2.poll_detection()
+
+    assert blah2.last_poll_ok is True
+
+
+def test_recovers_after_a_failure():
+    blah2, _ = client(ConnectionError("refused"), frame(1000))
 
     blah2.poll_detection()
-    blah2.poll_detection()
-    assert blah2.consecutive_failures == 2
+    assert blah2.last_poll_ok is False
 
     blah2.poll_detection()
-    assert blah2.consecutive_failures == 0
+    assert blah2.last_poll_ok is True
     assert blah2.last_error is None
 
 
-# ── liveness ─────────────────────────────────────────────────────────
-
-
-def test_liveness_unknown_before_first_poll():
-    blah2, _, _ = client(frame(1000))
-
-    assert blah2.liveness is Liveness.UNKNOWN
-
-
-def test_liveness_up_after_a_good_poll():
-    blah2, _, _ = client(frame(1000))
+def test_reports_no_spec_vocabulary():
+    """Stage 1 does not know the server calls these "up" and "down"."""
+    blah2, _ = client(frame(1000))
     blah2.poll_detection()
 
-    assert blah2.liveness is Liveness.UP
-
-
-def test_liveness_down_when_the_poll_fails():
-    blah2, _, _ = client(ConnectionError("refused"))
-    blah2.poll_detection()
-
-    assert blah2.liveness is Liveness.DOWN
-
-
-def test_liveness_wedged_when_timestamp_stops_advancing():
-    """The state container health cannot see: blah2 is up, answering, and
-    returning the same CPI forever."""
-    clock = FakeClock()
-    blah2, _, _ = client(frame(1000), clock=clock)
-
-    blah2.poll_detection()
-    assert blah2.liveness is Liveness.UP
-
-    clock.advance(10 * CPI_S + 0.1)  # ten CPIs with no new frame
-    blah2.poll_detection()
-
-    assert blah2.liveness is Liveness.WEDGED
-
-
-def test_liveness_stays_up_within_the_stale_window():
-    clock = FakeClock()
-    blah2, _, _ = client(frame(1000), clock=clock)
-    blah2.poll_detection()
-
-    clock.advance(10 * CPI_S - 0.1)
-
-    assert blah2.liveness is Liveness.UP
-
-
-def test_liveness_recovers_when_frames_resume():
-    clock = FakeClock()
-    blah2, _, _ = client(frame(1000), frame(1000), frame(2000), clock=clock)
-
-    blah2.poll_detection()
-    clock.advance(10 * CPI_S + 0.1)
-    blah2.poll_detection()
-    assert blah2.liveness is Liveness.WEDGED
-
-    blah2.poll_detection()
-    assert blah2.liveness is Liveness.UP
-
-
-def test_persistent_malformed_frames_read_as_wedged_not_down():
-    """blah2-api is answering, so it is not down — but nothing usable is
-    coming out, which is exactly what wedged means."""
-    clock = FakeClock()
-    bad = {"timestamp": 1000, "delay": [1.0], "doppler": [], "snr": []}
-    blah2, _, _ = client(bad, clock=clock)
-
-    blah2.poll_detection()
-    assert blah2.liveness is Liveness.UP  # inside the grace period
-
-    clock.advance(10 * CPI_S + 0.1)
-    assert blah2.liveness is Liveness.WEDGED
-
-
-def test_stale_window_has_a_floor_for_short_cpis():
-    """A very short CPI must not make the check hair-trigger."""
-    clock = FakeClock()
-    blah2, _, _ = client(frame(1000), cpi_s=0.01, clock=clock)
-    blah2.poll_detection()
-
-    clock.advance(2.0)  # far beyond 10 * 0.01, but under the 3 s floor
-
-    assert blah2.liveness is Liveness.UP
+    assert blah2.last_poll_ok is True
+    assert not hasattr(blah2, "liveness")
 
 
 # ── scope ────────────────────────────────────────────────────────────
@@ -274,7 +217,7 @@ def test_only_the_detection_endpoint_is_polled():
     """blah2-api also serves /api/timing and the capture status endpoints, and
     the cpi total would reveal ring-buffer loss — but the spec has no field for
     any of it, so we do not collect it."""
-    blah2, session, _ = client(frame(1000), frame(2000))
+    blah2, session = client(frame(1000), frame(2000))
     blah2.poll_detection()
     blah2.poll_detection()
 
@@ -282,7 +225,7 @@ def test_only_the_detection_endpoint_is_polled():
 
 
 def test_close_closes_the_session():
-    blah2, session, _ = client(frame(1000))
+    blah2, session = client(frame(1000))
     blah2.close()
 
     assert session.closed

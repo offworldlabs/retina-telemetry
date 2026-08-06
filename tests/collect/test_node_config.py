@@ -39,7 +39,7 @@ def write(tmp_path, document=None, *, text=None):
 
 
 def test_maps_every_field(tmp_path):
-    config = read_config(write(tmp_path, DEFAULTS)).config
+    config = read_config(write(tmp_path, DEFAULTS))
 
     assert config.rx_lat == 51.4769
     assert config.rx_lon == -0.0005
@@ -47,13 +47,12 @@ def test_maps_every_field(tmp_path):
     assert config.tx_name == "Crystal Palace"
     assert config.fc_hz == 503000000
     assert config.fs_hz == 2000000
-    assert config.adsb_enabled is True
 
 
 def test_altitudes_stay_in_metres(tmp_path):
     """The spec wants feet; converting here would put this out of step with
     data-sources.md and hide the conversion from stage 2's call site."""
-    config = read_config(write(tmp_path, DEFAULTS)).config
+    config = read_config(write(tmp_path, DEFAULTS))
 
     assert config.rx_alt_m == 48.0
     assert config.tx_alt_m == 219.0
@@ -62,75 +61,65 @@ def test_altitudes_stay_in_metres(tmp_path):
 def test_delay_max_stays_in_bins(tmp_path):
     """max_range_km is derived in stage 2 so it can never disagree with what
     blah2 actually computes."""
-    config = read_config(write(tmp_path, DEFAULTS)).config
-
-    assert config.delay_max_bins == 400
+    assert read_config(write(tmp_path, DEFAULTS)).delay_max_bins == 400
 
 
-def test_cpi_is_carried_even_though_the_spec_has_no_slot(tmp_path):
-    """Needed for the staleness window and for capture-gap detection."""
-    assert read_config(write(tmp_path, DEFAULTS)).config.cpi_s == 0.5
+def test_collects_only_what_is_sent(tmp_path):
+    """Ten fields, every one of them feeding NodeConfig. cpi, the ADS-B flag and
+    the association tolerances were all collected at some point and are not any
+    more — nothing local needs them and the spec has no field for them."""
+    config = read_config(write(tmp_path, DEFAULTS))
+
+    assert set(vars(config)) == {
+        "rx_lat",
+        "rx_lon",
+        "rx_alt_m",
+        "tx_lat",
+        "tx_lon",
+        "tx_alt_m",
+        "tx_name",
+        "fc_hz",
+        "fs_hz",
+        "delay_max_bins",
+    }
 
 
-def test_association_tolerances_are_not_collected(tmp_path):
-    """Q7 proposes sending them; the spec has no field today, so we do not read
-    them. Nothing local needs them either."""
-    config = read_config(write(tmp_path, DEFAULTS)).config
-
-    assert not hasattr(config, "adsb_delay_tolerance")
+# ── change detection is dataclass equality ───────────────────────────
 
 
-def test_absent_adsb_section_defaults_to_disabled(tmp_path):
-    document = copy.deepcopy(DEFAULTS)
-    del document["truth"]
-
-    assert read_config(write(tmp_path, document)).config.adsb_enabled is False
-
-
-# ── change detection ─────────────────────────────────────────────────
+def test_identical_documents_compare_equal(tmp_path):
+    assert read_config(write(tmp_path / "a", DEFAULTS)) == read_config(
+        write(tmp_path / "b", DEFAULTS)
+    )
 
 
-def test_digest_is_stable_across_reads(tmp_path):
-    path = write(tmp_path, DEFAULTS)
-
-    assert read_config(path).digest == read_config(path).digest
-
-
-def test_digest_ignores_formatting_and_comments(tmp_path):
-    """Hashing the mapped values rather than the file means a reformat does
-    not trigger a PUT /nodes/config."""
+def test_formatting_and_comments_do_not_count_as_a_change(tmp_path):
+    """Mapping to a frozen dataclass discards everything we do not send, so a
+    reformat cannot trigger a PUT /nodes/config."""
     plain = read_config(write(tmp_path / "a", DEFAULTS))
 
     reformatted = yaml.safe_dump(DEFAULTS, default_flow_style=True, width=40)
     commented = read_config(write(tmp_path / "b", text="# a comment\n" + reformatted))
 
-    assert plain.digest == commented.digest
+    assert plain == commented
 
 
-def test_digest_ignores_keys_we_do_not_send(tmp_path):
+def test_unmapped_keys_do_not_count_as_a_change(tmp_path):
     document = copy.deepcopy(DEFAULTS)
     document["save"] = {"iq": True}
     document["process"]["detection"] = {"pfa": 0.001}
+    document["truth"]["adsb"]["delay_tolerance"] = 9.9
 
-    assert read_config(write(tmp_path / "a", DEFAULTS)).digest == (
-        read_config(write(tmp_path / "b", document)).digest
+    assert read_config(write(tmp_path / "a", DEFAULTS)) == read_config(
+        write(tmp_path / "b", document)
     )
 
 
-def test_digest_changes_when_a_mapped_value_changes(tmp_path):
+def test_a_moved_receiver_counts_as_a_change(tmp_path):
     moved = copy.deepcopy(DEFAULTS)
     moved["location"]["rx"]["latitude"] = 51.5
 
-    assert read_config(write(tmp_path / "a", DEFAULTS)).digest != (
-        read_config(write(tmp_path / "b", moved)).digest
-    )
-
-
-def test_changed_from_detects_a_first_read(tmp_path):
-    snapshot = read_config(write(tmp_path, DEFAULTS))
-
-    assert snapshot.changed_from(None)
-    assert not snapshot.changed_from(snapshot)
+    assert read_config(write(tmp_path / "a", DEFAULTS)) != read_config(write(tmp_path / "b", moved))
 
 
 # ── failure modes ────────────────────────────────────────────────────
@@ -159,7 +148,6 @@ def test_non_mapping_raises(tmp_path):
         "location.tx.name",
         "capture.fc",
         "capture.fs",
-        "process.data.cpi",
         "process.ambiguity.delayMax",
     ],
 )
