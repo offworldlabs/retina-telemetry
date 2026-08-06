@@ -79,7 +79,7 @@ The constraint that keeps the layers honest:
 > Stage 2 is the only place that knows both.
 
 If a bistatic delay appears in `comms/`, or an OpenAPI schema type appears in
-`ingress/`, the boundary has leaked. This is worth enforcing in review — it is what
+`collect/`, the boundary has leaked. This is worth enforcing in review — it is what
 makes stages 1 and 2 fully testable with no server and no mock.
 
 ### Stage boundaries
@@ -127,35 +127,62 @@ operator needs to be told why.
 ### Module layout
 
 ```
-retina_telemetry/
-  __main__.py            wiring, signal handling, thread lifecycle
-  state.py               token store (0600), seq/boot_id, node_ref, config_version
-                         — the concurrency boundary; threads touch shared state only here
-
-  ingress/               ── stage 1 ──
-    blah2.py             blah2-api client: /api/detection, /api/timing, capture status
-    node_config.py       config.yml read + change hashing (no conversion)
-    identity.py          /data/mender/node_id reader — raises, never defaults
-    consent.py           opt-in + agreement record reader
-    host.py              cpu / temp / disk / throttle from /proc, /sys, statvfs
-  egress/                ── stage 1, outbound half ──
-    status.py            status document for retina-gui
-
-  build/                 ── stage 2 ──
-    units.py             km→µs, ms→s, m→ft, max_range_km derivation
-    detection_frame.py   raw poll → DetectionFrame: length assert, adsb_hex normalise
-    node_config_map.py   config.yml → NodeConfig
-    heartbeat.py         health + state + versions + errors → HeartbeatRequest
-    registration.py      → RegisterRequest (two fields blocked: Q1, Q2)
-    errors.py            bounded error accumulator for the heartbeat errors[] field
-
-  comms/                 ── stage 3 ──
-    client.py       3a   session, auth, backoff, Retry-After, clock offset
-    levels.py       3a   shared response-level applier
-    lifecycle.py    3b   state machine, registration gating, opt-out
-    reliable.py     3c   must-land: register, config, heartbeat
-    stream.py       3c   latest-wins: detections
+retina-telemetry/
+├── retina_telemetry/
+│   ├── __main__.py          wiring, signal handling, thread lifecycle
+│   ├── state.py             token (0600), seq/boot_id, node_ref, config_version
+│   │                        — the concurrency boundary; shared state is touched only here
+│   ├── status.py            the document retina-gui reads
+│   ├── errors.py            bounded accumulator for the heartbeat errors[] field
+│   │
+│   ├── collect/             ── stage 1 ──
+│   │   ├── blah2.py         blah2-api client: /api/detection, /api/timing, capture status
+│   │   ├── node_config.py   config.yml read + change hashing (no conversion)
+│   │   ├── identity.py      /data/mender/node_id reader — raises, never defaults
+│   │   ├── consent.py       opt-in + agreement record reader
+│   │   └── host.py          cpu / temp / disk / throttle from /proc, /sys, statvfs
+│   │
+│   ├── wire/                ── stage 2 ──
+│   │   ├── units.py         km→µs, ms→s, m→ft, max_range_km derivation
+│   │   ├── detection.py     raw poll → DetectionFrame: length assert, adsb_hex normalise
+│   │   ├── config.py        config.yml → NodeConfig
+│   │   ├── heartbeat.py     health + state + versions + errors → HeartbeatRequest
+│   │   └── registration.py  → RegisterRequest (two fields blocked: Q1, Q2)
+│   │
+│   └── comms/               ── stage 3 ──
+│       ├── client.py   3a   session, auth, backoff, Retry-After, clock offset
+│       ├── levels.py   3a   shared response-level applier
+│       ├── lifecycle.py 3b  state machine, registration gating, opt-out
+│       ├── reliable.py 3c   must-land: register, config, heartbeat
+│       └── stream.py   3c   latest-wins: detections
+│
+├── tests/
+│   ├── collect/  wire/  comms/    mirroring the package
+│   └── fakes/               scripted server, captured blah2-api responses
+├── docs/
+├── deploy/                  compose entry — see the packaging note in stage 4
+├── pyproject.toml
+└── Dockerfile
 ```
+
+Three naming decisions worth recording, because each replaces something an earlier
+draft had:
+
+- **`collect/` not `ingress/`** — it matches the stage name in this document verbatim,
+  so the tree needs no translation to the plan. `collect/ wire/ comms/` also reads as
+  the pipeline itself.
+- **`wire/` not `build/`** — `build/` is in `.gitignore`, so that package would have
+  been silently untracked. `wire/` is the better name regardless: the folder exists to
+  be the boundary where node units become spec units.
+- **`status.py` at the top level, and no `egress/`** — it reads `state.py` and writes a
+  file, reflecting all three stages rather than collecting anything, which makes it a
+  peer of `state.py`. A folder for one module is overhead.
+
+The package sits at the repo root rather than under `src/`. `src/` layout exists to stop
+an installed package being shadowed by the working directory, which matters for
+published libraries; this is copied into an image and run. Root-level means pytest needs
+no editable install. This diverges from retina-gui, which puts loose modules directly in
+`src/` with no package at all — deliberately, since that does not scale to three layers.
 
 ### Response handling is shared, not per-endpoint
 
@@ -198,10 +225,16 @@ The four incoming interfaces and the one outgoing one. Full inventory in
 - `node_config.py` — read the read-only mount, hash for change detection.
 - `identity.py` — the hard-error behaviour, and a test that `'Unknown'` can never
   appear in a payload.
-- `consent.py` — opt-in state and the agreement record (format still to agree with
-  retina-gui; see Q2).
-- `host.py` — cpu, temp, disk, throttle flags.
-- `egress/status.py` — the document retina-gui reads.
+- `consent.py` — opt-in state and the agreement record, read from
+  `/data/retina-gui/telemetry-consent.json`. A missing file is a normal state meaning
+  "not opted in", so this module is complete and testable before retina-gui writes it.
+- `host.py` — cpu, temp, disk, throttle flags. `/proc` is not namespaced, so `cpu_pct`
+  is correctly host-wide; `statvfs` *is*, so it must be called on `/data` rather than
+  `/` or it measures the container's overlay.
+
+`status.py` is not stage 1 — it reflects state from all three — but it is the other half
+of the contract with retina-gui and is worth writing early, since it is the only way the
+stage 3b failures ever reach an operator.
 
 **Deliverable:** a process that can report everything it can see about the node and
 nothing about the server. No network calls off-box.
@@ -215,10 +248,9 @@ container on the node that talks to the internet.
 - `units.py` with property tests: km→µs, ms→s, m→ft, `max_range_km` derivation. These
   are the highest-value tests in the repo — three conversions where a silent error is
   plausible and invisible on the wire.
-- `detection_frame.py` — assert equal array lengths, synthesise `adsb_hex` nulls when
-  ADS-B is off, map association objects down to `.hex`, attach `seq` and
-  `config_version`.
-- `node_config_map.py`, `heartbeat.py`, `registration.py`.
+- `detection.py` — assert equal array lengths, synthesise `adsb_hex` nulls when ADS-B is
+  off, map association objects down to `.hex`, attach `seq` and `config_version`.
+- `config.py`, `heartbeat.py`, `registration.py`.
 - Every output validated against the spec's schemas.
 
 **Deliverable:** given stage 1's output, valid wire payloads. Still no network.
@@ -302,8 +334,40 @@ stage they land in.
 | Mock: Prism, an in-process fake, or both? | stage 0 / 3a | Prism validates shape; only a scriptable fake can force 401/409/429 sequences |
 | Missing `node_id`: exit non-zero, or hold and re-check? | stage 3b | crash-loop is honest but noisy; holding keeps the status document fresh |
 | Status document path and format | stage 1 | retina-gui reads it; needs a contract either way |
-| Where the opt-in / agreement record lives | stage 1 | retina-gui writes, we read; whose `/data` subtree, and whose docs describe it |
 | `state` vocabulary | stage 2 | ours (`streaming`, `paused`, …) with retina-gui's `updating_*` folded in, or theirs |
+| `uptime_s`: node or process? | stage 2 | the spec does not say, and `/proc/uptime` in a container gives host uptime — so we get one by accident if not deliberate |
+| Throttle flags via `vcgencmd` | stage 1 | needs `/dev/vcio` mounted plus the Pi userland binary; verify whether a sysfs route exists on real hardware first |
+| **Own compose project, or a service in `retina-node`?** | stage 4 | see below |
+
+### The compose placement question
+
+The plan has assumed this slots into `retina-node/docker-compose.yml` like every other
+service. That is in tension with the architectural rule, and the tension is concrete:
+retina-gui applies configuration with
+
+```
+docker compose -p retina-node up -d --force-recreate
+```
+
+(`retina-gui/src/routes/mode.py:144`) — project-wide. So every service in the radar
+project is destroyed on every config change, including the one that should be reporting
+that change. It also resets `seq`, which is Q10's discontinuity.
+
+Not fatal: the restart is seconds, and on start we would notice the config hash moved
+and `PUT` anyway, so it self-heals. What is lost is the ability to distinguish "node
+restarting for a config change" from "node fell over" — and a config apply is exactly
+when a node is likely to break.
+
+There is a precedent for the alternative: **retina-gui is not in the radar project**,
+almost certainly because it cannot recreate a project it belongs to. Its own project
+would make "does not share fate with the stack it reports on" true rather than
+aspirational, at the cost of a second compose file — which is why `deploy/` has a slot
+in the tree above.
+
+Before deciding, two things need checking that have not been: whether Mender's OTA path
+also recreates project-wide, and whether a separate project is even picked up by
+Mender's manifest deployment. Both bear on whether "own project" is deployable here at
+all.
 
 ## Deliberately not doing
 

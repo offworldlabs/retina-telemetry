@@ -19,7 +19,7 @@ we bind no ports, and there is no event bus. Every one of these is us pulling.
 | 1 | blah2-api on `127.0.0.1:3000` | HTTP poll, keep-alive | detections, blah2 + ADS-B liveness, CPI overrun, RF status | §1, §5 |
 | 2 | `/data/retina-node/config/config.yml` | read-only mount, hashed | all of `NodeConfig`, plus `cpi`, `delayMax`, `fs`, `truth.adsb.enabled` | §4 |
 | 3 | `/data/mender/node_id` | read once at boot | identity | §3 |
-| 4 | opt-in + agreement record | read-only — **does not exist yet** | whether we may talk to the server at all | §4, Q2 |
+| 4 | `/data/retina-gui/telemetry-consent.json` | read-only — **not written yet** | whether we may talk to the server at all | §4, Q2 |
 
 One HTTP client, two file reads, one file still to be defined.
 
@@ -245,8 +245,31 @@ So registration cannot be populated today. Blocking — Q2.
 
 **Decided:** telemetry is opt-in, via an explicit action in the setup wizard. That
 record and the agreement record are the same artifact — opt-in state plus
-`{version, accepted_at}`, written by retina-gui, read by us. One file, not two. Format
-and location still to agree with retina-gui.
+`{version, accepted_at}`, written by retina-gui, read by us. One file, not two.
+
+It lives at **`/data/retina-gui/telemetry-consent.json`**, alongside retina-gui's other
+device state. `DATA_DIR` is `/data/retina-gui` in production and `<repo>/dev_data` under
+`DEV_MODE` (`retina-gui/src/services.py:49-51`), and `DeviceState` hangs `install.lock`,
+`setup-wizard.json`, `mender-update.status` and the rest off it
+(`retina-gui/src/device_state.py:41-53`).
+
+```json
+{
+  "opted_in": true,
+  "agreement": { "version": "2026-07-01", "accepted_at": "2026-07-31T09:12:00Z" }
+}
+```
+
+Two things not to inherit from the neighbouring `cloud-services-disabled`: it is an
+**empty file with negative sense**, which cannot carry `{version, accepted_at}`, and
+`not exists` is indistinguishable from "the wizard never ran". Follow
+`setup-wizard.json` instead — JSON with content, positive sense. The nesting is
+deliberate: `agreement` maps straight onto the spec's `Agreement` schema so stage 2
+lifts the object wholesale, and `opted_in` stays separate because accepting the terms
+and consenting to telemetry are different facts.
+
+A missing file means "not opted in". That is a normal state, so `consent.py` is
+complete and testable before retina-gui writes anything.
 
 An opted-out node still runs this container: it reads the flag, idles without
 registering, and keeps its status document fresh. Removing it from compose instead

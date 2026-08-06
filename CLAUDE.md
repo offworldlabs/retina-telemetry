@@ -25,7 +25,10 @@ heartbeat, config sync. Nothing else on the node talks to `api.retina.fm`.
 
 The rule that keeps it honest: **stage 3 knows nothing about radar, stage 1 knows
 nothing about the server, stage 2 is the only place that knows both.** A bistatic delay
-in `comms/`, or an OpenAPI type in `ingress/`, means the boundary has leaked.
+in `comms/`, or an OpenAPI type in `collect/`, means the boundary has leaked.
+
+Package layout is `collect/` → `wire/` → `comms/`, with `state.py`, `status.py` and
+`errors.py` at the top level. Not `build/` — it is in `.gitignore`.
 
 Corollary: **all unit conversion happens in stage 2.** Stage 1 hands over source units
 under names that say so — `delay_km`, `timestamp_ms`, `rx_alt_m` — and stage 2 emits the
