@@ -85,8 +85,9 @@ which returns `delay.size()`. Every producer stage pushes the three vectors in l
 
 **Caveat:** nothing validates this. `Detection`'s constructor accepts three vectors of
 any lengths, and `get_nDetections()` trusts `delay.size()`, so a future desync would
-read out of bounds silently rather than throw. Assert equal length at the telemetry
-boundary regardless — a malformed frame must never reach the server.
+read out of bounds silently rather than throw. We assert equal length in
+`collect/blah2.py` regardless — a malformed frame must never reach the server, and
+checking at the read point keeps it out of the slot entirely.
 
 An empty frame serialises as three empty arrays. That is a normal, meaningful state
 (detector running, nothing detected) and the spec wants it sent.
@@ -195,6 +196,37 @@ by the Ansible build). Resolution order:
 `^ret[0-9a-f]{8}$` pattern holds, and a hard local error on a missing file is both
 correct and achievable. Path 3 only fires on non-Pi hardware in practice.
 
+### `board_model` comes from the same directory
+
+`RegisterRequest.board_model` is required, node-reported and diagnostic only. Take it
+from **`/data/mender/device_type`**, which sits beside `node_id` — so it costs no new
+interface, no new mount, and the same read-once-at-boot lifecycle.
+
+On the Owl node (2026-08-06) it contains:
+
+```
+device_type=pi5-v3-arm64
+```
+
+Note the format differs from its neighbour: `device_type` is `key=value`, `node_id` is
+bare. Strip the prefix.
+
+Why this rather than `/proc/device-tree/model`, which gives
+`"Raspberry Pi 5 Model B Rev 1.1"`:
+
+- Mender targets artifacts **by device type**, so this string decides which software the
+  board is allowed to receive. "Which build stream is this node on" is a question
+  someone will actually ask; "what board revision is it" is not.
+- The spec's own example, `"raspberrypi5-4gb"`, is a device-type slug rather than a
+  hardware description — so this matches the shape the author had in mind, even though
+  the value differs. See Q15.
+- It is stable. The device-tree string carries a board revision that changes without
+  meaning anything to us.
+
+Unlike `node_id`, a missing `board_model` is **not** fatal — it is diagnostic only, so
+losing it must never stop a node registering. The two readers differ in failure
+behaviour on purpose.
+
 ### Two landmines
 
 1. `retina-gui/src/app.py:96` — `get_node_id()` returns the **string `'Unknown'`** when
@@ -226,8 +258,34 @@ Source of truth on the node: `/data/retina-node/config/config.yml`, produced by
 | `fc_hz` | `capture.fc` | — |
 | `fs_hz` | `capture.fs` | — |
 | `max_range_km` | `process.ambiguity.delayMax` | `delayMax × c / fs / 1000` = 60 km at 400 bins / 2 MHz — Q6 |
-| `beam_width_deg` | **does not exist** | Q1 — blocking |
-| `beam_azimuth_deg` | **does not exist** | Q1 — blocking |
+| `beam_width_deg` | `location.rx.beam_width` — **not written yet** | Q1 — blocking |
+| `beam_azimuth_deg` | `location.rx.beam_azimuth` — **not written yet** | Q1 — blocking |
+
+### Beam geometry: scaffolded, not sourced
+
+Both are required by the spec and neither exists on a node. Re-verified 2026-08-06:
+one hit across all four repos, `boresight: 0.0` in
+`blah2-arm/config/sdr-variants/config-kraken.yml` — the KrakenSDR variant, a 5-channel
+coherent array where boresight is meaningful because there is real array geometry. It is
+referenced nowhere in retina-node or retina-gui and no node in this fleet runs it.
+
+That is the shape of the problem: this fleet is a two-channel SDR with whatever antenna
+the operator physically attached, and nothing in the stack has ever needed its beam
+pattern. blah2 does not use it for the bistatic solve. So it is new config keys, a
+retina-gui form, probably a wizard step, and an operator who knows their antenna.
+
+`collect/node_config.py` carries the seam: `BEAM_WIDTH_KEY` and `BEAM_AZIMUTH_KEY` name
+the expected paths under `location.rx` (the antenna is a receiver property and there is
+no antenna section), both read as optional, and landing the retina-gui work should be a
+config change rather than a code change. If retina-gui puts them elsewhere, those two
+constants are the only edit.
+
+**The two `None`s do not mean the same thing.** A missing `beam_width_deg` is
+unconfigured and blocks registration. A missing `beam_azimuth_deg` is
+broadside/omnidirectional and is a *valid* wire value — the spec asks for `null` rather
+than `0.0` for exactly that case. So an unconfigured azimuth and a deliberate
+omnidirectional one are indistinguishable, which is acceptable because Q1 proposes
+omnidirectional as the fleet default anyway.
 
 `beam_width_deg` and `beam_azimuth_deg` returned zero hits across owl-os, retina-node,
 retina-gui and blah2-arm. These are new config fields plus GUI plumbing, not a mapping.
@@ -293,10 +351,8 @@ and "stuck in 403 because the operator turned Mender off."
 
 ### `board_model`
 
-`RegisterRequest.board_model` is required, node-reported and diagnostic only
-(`"raspberrypi5-4gb"` in the spec's example). Not covered elsewhere in this document and
-not a config field — it comes off the host, presumably `/proc/device-tree/model`.
-Unverified; check before stage 2 builds the registration payload.
+Not a config field. It comes from `/data/mender/device_type` — see §3, where it sits
+beside `node_id`.
 
 ---
 
@@ -309,7 +365,7 @@ the node that talks to the internet.
 
 | Field | Source |
 |---|---|
-| `cpu_pct`, `temp_c`, `disk_free_mb` | host `/proc`, `/sys/class/thermal`, `statvfs`; also worth reading Pi throttle flags via `vcgencmd get_throttled` |
+| `cpu_pct`, `temp_c`, `disk_free_mb` | host `/proc`, `/sys/class/thermal`, `statvfs` |
 | `blah2` | derived from the detection poll we already run — see below |
 | `adsb` | `truth.adsb.enabled` from config, plus whether the `adsb` key appears on polled frames |
 | `queue_depth` | meaningless under latest-wins — Q11 |
@@ -338,12 +394,42 @@ presence of the `adsb` key on returned frames says whether it is actually workin
 distinguishes "off by configuration" from "enabled but broken" without reaching for
 tar1090 or adsb2dd directly.
 
-### versions come from compose, not from docker
+### versions: all three live in Mender's provides database
 
-`retina-node/docker-compose.yml` already pins every image through an env var with a
-default — `BLAH2_V`, `TAR1090_V`, `ADSB2DD_V`, `CONFIG_MERGER_V`, `RETINA_TRACKER_V`.
-Passing the relevant ones into this container as environment is a compose change of a
-few lines and needs no privileged access to anything.
+`NodeVersions` is optional and so is every field in it, so none of this blocks anything.
+Verified on Owl, 2026-08-06 — `mender-update show-provides` returns:
+
+```
+rootfs-image.owl-os-pi5.version          = v0.11.1-dev
+data-docker.mender-docker-compose.retina-node.version = retina-node-v0.4.1.4-dev
+artifact_name                            = owl-os-pi5-v0.11.1-dev
+device_type                              = pi5-v3-arm64
+```
+
+So `owl_os` and `retina_node` both come from there, and it confirms `device_type` (§3).
+
+**But it is a binary, not a file.** `/usr/share/mender/inventory/mender-inventory-provides`
+just shells out to `/usr/bin/mender-update show-provides`. The backing store is LMDB at
+`/data/mender/mender-store`, mode `0600` root-only. A container runs as root and already
+mounts that directory, so it is *reachable* — but parsing Mender's internal LMDB schema
+would need an `lmdb` C extension and would break whenever they change their key layout.
+Not worth it.
+
+**Proposal: have owl-os publish a snapshot.** The identity script already writes
+`/data/mender/node_id`; writing `mender-update show-provides` output to
+`/data/mender/provides` on deployment is the same pattern, the same directory we already
+mount, and gives all three versions as a plain `key=value` file with no new mount and no
+new dependency.
+
+Until that exists:
+
+| Field | Interim |
+|---|---|
+| `blah2_image` | `BLAH2_V` compose env var — the compose file already pins every image through one (`BLAH2_V`, `TAR1090_V`, `ADSB2DD_V`, `CONFIG_MERGER_V`, `RETINA_TRACKER_V`), so passing them in is a few lines and needs no privilege |
+| `owl_os` | `/etc/mender/artifact_info` is a plain `artifact_name=…` file, but in `/etc` rather than `/data`, so it costs a fifth mount |
+| `retina_node` | Nothing readable. The compose deployment dir carries `project_name`, `image_ids` and a log, but no version |
+
+Omit what we cannot read. An absent optional field is more honest than a fabricated one.
 
 ### `state` has a vocabulary clash
 
@@ -356,14 +442,81 @@ progress" — so this is not a mapping. The `updating_*` values are worth foldin
 a node that goes quiet mid-update is explained by them, but the vocabulary should be
 ours. See `docs/implementation-plan.md`, "Still to settle".
 
-### Two more blah2-api endpoints worth carrying
+### Available and deliberately not collected
 
-`GET /api/timing` reports per-stage processing time including a `cpi` total in ms.
-Anything over `cpi * 1000` means the ring buffer is losing samples (§2). Worth carrying
-as a derived health field even though the spec has no slot for it.
+The spec is the scope. Anything it does not ask for is not gathered, however easy it
+would be — otherwise the payload accretes fields nobody agreed to and the node ends up
+with mounts and dependencies it cannot justify.
 
-`/capture/overload-status` and `/capture/rf-status` are also available and not in the
-spec. Relevant given the RF overload incident on the Owl node.
+| Available | Why it is not collected |
+|---|---|
+| `GET /api/timing` | The `cpi` total over `cpi × 1000` ms is the only view of ring-buffer loss (§2, §5b), but there is no field for it. Would be a spec proposal, not a collection change |
+| `/capture/overload-status`, `/capture/rf-status` | Not in the spec. Relevant to the RF overload incident on Owl, but that is a local diagnosis problem |
+| Pi throttle flags | No field. `vcgencmd get_throttled` works but needs `/dev/vcio` mounted plus the Pi userland binary in the image; `/sys/class/hwmon/*/name == rpi_volt` exposes `in0_lcrit_alarm` for free, but with nowhere to send it that is moot |
+| `truth.adsb.delay_tolerance`, `doppler_tolerance` | Q7 proposes sending them so the server knows what it is comparing. Until it does, nothing local needs them |
+| `truth.adsb.enabled` | Redundant. `api/server.js:328` gates the whole enrichment on it, so the `adsb` key is present on a polled frame if and only if the flag is set — key presence *is* the flag |
+| `process.data.cpi` | Its only consumer was a staleness window that no longer exists (see below). Q3 proposes sending it |
+
+If any of these become genuinely necessary, the route is an open question to the server
+author, not a field we invent.
+
+### `NodeHealth.blah2` is `up` or `down`, nothing else
+
+Deferred, not rejected: a third value for a blah2 that answers but whose timestamp has
+stopped advancing. Three things argued against it for now.
+
+- It feeds **one optional free-text field** whose own description says the server does
+  not use it to decide whether a node is working — the server derives wedged-ness from
+  its own record of frame arrivals.
+- **The fleet already detects and fixes it.** `/etc/cron.d/blah2-rspduo-watchdog` runs
+  `blah2_rspduo_restart.bash` every five minutes and restarts the stack when
+  `/api/map`'s timestamp is more than 60 s old. Acting on the condition beats describing
+  it a minute later.
+- Doing it correctly needs more than a timer: the same script guards against three
+  states where blah2 is *deliberately* stopped — `/data/retina-gui/mode.txt` set to
+  `spectrum` or `sdrconnect`, an active `calibrate.lock` (Auto-Calibrate owns the SDR),
+  and `restart.lock` during a config apply.
+
+If it comes back, measure age against a **monotonic** clock since the last observed
+timestamp change, not wall clock — the spec is explicit that the node clock is the
+timestamp source and is not otherwise trusted. Note also that `mode.txt` matters more
+for `HeartbeatRequest.state` than for this field: a node claiming `streaming` while no
+frames arrive is what the server flags.
+
+---
+
+## 5b. What actually runs on a node
+
+Verified on the Owl node, 2026-08-06. Worth having written down because two reasonable
+assumptions about it are wrong.
+
+| Layer | What |
+|---|---|
+| systemd, host | `mender-authd`, `mender-connect`, `mender-updated`, `retina-gui.service`, `retina-node.service` (oneshot) |
+| compose project `retina-node` | blah2, blah2-api, blah2-web, blah2-host, tar1090, adsb2dd, retina-tracker |
+
+**retina-gui is not a container.** It is a systemd unit running
+`/opt/retina-gui/src/app.py` directly on the host. That is how it escapes the
+project-wide `--force-recreate` it issues when applying configuration — by being outside
+Docker, not by being a second compose project. There is exactly one compose project on
+the node.
+
+**Observed CPI behaviour is processing-bound, and this is expected.** Configured
+`cpi: 0.5`, but frames arrive every **886 ms** (lifetime average over two days;
+p50 886, p90 907, max 1047 over a 90 s sample). `/api/timing` reports 927 ms of
+processing per CPI, 602 ms of which is `clutter_filter`. So the node emits at ~1.13 Hz
+rather than the spec's assumed 2 Hz, and since processing exceeds the 0.75 s ring buffer
+(`cpi × buffer`), capture is being dropped continuously.
+
+Two consequences for us:
+
+1. **A staleness window must derive from the observed frame period, not `cpi_s`.** The
+   configured value is not what the node honours, and is out by 1.8× here.
+2. It makes Q3 sharper. The server sees 1.13 Hz and cannot tell a configured rate from a
+   node dropping half its capture coverage, because it never receives `cpi_s`.
+
+Expanding the ring buffer is the fix and is separate work — there is RAM headroom. This
+is recorded as expected behaviour, not a defect.
 
 ---
 

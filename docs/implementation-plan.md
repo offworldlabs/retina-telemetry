@@ -136,7 +136,7 @@ retina-telemetry/
 │   ├── errors.py            bounded accumulator for the heartbeat errors[] field
 │   │
 │   ├── collect/             ── stage 1 ──
-│   │   ├── blah2.py         blah2-api client: /api/detection, /api/timing, capture status
+│   │   ├── blah2.py         poll, dedupe, structural validation, derived liveness
 │   │   ├── node_config.py   config.yml read + change hashing (no conversion)
 │   │   ├── identity.py      /data/mender/node_id reader — raises, never defaults
 │   │   ├── consent.py       opt-in + agreement record reader
@@ -144,7 +144,7 @@ retina-telemetry/
 │   │
 │   ├── wire/                ── stage 2 ──
 │   │   ├── units.py         km→µs, ms→s, m→ft, max_range_km derivation
-│   │   ├── detection.py     raw poll → DetectionFrame: length assert, adsb_hex normalise
+│   │   ├── detection.py     DetectionPoll → DetectionFrame: units, adsb_hex, seq
 │   │   ├── config.py        config.yml → NodeConfig
 │   │   ├── heartbeat.py     health + state + versions + errors → HeartbeatRequest
 │   │   └── registration.py  → RegisterRequest (two fields blocked: Q1, Q2)
@@ -220,17 +220,27 @@ turns a deliberate revocation into a registration storm.
 The four incoming interfaces and the one outgoing one. Full inventory in
 `docs/data-sources.md` §0.
 
-- `blah2.py` — poll `/api/detection` at ~4 Hz against a 2 Hz producer, dedupe on
-  `timestamp`. Also `/api/timing` for CPI overrun, and the capture status endpoints.
-- `node_config.py` — read the read-only mount, hash for change detection.
+- `blah2.py` — poll `/api/detection` and dedupe on `timestamp`. Reports whether the poll
+  reached blah2-api; stage 2 turns that into `NodeHealth.blah2`. No time-dependent
+  behaviour and no spec vocabulary. **Only that endpoint** — `/api/timing` and the
+  capture status endpoints have no field in the spec (§5 of `data-sources.md`).
+
+  **The equal-length assertion lives here, not in `wire/`.** It is a claim about whether
+  the source is internally coherent, it needs no knowledge of the server, and checking at
+  the read point means a malformed frame never enters the slot at all. Mapping
+  associations down to `.hex` and synthesising nulls stay in `wire/`, because those are
+  facts about the spec rather than about blah2.
+- `node_config.py` — read the read-only mount. Change detection is frozen-dataclass
+  equality: mapping the document already discards everything we do not send, so a
+  reformat or an unmapped edit cannot trigger a `PUT /nodes/config`.
 - `identity.py` — the hard-error behaviour, and a test that `'Unknown'` can never
   appear in a payload.
 - `consent.py` — opt-in state and the agreement record, read from
   `/data/retina-gui/telemetry-consent.json`. A missing file is a normal state meaning
   "not opted in", so this module is complete and testable before retina-gui writes it.
-- `host.py` — cpu, temp, disk, throttle flags. `/proc` is not namespaced, so `cpu_pct`
-  is correctly host-wide; `statvfs` *is*, so it must be called on `/data` rather than
-  `/` or it measures the container's overlay.
+- `host.py` — cpu, temp, disk, uptime, and nothing else. `/proc` is not namespaced, so
+  `cpu_pct` is correctly host-wide; `statvfs` *is*, so it must be called on `/data`
+  rather than `/` or it measures the container's overlay.
 
 `status.py` is not stage 1 — it reflects state from all three — but it is the other half
 of the contract with retina-gui and is worth writing early, since it is the only way the
@@ -248,8 +258,9 @@ container on the node that talks to the internet.
 - `units.py` with property tests: km→µs, ms→s, m→ft, `max_range_km` derivation. These
   are the highest-value tests in the repo — three conversions where a silent error is
   plausible and invisible on the wire.
-- `detection.py` — assert equal array lengths, synthesise `adsb_hex` nulls when ADS-B is
-  off, map association objects down to `.hex`, attach `seq` and `config_version`.
+- `detection.py` — convert km→µs and ms→s, synthesise `adsb_hex` nulls when ADS-B is off
+  (`DetectionPoll.adsb is None`), map association objects down to `.hex`, attach `seq`
+  and `config_version`. Arrays arrive already checked for equal length by `collect/`.
 - `config.py`, `heartbeat.py`, `registration.py`.
 - Every output validated against the spec's schemas.
 
@@ -317,7 +328,8 @@ through 3c first — it is independent of the detection path and the more valuab
 | Poll `/api/detection` rather than tap TCP | latest-wins transport matches a latest-value API exactly, and it needs zero changes to blah2 or blah2-api |
 | No spool for detections | the spec's transport model forbids it |
 | Own `node_id` reader | retina-gui's returns `'Unknown'` on failure; that must never reach a payload |
-| Assert array lengths at the boundary | blah2 guarantees it by construction but validates nothing |
+| Assert array lengths in `collect/`, not `wire/` | blah2 guarantees it by construction but validates nothing; source coherence needs no server knowledge, and a malformed frame should never reach the slot |
+| Liveness derived in `collect/blah2.py` | it needs the poll and the CPI, both of which live in stage 1; the wedged case is invisible to anything watching container state |
 | No docker socket | liveness falls out of the detection poll; versions come from compose env |
 | Telemetry is opt-in | explicit user action in the setup wizard; also answers Q2's "is a silent node intended" with a deliberate yes |
 | Outward status document | three failure modes must reach the operator, and we bind no ports |
@@ -336,7 +348,6 @@ stage they land in.
 | Status document path and format | stage 1 | retina-gui reads it; needs a contract either way |
 | `state` vocabulary | stage 2 | ours (`streaming`, `paused`, …) with retina-gui's `updating_*` folded in, or theirs |
 | `uptime_s`: node or process? | stage 2 | the spec does not say, and `/proc/uptime` in a container gives host uptime — so we get one by accident if not deliberate |
-| Throttle flags via `vcgencmd` | stage 1 | needs `/dev/vcio` mounted plus the Pi userland binary; verify whether a sysfs route exists on real hardware first |
 | **Own compose project, or a service in `retina-node`?** | stage 4 | see below |
 
 ### The compose placement question
@@ -358,16 +369,21 @@ and `PUT` anyway, so it self-heals. What is lost is the ability to distinguish "
 restarting for a config change" from "node fell over" — and a config apply is exactly
 when a node is likely to break.
 
-There is a precedent for the alternative: **retina-gui is not in the radar project**,
-almost certainly because it cannot recreate a project it belongs to. Its own project
-would make "does not share fate with the stack it reports on" true rather than
-aspirational, at the cost of a second compose file — which is why `deploy/` has a slot
-in the tree above.
+**Decided: this ships as a Docker container**, not as a host service. The remaining
+question is only whether it is a service inside `retina-node` or its own compose
+project — which is why `deploy/` has a slot in the tree above.
 
-Before deciding, two things need checking that have not been: whether Mender's OTA path
-also recreates project-wide, and whether a separate project is even picked up by
-Mender's manifest deployment. Both bear on whether "own project" is deployable here at
-all.
+Worth knowing that the obvious precedent is not the one it looks like. Verified on the
+Owl node (2026-08-06): **retina-gui is not a container at all.** It is
+`retina-gui.service`, a systemd unit running `/opt/retina-gui/src/app.py` directly on
+the host. There is exactly one compose project — `retina-node`, seven containers —
+brought up by `retina-node.service` as a oneshot. So retina-gui escapes the
+force-recreate by being outside Docker entirely, not by being a second project, and it
+is not evidence that a second project would work.
+
+Before deciding, two things still need checking: whether Mender's OTA path also
+recreates project-wide, and whether a separate compose project is picked up by Mender's
+manifest deployment at all.
 
 ## Deliberately not doing
 

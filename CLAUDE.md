@@ -102,3 +102,13 @@ Full detail and citations in `docs/data-sources.md`. The short version:
 - Nothing gets deployed to a live node without Josh's express sign-off.
 - The OpenAPI spec is someone else's contract. Disagreements go to
   `docs/open-questions.md` for them to answer; do not edit the spec to match the code.
+- **The spec is the scope.** If a field is not in it, we do not collect it — however
+  cheap or obviously useful it looks. Wanting something new means an open question to
+  the server author, not a field we add unilaterally. This has already removed Pi
+  throttle flags, `/api/timing`, the capture status endpoints and the ADS-B association
+  tolerances; `docs/data-sources.md` §5 keeps the list and the reasons, so nobody
+  re-derives them.
+- Collecting something the spec does not send is justified **only** when a required
+  field depends on it — `cpi_s` seeds the staleness window behind `NodeHealth.blah2`,
+  `truth.adsb.enabled` distinguishes "ADS-B off" from "ADS-B broken". Say which required
+  field, in a comment, at the point of collection.
