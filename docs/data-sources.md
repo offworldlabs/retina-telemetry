@@ -368,6 +368,41 @@ spec. Relevant given the RF overload incident on the Owl node.
 
 ---
 
+## 5b. What actually runs on a node
+
+Verified on the Owl node, 2026-08-06. Worth having written down because two reasonable
+assumptions about it are wrong.
+
+| Layer | What |
+|---|---|
+| systemd, host | `mender-authd`, `mender-connect`, `mender-updated`, `retina-gui.service`, `retina-node.service` (oneshot) |
+| compose project `retina-node` | blah2, blah2-api, blah2-web, blah2-host, tar1090, adsb2dd, retina-tracker |
+
+**retina-gui is not a container.** It is a systemd unit running
+`/opt/retina-gui/src/app.py` directly on the host. That is how it escapes the
+project-wide `--force-recreate` it issues when applying configuration — by being outside
+Docker, not by being a second compose project. There is exactly one compose project on
+the node.
+
+**Observed CPI behaviour is processing-bound, and this is expected.** Configured
+`cpi: 0.5`, but frames arrive every **886 ms** (lifetime average over two days;
+p50 886, p90 907, max 1047 over a 90 s sample). `/api/timing` reports 927 ms of
+processing per CPI, 602 ms of which is `clutter_filter`. So the node emits at ~1.13 Hz
+rather than the spec's assumed 2 Hz, and since processing exceeds the 0.75 s ring buffer
+(`cpi × buffer`), capture is being dropped continuously.
+
+Two consequences for us:
+
+1. **A staleness window must derive from the observed frame period, not `cpi_s`.** The
+   configured value is not what the node honours, and is out by 1.8× here.
+2. It makes Q3 sharper. The server sees 1.13 Hz and cannot tell a configured rate from a
+   node dropping half its capture coverage, because it never receives `cpi_s`.
+
+Expanding the ring buffer is the fix and is separate work — there is RAM headroom. This
+is recorded as expected behaviour, not a defect.
+
+---
+
 ## 6. Container conventions
 
 From `retina-node/docker-compose.yml`, which this service must slot into:

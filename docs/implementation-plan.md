@@ -368,16 +368,21 @@ and `PUT` anyway, so it self-heals. What is lost is the ability to distinguish "
 restarting for a config change" from "node fell over" — and a config apply is exactly
 when a node is likely to break.
 
-There is a precedent for the alternative: **retina-gui is not in the radar project**,
-almost certainly because it cannot recreate a project it belongs to. Its own project
-would make "does not share fate with the stack it reports on" true rather than
-aspirational, at the cost of a second compose file — which is why `deploy/` has a slot
-in the tree above.
+**Decided: this ships as a Docker container**, not as a host service. The remaining
+question is only whether it is a service inside `retina-node` or its own compose
+project — which is why `deploy/` has a slot in the tree above.
 
-Before deciding, two things need checking that have not been: whether Mender's OTA path
-also recreates project-wide, and whether a separate project is even picked up by
-Mender's manifest deployment. Both bear on whether "own project" is deployable here at
-all.
+Worth knowing that the obvious precedent is not the one it looks like. Verified on the
+Owl node (2026-08-06): **retina-gui is not a container at all.** It is
+`retina-gui.service`, a systemd unit running `/opt/retina-gui/src/app.py` directly on
+the host. There is exactly one compose project — `retina-node`, seven containers —
+brought up by `retina-node.service` as a oneshot. So retina-gui escapes the
+force-recreate by being outside Docker entirely, not by being a second project, and it
+is not evidence that a second project would work.
+
+Before deciding, two things still need checking: whether Mender's OTA path also
+recreates project-wide, and whether a separate compose project is picked up by Mender's
+manifest deployment at all.
 
 ## Deliberately not doing
 
