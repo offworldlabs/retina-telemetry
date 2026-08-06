@@ -1,5 +1,12 @@
 """Host metrics — the one input that does not come from the node stack.
 
+Exactly the four values the ingest spec asks for: ``cpu_pct``, ``temp_c`` and
+``disk_free_mb`` from ``NodeHealth``, and uptime for ``HeartbeatRequest``.
+Nothing else. Pi throttle flags were considered and dropped — the spec has no
+field for them, so carrying them would have meant a ``/dev/vcio`` device mount
+on the one container that talks to the internet, in exchange for data with
+nowhere to go.
+
 Three of these behave differently inside a container than the naive version
 assumes, and two of the three fail silently if you get them wrong:
 
@@ -21,8 +28,6 @@ from __future__ import annotations
 
 import logging
 import os
-import shutil
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -33,51 +38,6 @@ DEFAULT_PROC_UPTIME = Path("/proc/uptime")
 DEFAULT_THERMAL = Path("/sys/class/thermal/thermal_zone0/temp")
 DEFAULT_DISK_PATH = Path("/data")
 
-#: Bit positions in ``vcgencmd get_throttled``. The low four are "right now";
-#: the high four latch since boot, which is what catches a marginal PSU that
-#: only browns out under load.
-_THROTTLE_BITS = {
-    "under_voltage_now": 0,
-    "arm_freq_capped_now": 1,
-    "throttled_now": 2,
-    "soft_temp_limit_now": 3,
-    "under_voltage_since_boot": 16,
-    "arm_freq_capped_since_boot": 17,
-    "throttled_since_boot": 18,
-    "soft_temp_limit_since_boot": 19,
-}
-
-
-@dataclass(frozen=True)
-class ThrottleFlags:
-    raw: int
-    under_voltage_now: bool
-    arm_freq_capped_now: bool
-    throttled_now: bool
-    soft_temp_limit_now: bool
-    under_voltage_since_boot: bool
-    arm_freq_capped_since_boot: bool
-    throttled_since_boot: bool
-    soft_temp_limit_since_boot: bool
-
-    @property
-    def any_now(self) -> bool:
-        return (
-            self.under_voltage_now
-            or self.arm_freq_capped_now
-            or self.throttled_now
-            or self.soft_temp_limit_now
-        )
-
-    @property
-    def any_since_boot(self) -> bool:
-        return (
-            self.under_voltage_since_boot
-            or self.arm_freq_capped_since_boot
-            or self.throttled_since_boot
-            or self.soft_temp_limit_since_boot
-        )
-
 
 @dataclass(frozen=True)
 class HostSnapshot:
@@ -85,21 +45,6 @@ class HostSnapshot:
     temp_c: float | None
     disk_free_mb: int | None
     host_uptime_s: int | None
-    throttle: ThrottleFlags | None
-
-
-def parse_throttled(output: str) -> ThrottleFlags:
-    """Parse ``throttled=0x50005`` into flags.
-
-    Raises:
-        ValueError: if the output is not in the expected form.
-    """
-    text = output.strip()
-    _, _, value = text.partition("=")
-    raw = int(value.strip(), 16)
-    return ThrottleFlags(
-        raw=raw, **{name: bool(raw & (1 << bit)) for name, bit in _THROTTLE_BITS.items()}
-    )
 
 
 class HostReader:
@@ -118,13 +63,11 @@ class HostReader:
         proc_uptime: Path | str = DEFAULT_PROC_UPTIME,
         thermal: Path | str = DEFAULT_THERMAL,
         disk_path: Path | str = DEFAULT_DISK_PATH,
-        vcgencmd: str | None = "vcgencmd",
     ) -> None:
         self._proc_stat = Path(proc_stat)
         self._proc_uptime = Path(proc_uptime)
         self._thermal = Path(thermal)
         self._disk_path = Path(disk_path)
-        self._vcgencmd = vcgencmd
         self._previous_cpu: tuple[int, int] | None = None
 
     def read(self) -> HostSnapshot:
@@ -133,7 +76,6 @@ class HostReader:
             temp_c=self._temp_c(),
             disk_free_mb=self._disk_free_mb(),
             host_uptime_s=self._host_uptime_s(),
-            throttle=self._throttle(),
         )
 
     # ── individual reads, each best-effort ───────────────────────────
@@ -201,27 +143,4 @@ class HostReader:
             return int(float(first_field))
         except (OSError, ValueError, IndexError) as exc:
             log.debug("cannot read %s: %s", self._proc_uptime, exc)
-            return None
-
-    def _throttle(self) -> ThrottleFlags | None:
-        """Pi throttle flags, or ``None`` where unavailable.
-
-        Needs the Pi userland binary in the image *and* ``/dev/vcio`` mounted,
-        which is a device mount on the one container that talks to the
-        internet. Whether a sysfs route exists on current Pi kernels has not
-        been checked on real hardware — until it is, treat this as optional.
-        """
-        if not self._vcgencmd or shutil.which(self._vcgencmd) is None:
-            return None
-        try:
-            completed = subprocess.run(  # noqa: S603 - fixed argv, no shell
-                [self._vcgencmd, "get_throttled"],
-                capture_output=True,
-                text=True,
-                timeout=2,
-                check=True,
-            )
-            return parse_throttled(completed.stdout)
-        except (OSError, subprocess.SubprocessError, ValueError) as exc:
-            log.debug("vcgencmd get_throttled failed: %s", exc)
             return None

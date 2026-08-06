@@ -48,8 +48,6 @@ def test_maps_every_field(tmp_path):
     assert config.fc_hz == 503000000
     assert config.fs_hz == 2000000
     assert config.adsb_enabled is True
-    assert config.adsb_delay_tolerance == 2.0
-    assert config.adsb_doppler_tolerance == 5.0
 
 
 def test_altitudes_stay_in_metres(tmp_path):
@@ -74,14 +72,12 @@ def test_cpi_is_carried_even_though_the_spec_has_no_slot(tmp_path):
     assert read_config(write(tmp_path, DEFAULTS)).config.cpi_s == 0.5
 
 
-def test_absent_adsb_tolerances_are_none(tmp_path):
-    document = copy.deepcopy(DEFAULTS)
-    document["truth"]["adsb"] = {"enabled": False}
+def test_association_tolerances_are_not_collected(tmp_path):
+    """Q7 proposes sending them; the spec has no field today, so we do not read
+    them. Nothing local needs them either."""
+    config = read_config(write(tmp_path, DEFAULTS)).config
 
-    config = read_config(write(tmp_path, document)).config
-
-    assert config.adsb_enabled is False
-    assert config.adsb_delay_tolerance is None
+    assert not hasattr(config, "adsb_delay_tolerance")
 
 
 def test_absent_adsb_section_defaults_to_disabled(tmp_path):

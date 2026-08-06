@@ -220,10 +220,11 @@ turns a deliberate revocation into a registration storm.
 The four incoming interfaces and the one outgoing one. Full inventory in
 `docs/data-sources.md` §0.
 
-- `blah2.py` — poll `/api/detection` at ~4 Hz against a 2 Hz producer, dedupe on
-  `timestamp`. Also `/api/timing` for CPI overrun, and the capture status endpoints.
-  Derives liveness from the same poll: a failed poll is `down`, an advancing timestamp
-  is `up`, and a stale one is `wedged` — the state container health cannot see.
+- `blah2.py` — poll `/api/detection` at ~4 Hz and dedupe on `timestamp`. Derives liveness
+  from the same poll: a failed poll is `down`, an advancing timestamp is `up`, and a
+  stale one is `wedged` — the state container health cannot see. **Only that endpoint**;
+  `/api/timing` and the capture status endpoints have no field in the spec (§5 of
+  `data-sources.md`).
 
   **The equal-length assertion lives here, not in `wire/`.** It is a claim about whether
   the source is internally coherent, it needs no knowledge of the server, and checking at
@@ -236,9 +237,9 @@ The four incoming interfaces and the one outgoing one. Full inventory in
 - `consent.py` — opt-in state and the agreement record, read from
   `/data/retina-gui/telemetry-consent.json`. A missing file is a normal state meaning
   "not opted in", so this module is complete and testable before retina-gui writes it.
-- `host.py` — cpu, temp, disk, throttle flags. `/proc` is not namespaced, so `cpu_pct`
-  is correctly host-wide; `statvfs` *is*, so it must be called on `/data` rather than
-  `/` or it measures the container's overlay.
+- `host.py` — cpu, temp, disk, uptime, and nothing else. `/proc` is not namespaced, so
+  `cpu_pct` is correctly host-wide; `statvfs` *is*, so it must be called on `/data`
+  rather than `/` or it measures the container's overlay.
 
 `status.py` is not stage 1 — it reflects state from all three — but it is the other half
 of the contract with retina-gui and is worth writing early, since it is the only way the
@@ -346,7 +347,6 @@ stage they land in.
 | Status document path and format | stage 1 | retina-gui reads it; needs a contract either way |
 | `state` vocabulary | stage 2 | ours (`streaming`, `paused`, …) with retina-gui's `updating_*` folded in, or theirs |
 | `uptime_s`: node or process? | stage 2 | the spec does not say, and `/proc/uptime` in a container gives host uptime — so we get one by accident if not deliberate |
-| Throttle flags via `vcgencmd` | stage 1 | needs `/dev/vcio` mounted plus the Pi userland binary; verify whether a sysfs route exists on real hardware first |
 | **Own compose project, or a service in `retina-node`?** | stage 4 | see below |
 
 ### The compose placement question

@@ -1,6 +1,4 @@
-import pytest
-
-from retina_telemetry.collect.host import HostReader, parse_throttled
+from retina_telemetry.collect.host import HostReader
 
 # user nice system idle iowait irq softirq steal
 STAT_A = "cpu  100 0 100 800 0 0 0 0\ncpu0 50 0 50 400 0 0 0 0\n"
@@ -20,7 +18,6 @@ def reader(tmp_path, *, stat=STAT_A, uptime="84213.55 501234.12", temp="58312", 
         proc_uptime=tmp_path / "uptime",
         thermal=tmp_path / "temp",
         disk_path=kwargs.pop("disk_path", tmp_path),
-        vcgencmd=kwargs.pop("vcgencmd", None),
         **kwargs,
     )
 
@@ -118,48 +115,15 @@ def test_every_source_absent_is_still_a_valid_snapshot(tmp_path):
 
     snapshot = host.read()
 
-    assert snapshot == snapshot.__class__(None, None, None, None, None)
+    assert snapshot == snapshot.__class__(None, None, None, None)
 
 
-# ── throttle flags ───────────────────────────────────────────────────
-
-
-def test_throttle_absent_when_vcgencmd_is_not_installed(tmp_path):
-    assert reader(tmp_path, vcgencmd="definitely-not-a-real-binary").read().throttle is None
-
-
-def test_throttle_disabled_when_not_configured(tmp_path):
-    assert reader(tmp_path, vcgencmd=None).read().throttle is None
-
-
-def test_parse_throttled_reads_current_flags():
-    flags = parse_throttled("throttled=0x5\n")
-
-    assert flags.raw == 0x5
-    assert flags.under_voltage_now
-    assert flags.throttled_now
-    assert not flags.arm_freq_capped_now
-    assert flags.any_now
-
-
-def test_parse_throttled_reads_since_boot_flags():
-    """The high bits latch, which is what catches a marginal PSU that only
-    browns out under load."""
-    flags = parse_throttled("throttled=0x50000")
-
-    assert not flags.any_now
-    assert flags.any_since_boot
-    assert flags.under_voltage_since_boot
-    assert flags.throttled_since_boot
-
-
-def test_parse_throttled_healthy():
-    flags = parse_throttled("throttled=0x0")
-
-    assert not flags.any_now
-    assert not flags.any_since_boot
-
-
-def test_parse_throttled_rejects_nonsense():
-    with pytest.raises(ValueError):
-        parse_throttled("throttled=banana")
+def test_collects_only_what_the_spec_asks_for(tmp_path):
+    """NodeHealth has cpu_pct, temp_c and disk_free_mb; HeartbeatRequest has
+    uptime_s. Pi throttle flags were dropped for having no field to go in."""
+    assert set(vars(reader(tmp_path).read())) == {
+        "cpu_pct",
+        "temp_c",
+        "disk_free_mb",
+        "host_uptime_s",
+    }

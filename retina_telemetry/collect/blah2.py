@@ -14,6 +14,11 @@ and dedupe on ``timestamp``. Missed frames are expected and correct.
 **No unit conversion happens here.** ``delay`` is kilometres of bistatic range
 and ``timestamp`` is epoch milliseconds, because that is what blah2 produces;
 the field names say so, and ``wire/`` converts.
+
+Only ``/api/detection`` is polled. blah2-api also serves ``/api/timing`` and the
+capture status endpoints, and its ``cpi`` total would reveal that the ring buffer
+is dropping samples — but the ingest spec has no field for any of it, so we do
+not collect it.
 """
 
 from __future__ import annotations
@@ -222,28 +227,6 @@ class Blah2Client:
         self._last_change_at = now
         self._last_error = None
         return frame
-
-    def get_json(self, path: str) -> Any | None:
-        """Best-effort GET of any blah2-api endpoint. ``None`` on any failure.
-
-        Diagnostic paths hang off this rather than getting their own methods,
-        since their response shapes are not verified against a running node.
-        """
-        try:
-            response = self._session.get(
-                f"{self._base_url}/{path.lstrip('/')}", timeout=self._timeout_s
-            )
-            response.raise_for_status()
-            return response.json()
-        except Exception as exc:  # noqa: BLE001 - diagnostics must not break a beat
-            log.debug("GET %s failed: %s", path, exc)
-            return None
-
-    def timing(self) -> Any | None:
-        """Per-stage processing time. A ``cpi`` total over ``cpi_s * 1000`` ms
-        means the ring buffer is dropping samples, which nothing else reveals.
-        """
-        return self.get_json("/api/timing")
 
     def close(self) -> None:
         closer = getattr(self._session, "close", None)

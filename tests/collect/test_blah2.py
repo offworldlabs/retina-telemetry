@@ -267,21 +267,18 @@ def test_stale_window_has_a_floor_for_short_cpis():
     assert blah2.liveness is Liveness.UP
 
 
-# ── diagnostics ──────────────────────────────────────────────────────
+# ── scope ────────────────────────────────────────────────────────────
 
 
-def test_timing_returns_payload():
-    blah2, session, _ = client({"cpi": 412})
+def test_only_the_detection_endpoint_is_polled():
+    """blah2-api also serves /api/timing and the capture status endpoints, and
+    the cpi total would reveal ring-buffer loss — but the spec has no field for
+    any of it, so we do not collect it."""
+    blah2, session, _ = client(frame(1000), frame(2000))
+    blah2.poll_detection()
+    blah2.poll_detection()
 
-    assert blah2.timing() == {"cpi": 412}
-    assert session.calls == ["http://127.0.0.1:3000/api/timing"]
-
-
-def test_timing_failure_is_none_not_an_exception():
-    """Diagnostics must never break a heartbeat."""
-    blah2, _, _ = client(ConnectionError("refused"))
-
-    assert blah2.timing() is None
+    assert set(session.calls) == {"http://127.0.0.1:3000/api/detection"}
 
 
 def test_close_closes_the_session():

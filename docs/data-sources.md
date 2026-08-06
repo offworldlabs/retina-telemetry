@@ -339,7 +339,7 @@ the node that talks to the internet.
 
 | Field | Source |
 |---|---|
-| `cpu_pct`, `temp_c`, `disk_free_mb` | host `/proc`, `/sys/class/thermal`, `statvfs`; also worth reading Pi throttle flags via `vcgencmd get_throttled` |
+| `cpu_pct`, `temp_c`, `disk_free_mb` | host `/proc`, `/sys/class/thermal`, `statvfs` |
 | `blah2` | derived from the detection poll we already run — see below |
 | `adsb` | `truth.adsb.enabled` from config, plus whether the `adsb` key appears on polled frames |
 | `queue_depth` | meaningless under latest-wins — Q11 |
@@ -386,14 +386,21 @@ progress" — so this is not a mapping. The `updating_*` values are worth foldin
 a node that goes quiet mid-update is explained by them, but the vocabulary should be
 ours. See `docs/implementation-plan.md`, "Still to settle".
 
-### Two more blah2-api endpoints worth carrying
+### Available and deliberately not collected
 
-`GET /api/timing` reports per-stage processing time including a `cpi` total in ms.
-Anything over `cpi * 1000` means the ring buffer is losing samples (§2). Worth carrying
-as a derived health field even though the spec has no slot for it.
+The spec is the scope. Anything it does not ask for is not gathered, however easy it
+would be — otherwise the payload accretes fields nobody agreed to and the node ends up
+with mounts and dependencies it cannot justify.
 
-`/capture/overload-status` and `/capture/rf-status` are also available and not in the
-spec. Relevant given the RF overload incident on the Owl node.
+| Available | Why it is not collected |
+|---|---|
+| `GET /api/timing` | The `cpi` total over `cpi × 1000` ms is the only view of ring-buffer loss (§2, §5b), but there is no field for it. Would be a spec proposal, not a collection change |
+| `/capture/overload-status`, `/capture/rf-status` | Not in the spec. Relevant to the RF overload incident on Owl, but that is a local diagnosis problem |
+| Pi throttle flags | No field. `vcgencmd get_throttled` works but needs `/dev/vcio` mounted plus the Pi userland binary in the image; `/sys/class/hwmon/*/name == rpi_volt` exposes `in0_lcrit_alarm` for free, but with nowhere to send it that is moot |
+| `truth.adsb.delay_tolerance`, `doppler_tolerance` | Q7 proposes sending them so the server knows what it is comparing. Until it does, nothing local needs them |
+
+If any of these become genuinely necessary, the route is an open question to the server
+author, not a field we invent.
 
 ---
 

@@ -56,8 +56,6 @@ class NodeConfigRaw:
     cpi_s: float
     delay_max_bins: int
     adsb_enabled: bool
-    adsb_delay_tolerance: float | None
-    adsb_doppler_tolerance: float | None
 
 
 @dataclass(frozen=True)
@@ -110,17 +108,17 @@ def _map(document: dict[str, Any]) -> NodeConfigRaw:
         tx_name=_require(document, "location.tx.name", str),
         fc_hz=_require(document, "capture.fc", float),
         fs_hz=_require(document, "capture.fs", float),
-        # Not in the spec yet, but the offset in `t` scales with it and capture
-        # gaps are undetectable without it. See Q3.
+        # Not sent — the spec has no field for it (Q3 proposes one). Collected
+        # because it seeds the staleness window that derives NodeHealth.blah2.
         cpi_s=_require(document, "process.data.cpi", float),
         # Bins, not kilometres. Stage 2 derives max_range_km as
         # delay_max_bins * c / fs / 1000. See Q6.
         delay_max_bins=_require(document, "process.ambiguity.delayMax", int),
+        # Not sent. Needed locally to tell "ADS-B is off" from "ADS-B is broken"
+        # when a polled frame carries no adsb key, which is what NodeHealth.adsb
+        # reports. The association tolerances beside it in config are not
+        # collected: Q7 proposes sending them, but the spec has no field today.
         adsb_enabled=_optional(document, "truth.adsb.enabled", bool) or False,
-        # Association strictness varies node to node, so the server is
-        # comparing hypotheses made under different thresholds. See Q7.
-        adsb_delay_tolerance=_optional(document, "truth.adsb.delay_tolerance", float),
-        adsb_doppler_tolerance=_optional(document, "truth.adsb.doppler_tolerance", float),
     )
 
 
