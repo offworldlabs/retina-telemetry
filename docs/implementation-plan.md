@@ -136,7 +136,7 @@ retina-telemetry/
 │   ├── errors.py            bounded accumulator for the heartbeat errors[] field
 │   │
 │   ├── collect/             ── stage 1 ──
-│   │   ├── blah2.py         blah2-api client: /api/detection, /api/timing, capture status
+│   │   ├── blah2.py         poll, dedupe, structural validation, derived liveness
 │   │   ├── node_config.py   config.yml read + change hashing (no conversion)
 │   │   ├── identity.py      /data/mender/node_id reader — raises, never defaults
 │   │   ├── consent.py       opt-in + agreement record reader
@@ -144,7 +144,7 @@ retina-telemetry/
 │   │
 │   ├── wire/                ── stage 2 ──
 │   │   ├── units.py         km→µs, ms→s, m→ft, max_range_km derivation
-│   │   ├── detection.py     raw poll → DetectionFrame: length assert, adsb_hex normalise
+│   │   ├── detection.py     DetectionPoll → DetectionFrame: units, adsb_hex, seq
 │   │   ├── config.py        config.yml → NodeConfig
 │   │   ├── heartbeat.py     health + state + versions + errors → HeartbeatRequest
 │   │   └── registration.py  → RegisterRequest (two fields blocked: Q1, Q2)
@@ -222,6 +222,14 @@ The four incoming interfaces and the one outgoing one. Full inventory in
 
 - `blah2.py` — poll `/api/detection` at ~4 Hz against a 2 Hz producer, dedupe on
   `timestamp`. Also `/api/timing` for CPI overrun, and the capture status endpoints.
+  Derives liveness from the same poll: a failed poll is `down`, an advancing timestamp
+  is `up`, and a stale one is `wedged` — the state container health cannot see.
+
+  **The equal-length assertion lives here, not in `wire/`.** It is a claim about whether
+  the source is internally coherent, it needs no knowledge of the server, and checking at
+  the read point means a malformed frame never enters the slot at all. Mapping
+  associations down to `.hex` and synthesising nulls stay in `wire/`, because those are
+  facts about the spec rather than about blah2.
 - `node_config.py` — read the read-only mount, hash for change detection.
 - `identity.py` — the hard-error behaviour, and a test that `'Unknown'` can never
   appear in a payload.
@@ -248,8 +256,9 @@ container on the node that talks to the internet.
 - `units.py` with property tests: km→µs, ms→s, m→ft, `max_range_km` derivation. These
   are the highest-value tests in the repo — three conversions where a silent error is
   plausible and invisible on the wire.
-- `detection.py` — assert equal array lengths, synthesise `adsb_hex` nulls when ADS-B is
-  off, map association objects down to `.hex`, attach `seq` and `config_version`.
+- `detection.py` — convert km→µs and ms→s, synthesise `adsb_hex` nulls when ADS-B is off
+  (`DetectionPoll.adsb is None`), map association objects down to `.hex`, attach `seq`
+  and `config_version`. Arrays arrive already checked for equal length by `collect/`.
 - `config.py`, `heartbeat.py`, `registration.py`.
 - Every output validated against the spec's schemas.
 
@@ -317,7 +326,8 @@ through 3c first — it is independent of the detection path and the more valuab
 | Poll `/api/detection` rather than tap TCP | latest-wins transport matches a latest-value API exactly, and it needs zero changes to blah2 or blah2-api |
 | No spool for detections | the spec's transport model forbids it |
 | Own `node_id` reader | retina-gui's returns `'Unknown'` on failure; that must never reach a payload |
-| Assert array lengths at the boundary | blah2 guarantees it by construction but validates nothing |
+| Assert array lengths in `collect/`, not `wire/` | blah2 guarantees it by construction but validates nothing; source coherence needs no server knowledge, and a malformed frame should never reach the slot |
+| Liveness derived in `collect/blah2.py` | it needs the poll and the CPI, both of which live in stage 1; the wedged case is invisible to anything watching container state |
 | No docker socket | liveness falls out of the detection poll; versions come from compose env |
 | Telemetry is opt-in | explicit user action in the setup wizard; also answers Q2's "is a silent node intended" with a deliberate yes |
 | Outward status document | three failure modes must reach the operator, and we bind no ports |

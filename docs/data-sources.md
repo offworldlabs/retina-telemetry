@@ -85,8 +85,9 @@ which returns `delay.size()`. Every producer stage pushes the three vectors in l
 
 **Caveat:** nothing validates this. `Detection`'s constructor accepts three vectors of
 any lengths, and `get_nDetections()` trusts `delay.size()`, so a future desync would
-read out of bounds silently rather than throw. Assert equal length at the telemetry
-boundary regardless — a malformed frame must never reach the server.
+read out of bounds silently rather than throw. We assert equal length in
+`collect/blah2.py` regardless — a malformed frame must never reach the server, and
+checking at the read point keeps it out of the slot entirely.
 
 An empty frame serialises as three empty arrays. That is a normal, meaningful state
 (detector running, nothing detected) and the spec wants it sent.
