@@ -25,6 +25,7 @@ import re
 from pathlib import Path
 
 DEFAULT_NODE_ID_PATH = Path("/data/mender/node_id")
+DEFAULT_DEVICE_TYPE_PATH = Path("/data/mender/device_type")
 
 #: ``ret`` plus eight lowercase hex characters, per the ingest spec's ``NodeId``.
 NODE_ID_PATTERN = re.compile(r"^ret[0-9a-f]{8}$")
@@ -66,3 +67,37 @@ def read_node_id(path: Path | str = DEFAULT_NODE_ID_PATH) -> str:
         )
 
     return node_id
+
+
+def read_board_model(path: Path | str = DEFAULT_DEVICE_TYPE_PATH) -> str | None:
+    """Read the Mender device type, e.g. ``pi5-v3-arm64``.
+
+    This is the fleet's own vocabulary: Mender targets artifacts by device type,
+    so the string determines which software the board is allowed to receive.
+    That makes it more useful diagnostically than ``/proc/device-tree/model``
+    ("Raspberry Pi 5 Model B Rev 1.1"), which carries a board revision that
+    means nothing to us and is not stable in a way anyone would query on.
+
+    The file is ``key=value``, unlike ``node_id`` next to it, which is bare.
+
+    **Deliberately does not raise, where** :func:`read_node_id` **does.**
+    ``board_model`` is node-reported and diagnostic only, so losing it must
+    never stop a node registering; an identity we cannot trust must. Do not
+    "fix" the inconsistency — the two fields have different consequences.
+
+    Returns:
+        The device type, or ``None`` if it cannot be read.
+    """
+    path = Path(path)
+
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+    value = raw.strip()
+    prefix = "device_type="
+    if value.startswith(prefix):
+        value = value[len(prefix) :].strip()
+
+    return value or None

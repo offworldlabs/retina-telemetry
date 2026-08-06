@@ -1,6 +1,10 @@
 import pytest
 
-from retina_telemetry.collect.identity import IdentityUnavailable, read_node_id
+from retina_telemetry.collect.identity import (
+    IdentityUnavailable,
+    read_board_model,
+    read_node_id,
+)
 
 
 def write(tmp_path, contents):
@@ -52,6 +56,37 @@ def test_invalid_identities_raise(tmp_path, contents, why):
     fallback."""
     with pytest.raises(IdentityUnavailable):
         read_node_id(write(tmp_path, contents))
+
+
+def write_device_type(tmp_path, contents):
+    path = tmp_path / "device_type"
+    path.write_text(contents, encoding="utf-8")
+    return path
+
+
+def test_board_model_strips_the_key_prefix(tmp_path):
+    """Unlike node_id next to it, this file is key=value."""
+    path = write_device_type(tmp_path, "device_type=pi5-v3-arm64\n")
+
+    assert read_board_model(path) == "pi5-v3-arm64"
+
+
+def test_board_model_accepts_a_bare_value(tmp_path):
+    assert read_board_model(write_device_type(tmp_path, "pi5-v3-arm64")) == "pi5-v3-arm64"
+
+
+def test_board_model_missing_file_is_none_not_an_error(tmp_path):
+    """Diagnostic only, so losing it must never stop a node registering — the
+    opposite of read_node_id, deliberately."""
+    assert read_board_model(tmp_path / "absent") is None
+
+
+def test_board_model_empty_file_is_none(tmp_path):
+    assert read_board_model(write_device_type(tmp_path, "device_type=\n")) is None
+
+
+def test_board_model_unreadable_path_is_none(tmp_path):
+    assert read_board_model(tmp_path) is None
 
 
 def test_never_returns_a_default(tmp_path):

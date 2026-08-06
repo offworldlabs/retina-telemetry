@@ -105,6 +105,29 @@ is the expensive path.
 
 ---
 
+### Q15 — `board_model` will not look like your example
+
+Your example is `"raspberrypi5-4gb"`. We are sending the **Mender device type**, read
+from `/data/mender/device_type`, which on a current node is:
+
+```
+pi5-v3-arm64
+```
+
+Same shape — a device-type slug rather than a hardware description — but a different
+vocabulary. We picked it because Mender targets artifacts by device type, so it is the
+string that decides which software a board is allowed to receive, which makes it the
+more useful diagnostic. The alternative was `/proc/device-tree/model`
+(`"Raspberry Pi 5 Model B Rev 1.1"`), which carries a board revision that means nothing
+to either of us.
+
+Flagging it only because if you are parsing or grouping on this field, the values will
+not be what the example implies. The field is free text in the schema, so nothing breaks
+either way. If you would rather have RAM size or hardware revision in there, that is a
+second field rather than a different source — the device type does not carry them.
+
+---
+
 ## OPS
 
 ### Q9 — cadence is "server-issued" but nothing carries it

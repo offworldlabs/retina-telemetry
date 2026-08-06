@@ -196,6 +196,37 @@ by the Ansible build). Resolution order:
 `^ret[0-9a-f]{8}$` pattern holds, and a hard local error on a missing file is both
 correct and achievable. Path 3 only fires on non-Pi hardware in practice.
 
+### `board_model` comes from the same directory
+
+`RegisterRequest.board_model` is required, node-reported and diagnostic only. Take it
+from **`/data/mender/device_type`**, which sits beside `node_id` — so it costs no new
+interface, no new mount, and the same read-once-at-boot lifecycle.
+
+On the Owl node (2026-08-06) it contains:
+
+```
+device_type=pi5-v3-arm64
+```
+
+Note the format differs from its neighbour: `device_type` is `key=value`, `node_id` is
+bare. Strip the prefix.
+
+Why this rather than `/proc/device-tree/model`, which gives
+`"Raspberry Pi 5 Model B Rev 1.1"`:
+
+- Mender targets artifacts **by device type**, so this string decides which software the
+  board is allowed to receive. "Which build stream is this node on" is a question
+  someone will actually ask; "what board revision is it" is not.
+- The spec's own example, `"raspberrypi5-4gb"`, is a device-type slug rather than a
+  hardware description — so this matches the shape the author had in mind, even though
+  the value differs. See Q15.
+- It is stable. The device-tree string carries a board revision that changes without
+  meaning anything to us.
+
+Unlike `node_id`, a missing `board_model` is **not** fatal — it is diagnostic only, so
+losing it must never stop a node registering. The two readers differ in failure
+behaviour on purpose.
+
 ### Two landmines
 
 1. `retina-gui/src/app.py:96` — `get_node_id()` returns the **string `'Unknown'`** when
@@ -294,10 +325,8 @@ and "stuck in 403 because the operator turned Mender off."
 
 ### `board_model`
 
-`RegisterRequest.board_model` is required, node-reported and diagnostic only
-(`"raspberrypi5-4gb"` in the spec's example). Not covered elsewhere in this document and
-not a config field — it comes off the host, presumably `/proc/device-tree/model`.
-Unverified; check before stage 2 builds the registration payload.
+Not a config field. It comes from `/data/mender/device_type` — see §3, where it sits
+beside `node_id`.
 
 ---
 
