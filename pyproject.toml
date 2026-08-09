@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Node-side telemetry uplink for the RETINA passive radar fleet"
 requires-python = ">=3.11"
 dependencies = [
+    "pydantic>=2.6",
     "requests>=2.31",
     "PyYAML>=6.0",
 ]
@@ -12,6 +13,7 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "ruff>=0.5",
+    "datamodel-code-generator>=0.25",
 ]
 
 [build-system]
@@ -31,3 +33,10 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+# Generated, so its layout is datamodel-codegen's business, not ours: E501
+# because the spec's descriptions are longer than our limit, I001 because the
+# generator does not separate import groups. Fixing either by hand would make
+# `tools/generate-models.sh --check` fail on the next regeneration.
+"retina_telemetry/wire/models.py" = ["E501", "I001"]

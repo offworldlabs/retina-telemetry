@@ -23,7 +23,12 @@ assumes, and two of the three fail silently if you get them wrong:
   filesystem we want and ``statvfs("/")`` returns the right answer by accident.
   It is still wrong — move the data-root, or give a node a separate Docker
   partition, and it silently starts reporting something else.
-* ``/proc/uptime`` likewise gives *host* uptime, not this process's.
+* ``/proc/uptime`` likewise gives *host* uptime, not this process's — which is
+  what ``HeartbeatRequest.uptime_s`` wants. The spec does not say whose, but the
+  heartbeat is the node's account of itself and "the node" is the board, so a
+  board that reboots repeatedly is the signal worth carrying. blah2 reports its
+  own uptime at ``/api/timing`` and this process knows its own; neither is what
+  the field means.
 
 Every read is independently best-effort and yields ``None`` on failure. All of
 them absent is a valid running state that still heartbeats.
