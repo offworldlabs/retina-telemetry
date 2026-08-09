@@ -140,14 +140,16 @@ retina-telemetry/
 │   │   ├── node_config.py   config.yml read + change hashing (no conversion)
 │   │   ├── identity.py      /data/mender/node_id reader — raises, never defaults
 │   │   ├── consent.py       opt-in + agreement record reader
-│   │   └── host.py          cpu / temp / disk / throttle from /proc, /sys, statvfs
+│   │   └── host.py          cpu / temp / disk / uptime from /proc, /sys, statvfs
 │   │
 │   ├── wire/                ── stage 2 ──
+│   │   ├── models.py        GENERATED from the spec — tools/generate-models.sh
 │   │   ├── units.py         km→µs, ms→s, m→ft, max_range_km derivation
 │   │   ├── detection.py     DetectionPoll → DetectionFrame: units, adsb_hex, seq
-│   │   ├── config.py        config.yml → NodeConfig
+│   │   ├── config.py        NodeConfigRaw → NodeConfig
 │   │   ├── heartbeat.py     health + state + versions + errors → HeartbeatRequest
-│   │   └── registration.py  → RegisterRequest (two fields blocked: Q1, Q2)
+│   │   ├── registration.py  → RegisterRequest (two fields blocked: Q1, Q2)
+│   │   └── serialise.py     required nulls survive, optional ones are dropped
 │   │
 │   └── comms/               ── stage 3 ──
 │       ├── client.py   3a   session, auth, backoff, Retry-After, clock offset
@@ -159,6 +161,12 @@ retina-telemetry/
 ├── tests/
 │   ├── collect/  wire/  comms/    mirroring the package
 │   └── fakes/               scripted server, captured blah2-api responses
+├── tools/
+│   ├── generate-models.sh   regenerate wire/models.py; --check guards drift
+│   ├── live-probe.sh        run the probes on a node over ssh
+│   ├── probe_collection.py  stage 1 — tests the container environment
+│   ├── probe_wire.py        stage 2 — real data through the builders
+│   └── probe_report.py      shared reporting, so exit codes aggregate
 ├── docs/
 ├── deploy/                  compose entry — see the packaging note in stage 4
 ├── pyproject.toml
@@ -255,6 +263,9 @@ container on the node that talks to the internet.
 
 ### Stage 2 — construction and packaging
 
+- `models.py` — **generated** from `docs/node-ingest-v1.yml`, never hand-edited.
+  `tools/generate-models.sh` regenerates; `--check` fails if the checked-in copy is
+  stale, which is the CI guard.
 - `units.py` with property tests: km→µs, ms→s, m→ft, `max_range_km` derivation. These
   are the highest-value tests in the repo — three conversions where a silent error is
   plausible and invisible on the wire.
@@ -262,14 +273,46 @@ container on the node that talks to the internet.
   (`DetectionPoll.adsb is None`), map association objects down to `.hex`, attach `seq`
   and `config_version`. Arrays arrive already checked for equal length by `collect/`.
 - `config.py`, `heartbeat.py`, `registration.py`.
-- Every output validated against the spec's schemas.
+- `serialise.py` — `to_wire`, which is what payloads must go through. See below.
 
 **Deliverable:** given stage 1's output, valid wire payloads. Still no network.
+
+**Traceability is the organising principle**, because a passthrough layer that hides its
+mappings is worthless. Builders take stage 1's own types in their signatures rather than
+dictionaries, so anything they need that stage 1 cannot collect is a keyword-only
+argument whose docstring names the module that will supply it; every builder carries a
+field map in its docstring; and `wire/__init__.py` holds the complete provenance for all
+four payloads, including the rows marked "caller" that mark where `state.py` and stage 3
+plug in.
 
 **Blocked, and scoped around:** the registration payload needs `beam_width_deg` /
 `beam_azimuth_deg` (Q1) and the agreement record (Q2). The other eleven `NodeConfig`
 fields, the detection frame and the heartbeat body are all unblocked. Build the seam,
-leave the two fields open.
+leave the two fields open. `build_node_config` and `build_registration` therefore raise
+on a real node today — that is tested, but it means neither has executed end to end
+against live data.
+
+#### Serialisation has one rule, and `exclude_none` breaks it
+
+Payloads go out through `wire.to_wire`, not `model_dump(exclude_none=True)`:
+
+> **Drop a `None` only if the field is optional. Keep it if the spec requires it, even
+> when its value is null.**
+
+`exclude_none=True` is the obvious choice and is wrong exactly once.
+`NodeConfig.beam_azimuth_deg` is *required* and *nullable* — `type: [number, "null"]`
+and listed under `required` — because `null` is how the spec spells
+broadside/omnidirectional. Dropping it produces a payload the server rejects, and
+`NodeConfig` is nested inside `RegisterRequest`, so the mistake propagates to the one
+request a node cannot recover from failing.
+
+It is the only field in the spec with that combination; the other nullable declaration
+is `adsb_hex`'s *items*, which live inside a list and are untouched. One field is
+exactly the number that gets missed, which is why the rule is derived from
+`is_required()` on the generated models rather than written as a list of exceptions — a
+spec revision cannot silently invalidate it.
+
+Found by `tools/probe_wire.py` printing a real payload, not by unit tests.
 
 ### Stage 3a — the machinery
 
@@ -330,6 +373,9 @@ through 3c first — it is independent of the detection path and the more valuab
 | Own `node_id` reader | retina-gui's returns `'Unknown'` on failure; that must never reach a payload |
 | Assert array lengths in `collect/`, not `wire/` | blah2 guarantees it by construction but validates nothing; source coherence needs no server knowledge, and a malformed frame should never reach the slot |
 | Liveness derived in `collect/blah2.py` | it needs the poll and the CPI, both of which live in stage 1; the wedged case is invisible to anything watching container state |
+| Payload models generated from the spec | the spec is someone else's contract and drift is the failure mode; generation makes "the spec is the scope" mechanical, and brings the spec's own constraints along — `node_id="Unknown"` and `config_version=0` are rejected at construction without anyone remembering |
+| Payloads serialised via `wire.to_wire` | `exclude_none=True` drops `beam_azimuth_deg`, which is required *and* nullable, producing a payload the server rejects |
+| `uptime_s` is the device's | the heartbeat is the node's account of itself and "the node" is the board. blah2 reports its own at `/api/timing` and this process knows its own; neither is what the field means |
 | No docker socket | liveness falls out of the detection poll; versions come from compose env |
 | Telemetry is opt-in | explicit user action in the setup wizard; also answers Q2's "is a silent node intended" with a deliberate yes |
 | Outward status document | three failure modes must reach the operator, and we bind no ports |
@@ -342,12 +388,10 @@ stage they land in.
 
 | Question | Lands in | Options |
 |---|---|---|
-| Payload models: generated from the spec, or hand-written? | stage 0 | codegen + CI drift check, hand-written, or hand-written with a schema test |
-| Mock: Prism, an in-process fake, or both? | stage 0 / 3a | Prism validates shape; only a scriptable fake can force 401/409/429 sequences |
+| Mock: Prism, an in-process fake, or both? | stage 3a | Prism validates shape; only a scriptable fake can force 401/409/429 sequences |
 | Missing `node_id`: exit non-zero, or hold and re-check? | stage 3b | crash-loop is honest but noisy; holding keeps the status document fresh |
-| Status document path and format | stage 1 | retina-gui reads it; needs a contract either way |
-| `state` vocabulary | stage 2 | ours (`streaming`, `paused`, …) with retina-gui's `updating_*` folded in, or theirs |
-| `uptime_s`: node or process? | stage 2 | the spec does not say, and `/proc/uptime` in a container gives host uptime — so we get one by accident if not deliberate |
+| Status document path and format | stage 3b | retina-gui reads it; needs a contract either way |
+| `state` vocabulary | stage 3b | ours (`streaming`, `paused`, …) with retina-gui's `updating_*` folded in, or theirs. `build_heartbeat` takes it as a string, so the decision sits with the lifecycle |
 | **Own compose project, or a service in `retina-node`?** | stage 4 | see below |
 
 ### The compose placement question

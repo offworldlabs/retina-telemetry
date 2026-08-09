@@ -19,8 +19,10 @@ Nothing in the stack pushes to it — there is no event bus and it binds no port
 input is a poll or a file read, and the status document is how a failure reaches the
 operator.
 
-**Status:** planning. No code yet. The design is in [`docs/`](docs/), and two questions
-with the server team are blocking registration.
+**Status:** stages 1 and 2 built — collection and construction, 177 tests, both verified
+against a live node with `tools/live-probe.sh`. Stage 3 (communication) is next and does
+not exist yet. Two questions with the server team still block registration; everything
+else is unblocked.
 
 ## Documents
 
@@ -34,14 +36,32 @@ with the server team are blocking registration.
 Staged by layer rather than by endpoint, so that the retry, auth and response-handling
 machinery shared by all four endpoints gets written once instead of four times.
 
-| Stage | Owns | Knows about |
-|---|---|---|
-| **1 — Collection** | the interfaces to the rest of the node stack | the node only |
-| **2 — Construction** | turning what we collected into wire payloads | both sides |
-| **3 — Communication** | `3a` machinery, `3b` lifecycle, `3c` the two disciplines | the server only |
+| Stage | Owns | Knows about | |
+|---|---|---|---|
+| **1 — Collection** | the interfaces to the rest of the node stack | the node only | built |
+| **2 — Construction** | turning what we collected into wire payloads | both sides | built |
+| **3 — Communication** | `3a` machinery, `3b` lifecycle, `3c` the two disciplines | the server only | — |
 
 Stage 3 knows nothing about radar; stage 1 knows nothing about the server. Stages 1 and
-2 are testable with no server and no mock.
+2 are testable with no server and no mock — which is how they were built, since the two
+blocking questions are upstream of us.
+
+The payload models in `wire/models.py` are **generated** from the spec
+(`tools/generate-models.sh`), so the server's own constraints do the validating and a
+revision upstream shows exactly which fields moved.
+
+## Testing against a real node
+
+```
+tools/live-probe.sh owl        # both stages
+tools/live-probe.sh owl 2      # wire only
+```
+
+Ships the package over ssh and runs it in a stock container with the node's paths
+mounted read-only. Nothing is built, nothing is pushed to a registry, nothing persists.
+Both stages have found bugs this way that unit tests structurally could not — stage 1's
+probe revealed that Docker's data-root sits on `/data`, and stage 2's revealed a
+required-but-nullable field being dropped during serialisation.
 
 ## Design in one paragraph
 
