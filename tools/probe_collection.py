@@ -16,55 +16,24 @@ from __future__ import annotations
 
 import sys
 import time
-import traceback
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from retina_telemetry.collect import consent, host, identity, node_config  # noqa: E402
 from retina_telemetry.collect.blah2 import Blah2Client  # noqa: E402
-
-GREEN, RED, YELLOW, DIM, BOLD, RESET = (
-    "\033[32m",
-    "\033[31m",
-    "\033[33m",
-    "\033[2m",
-    "\033[1m",
-    "\033[0m",
+from tools.probe_report import (  # noqa: E402
+    BOLD,
+    DIM,
+    RESET,
+    bad,
+    check,
+    note,
+    ok,
+    probe,
+    section,
+    summarise,
 )
-
-failures = 0
-
-
-def section(title: str) -> None:
-    print(f"\n{BOLD}── {title} {'─' * max(0, 58 - len(title))}{RESET}")
-
-
-def ok(label: str, value: object = "") -> None:
-    print(f"  {GREEN}✓{RESET} {label}{f'  {DIM}{value}{RESET}' if value != '' else ''}")
-
-
-def bad(label: str, value: object = "") -> None:
-    global failures
-    failures += 1
-    print(f"  {RED}✗{RESET} {label}{f'  {DIM}{value}{RESET}' if value != '' else ''}")
-
-
-def note(label: str, value: object = "") -> None:
-    print(f"  {YELLOW}·{RESET} {label}{f'  {DIM}{value}{RESET}' if value != '' else ''}")
-
-
-def check(label: str, condition: bool, value: object = "") -> None:
-    (ok if condition else bad)(label, value)
-
-
-def probe(title: str, fn) -> None:
-    section(title)
-    try:
-        fn()
-    except Exception:
-        bad(f"raised unexpectedly:\n{traceback.format_exc()}")
-
 
 # ── identity ─────────────────────────────────────────────────────────
 
@@ -275,12 +244,7 @@ def main() -> int:
     probe("blah2.py", probe_blah2)
     probe("host.py", probe_host)
 
-    print()
-    if failures:
-        print(f"{RED}{BOLD}{failures} check(s) failed{RESET}")
-    else:
-        print(f"{GREEN}{BOLD}all checks passed{RESET}")
-    return failures
+    return summarise("stage 1")
 
 
 if __name__ == "__main__":

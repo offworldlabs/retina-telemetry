@@ -4,7 +4,8 @@ The node-side telemetry uplink for the RETINA passive radar fleet. One container
 node, owning everything sent to the server: registration, detection streaming,
 heartbeat, config sync. Nothing else on the node talks to `api.retina.fm`.
 
-**Status: planning complete, no code yet.** Read `docs/` before writing anything.
+**Status: stages 1 and 2 built. Stage 3 not started.** Read `docs/` before writing
+anything — the reasoning behind most of the code is there rather than in the code.
 
 ## Read these first
 
@@ -29,6 +30,9 @@ in `comms/`, or an OpenAPI type in `collect/`, means the boundary has leaked.
 
 Package layout is `collect/` → `wire/` → `comms/`, with `state.py`, `status.py` and
 `errors.py` at the top level. Not `build/` — it is in `.gitignore`.
+
+**Status: stages 1 and 2 built** (177 tests), both verified against the Owl node via
+`tools/live-probe.sh`. Stage 3 is next and no part of it exists yet.
 
 Corollary: **all unit conversion happens in stage 2.** Stage 1 hands over source units
 under names that say so — `delay_km`, `timestamp_ms`, `rx_alt_m` — and stage 2 emits the
@@ -83,6 +87,13 @@ Full detail and citations in `docs/data-sources.md`. The short version:
   isn't one yet — but read it anyway: no Mender means registration sits in `403` forever.
 - **Nothing in the stack pushes to us.** No event bus, no inbound ports. Every input is
   a poll or a file read, including "the user changed the config".
+- **`wire/models.py` is generated.** Regenerate with `tools/generate-models.sh`; never
+  hand-edit it, and `--check` will catch you.
+- **Never serialise a payload with `exclude_none=True`.** Use `wire.to_wire`.
+  `beam_azimuth_deg` is required *and* nullable — `null` means omnidirectional — so
+  dropping it produces a payload the server rejects, and it is nested inside
+  `RegisterRequest`. It is the only such field in the spec, which is exactly why it gets
+  missed.
 
 ## Conventions
 
