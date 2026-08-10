@@ -472,9 +472,9 @@ and `PUT` anyway, so it self-heals. What is lost is the ability to distinguish "
 restarting for a config change" from "node fell over" — and a config apply is exactly
 when a node is likely to break.
 
-**Decided: this ships as a Docker container**, not as a host service. The remaining
-question is only whether it is a service inside `retina-node` or its own compose
-project — which is why `deploy/` has a slot in the tree above.
+**Decided: a service inside `retina-node`.** Not its own compose project, and not a host
+service. Settled 2026-08-10 by reading Mender's docker-compose update module on the Owl
+node, which answers both checks below.
 
 Worth knowing that the obvious precedent is not the one it looks like. Verified on the
 Owl node (2026-08-06): **retina-gui is not a container at all.** It is
@@ -484,9 +484,32 @@ brought up by `retina-node.service` as a oneshot. So retina-gui escapes the
 force-recreate by being outside Docker entirely, not by being a second project, and it
 is not evidence that a second project would work.
 
-Before deciding, two things still need checking: whether Mender's OTA path also
-recreates project-wide, and whether a separate compose project is picked up by Mender's
-manifest deployment at all.
+Both checks came back against a separate project:
+
+**Mender's OTA path recreates project-wide too.**
+`/usr/share/mender/modules/v3/docker-compose` runs
+`docker compose --project-name X down` followed by `up`. So the teardown is not unique to
+a config apply — an OS or stack update does the same thing, and no placement avoids it.
+
+**One docker-compose artifact per device.** The module's `PERSISTENT_STORE` is a single
+global path, `/data/mender-docker-compose`, holding one `current/`. A second compose
+project is therefore not a second compose file but a *second Mender artifact* competing
+for the same store, which would replace the first. That is not a cost, it is a
+prohibition.
+
+So `deploy/` in the tree above is not needed after all: the entry goes in
+`retina-node/docker-compose.yml` alongside every other service.
+
+**What that costs, stated plainly.** Every config apply and every OTA update recreates
+this container along with the rest of the stack, so it stops reporting for the few
+seconds that takes, and `seq` resets. What is lost is the ability to distinguish "node
+restarting for a config change" from "node fell over".
+
+Mitigating it is cheap and belongs in retina-gui rather than here: the container is
+already exempt from `depends_on`, and the restart could exclude it by name
+(`docker compose up -d --force-recreate --no-recreate retina-telemetry` does not compose
+cleanly, but `docker compose restart` on the specific services would). That is a small
+change to `routes/mode.py`, not a reason to fight Mender's deployment model.
 
 ## Deliberately not doing
 
