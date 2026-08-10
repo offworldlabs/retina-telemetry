@@ -10,8 +10,8 @@ build/
 .coverage
 htmlcov/
 
-# Never commit a node's credentials or cached server state
+# Never commit a node's credentials. The bearer token is the only durable
+# state the service keeps; everything else is re-obtained from the server.
 *.token
 token
-state.json
 .env
