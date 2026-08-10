@@ -75,6 +75,12 @@ class NodeState(StrEnum):
 
     #: From here on the node can heartbeat, so these are what the server sees.
     STREAMING = "streaming"
+    #: Permitted to stream, but blah2-api is not answering so there is nothing
+    #: to send. Reported rather than "streaming" because the server flags a node
+    #: claiming to stream while no frames arrive — and it would be right to.
+    #: Saying so directly puts the answer beside health.blah2 rather than
+    #: leaving the server to infer it.
+    NO_DETECTIONS = "no_detections"
     #: Told to stop by streaming_allowed, still beating.
     PAUSED = "paused"
     #: The server refused our token. Streaming stops, beating continues so the
@@ -83,7 +89,12 @@ class NodeState(StrEnum):
 
     @property
     def reaches_the_server(self) -> bool:
-        return self in {NodeState.STREAMING, NodeState.PAUSED, NodeState.REVOKED}
+        return self in {
+            NodeState.STREAMING,
+            NodeState.NO_DETECTIONS,
+            NodeState.PAUSED,
+            NodeState.REVOKED,
+        }
 
 
 def derive_state(
@@ -93,12 +104,19 @@ def derive_state(
     opted_in: bool,
     has_agreement: bool,
     registering: bool = False,
+    detections_flowing: bool | None = None,
 ) -> NodeState:
     """Work out what the node is doing, in order of precedence.
 
     Order matters and is not arbitrary: it runs from the conditions furthest
     outside our control to those nearest. An opted-out node's missing identity
     is not worth reporting, because nothing would be done about it either way.
+
+    Args:
+        detections_flowing: whether blah2-api answered the last poll, from
+            ``Blah2Client.last_poll_ok``. ``None`` means we have not polled yet,
+            which does not downgrade the state — reporting no detections before
+            looking would be a guess, and the first poll is a second away.
     """
     if not opted_in:
         return NodeState.OPTED_OUT
@@ -119,6 +137,8 @@ def derive_state(
         return NodeState.AWAITING_CONFIG
     if not snapshot.streaming_allowed:
         return NodeState.PAUSED
+    if detections_flowing is False:
+        return NodeState.NO_DETECTIONS
     return NodeState.STREAMING
 
 
@@ -146,6 +166,10 @@ def explain(state: NodeState) -> str | None:
         NodeState.AWAITING_CONFIG: (
             "registered, but waiting to send its configuration before it can report. "
             "This is normal for a few seconds after a restart."
+        ),
+        NodeState.NO_DETECTIONS: (
+            "registered and permitted to stream, but blah2-api is not answering, so there "
+            "is nothing to send. The heartbeat continues and reports it."
         ),
         NodeState.REVOKED: (
             "the server rejected this node's token. Detections have stopped; heartbeats "

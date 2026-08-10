@@ -113,6 +113,48 @@ def test_a_revoked_token_outranks_awaiting_config(state):
     assert derive_state(state.snapshot(), **ready(state)) is NodeState.REVOKED
 
 
+def test_no_detections_when_blah2_is_unreachable(state):
+    """The server flags a node claiming to stream while no frames arrive, and
+    it would be right to. Saying so directly puts the answer beside
+    health.blah2 instead of leaving the server to infer it."""
+    state.store_token("tok_abc", node_ref="nd1", config_version=7)
+
+    derived = derive_state(state.snapshot(), **ready(state), detections_flowing=False)
+
+    assert derived is NodeState.NO_DETECTIONS
+    assert derived.reaches_the_server
+
+
+def test_detections_flowing_is_streaming(state):
+    state.store_token("tok_abc", node_ref="nd1", config_version=7)
+
+    assert (
+        derive_state(state.snapshot(), **ready(state), detections_flowing=True)
+        is NodeState.STREAMING
+    )
+
+
+def test_not_having_polled_yet_does_not_downgrade(state):
+    """None means we have not looked. Reporting no detections before looking
+    would be a guess, and the first poll is a second away."""
+    state.store_token("tok_abc", node_ref="nd1", config_version=7)
+
+    assert (
+        derive_state(state.snapshot(), **ready(state), detections_flowing=None)
+        is NodeState.STREAMING
+    )
+
+
+def test_being_paused_outranks_having_no_detections(state):
+    """Told to stop is a more useful thing to report than nothing to send."""
+    state.store_token("tok_abc", node_ref="nd1", config_version=7)
+    state.apply_levels(streaming_allowed=False)
+
+    assert (
+        derive_state(state.snapshot(), **ready(state), detections_flowing=False) is NodeState.PAUSED
+    )
+
+
 def test_the_derived_state_cannot_disagree_with_may_stream(state):
     """The whole reason it is derived rather than assigned."""
     state.store_token("tok_abc", node_ref="nd1", config_version=7)
@@ -131,7 +173,12 @@ def test_only_states_a_node_can_report_reach_the_server():
     """The others describe a node that cannot build a heartbeat at all."""
     reaching = {s for s in NodeState if s.reaches_the_server}
 
-    assert reaching == {NodeState.STREAMING, NodeState.PAUSED, NodeState.REVOKED}
+    assert reaching == {
+        NodeState.STREAMING,
+        NodeState.NO_DETECTIONS,
+        NodeState.PAUSED,
+        NodeState.REVOKED,
+    }
 
 
 def test_every_blocked_state_explains_itself():
@@ -141,6 +188,7 @@ def test_every_blocked_state_explains_itself():
         NodeState.OPTED_OUT,
         NodeState.NO_IDENTITY,
         NodeState.NO_AGREEMENT,
+        NodeState.NO_DETECTIONS,
         NodeState.REVOKED,
     ):
         assert explain(state)

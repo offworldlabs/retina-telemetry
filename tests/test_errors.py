@@ -59,18 +59,67 @@ def test_a_repeated_fault_survives_eviction():
     assert any("persistent" in entry for entry in errors.snapshot())
 
 
-def test_draining_clears():
+def test_a_committed_batch_clears_what_it_carried():
     errors = Errors()
     errors.add("blah2 unreachable")
 
-    drained = errors.drain()
+    batch = errors.take()
+    batch.commit()
 
-    assert drained == ["blah2 unreachable"]
+    assert batch.messages == ["blah2 unreachable"]
+    assert errors.snapshot() == []
+
+
+def test_taking_a_batch_does_not_clear_it():
+    """The spec says the list can be cleared once a beat is acknowledged. A
+    beat that never lands must lose nothing — an unreachable server is itself
+    one of the faults being reported."""
+    errors = Errors()
+    errors.add("blah2 unreachable")
+
+    errors.take()  # sent, but never acknowledged
+
+    assert errors.snapshot() == ["blah2 unreachable"]
+
+
+def test_faults_arriving_mid_flight_survive_the_commit():
+    """Only the counts the batch captured are discarded, so a fault recorded
+    while the request was in flight is carried by the next beat."""
+    errors = Errors()
+    errors.add("blah2 unreachable")
+
+    batch = errors.take()
+    errors.add("config unreadable")
+    batch.commit()
+
+    assert errors.snapshot() == ["config unreadable"]
+
+
+def test_a_repeat_arriving_mid_flight_keeps_its_count():
+    errors = Errors()
+    errors.add("flapping")
+
+    batch = errors.take()
+    errors.add("flapping")
+    errors.add("flapping")
+    batch.commit()
+
+    assert errors.snapshot() == ["flapping (x2)"]
+
+
+def test_committing_twice_is_harmless():
+    errors = Errors()
+    errors.add("blah2 unreachable")
+    batch = errors.take()
+
+    batch.commit()
+    batch.commit()
+
     assert errors.snapshot() == []
 
 
 def test_snapshot_does_not_clear():
-    """The status document reads without consuming; only a heartbeat drains."""
+    """The status document reads without consuming."""
     errors = Errors()
     errors.add("blah2 unreachable")
 
