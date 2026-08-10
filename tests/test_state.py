@@ -18,7 +18,7 @@ def state(path):
 
 
 def registered(state):
-    state.store_token("tok_abc123", node_ref="nd4f2k9xq7m3b8vc", config_version=7)
+    state.store_token("tok_abc123", node_ref="nde4f2k9xq7m3b8", config_version=7)
     return state
 
 
@@ -212,7 +212,7 @@ def test_re_registering_clears_the_rejection(state):
     registered(state)
     state.reject_token()
 
-    state.store_token("tok_new", node_ref="nd4f2k9xq7m3b8vc", config_version=8)
+    state.store_token("tok_new", node_ref="nde4f2k9xq7m3b8", config_version=8)
 
     assert not state.snapshot().token_rejected
 
@@ -221,7 +221,7 @@ def test_the_token_never_appears_in_a_repr(state):
     registered(state)
 
     assert "tok_abc123" not in repr(state)
-    assert "nd4f2k9xq7m3b8vc" in repr(state)
+    assert "nde4f2k9xq7m3b8" in repr(state)
 
 
 def test_the_token_never_appears_in_the_redacted_view(state):

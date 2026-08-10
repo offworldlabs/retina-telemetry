@@ -108,7 +108,10 @@ class State:
     scripted: dict[str, list[ScriptedResponse]] = field(default_factory=dict)
 
     token: str | None = None
-    node_ref: str = "nd4f2k9xq7m3b8vc"
+    #: ^(nde|sim)[0-9a-z]{12}$ — fifteen characters. The old fixture was
+    #: sixteen and would not have matched, which is the sort of thing a
+    #: mock quietly gets away with until the real server does not.
+    node_ref: str = "nde4f2k9xq7m3b8"
     config_version: int = 1
     #: The configuration behind the active version, so a resend of something
     #: identical does not create a new one.

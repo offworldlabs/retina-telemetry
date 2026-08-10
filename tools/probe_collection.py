@@ -97,14 +97,14 @@ def probe_node_config() -> None:
 
 def probe_consent() -> None:
     record = consent.read_consent()
-    ok(f"read without raising  {BOLD}opted_in={record.opted_in}{RESET}")
+    ok(f"read without raising  {BOLD}complete={record.complete}{RESET}")
 
-    if record == consent.DENIED:
-        note("DENIED", "expected — nothing writes the record yet (Q2)")
+    if record == consent.NONE_GIVEN:
+        note(f"missing: {record.missing}", "expected — nothing writes them yet (Q2)")
     check(
-        "may_transmit agrees with what was read",
-        record.may_transmit == (record.opted_in and record.agreement is not None),
-        f"may_transmit={record.may_transmit}",
+        "may_stream agrees with the licence record",
+        record.may_stream == (record.licence is not None),
+        f"may_stream={record.may_stream}",
     )
 
     path = consent.DEFAULT_CONSENT_PATH

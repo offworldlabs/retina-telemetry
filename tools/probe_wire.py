@@ -239,14 +239,19 @@ def probe_registration() -> None:
 
         import dataclasses
 
-        from retina_telemetry.collect.consent import Agreement, Consent
+        from retina_telemetry.collect.consent import (
+            AcceptanceRecord,
+            Consent,
+            PublicationChoice,
+        )
 
         simulated = build_registration(
             node_id=node_id,
             board_model=board_model,
             consent=Consent(
-                opted_in=True,
-                agreement=Agreement(version="2026-07-01", accepted_at="2026-07-31T09:12:00Z"),
+                licence=AcceptanceRecord("2026-07-01", "2026-07-31T09:12:00Z"),
+                remote_management=AcceptanceRecord("2026-07-01", "2026-07-31T09:12:00Z"),
+                publication=PublicationChoice("2026-07-01", "2026-07-31T09:12:00Z", "public"),
             ),
             config=dataclasses.replace(raw, beam_width_deg=60.0),
         )

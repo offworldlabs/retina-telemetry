@@ -1,6 +1,7 @@
 # Open questions
 
 Awaiting answers from the author of `docs/node-ingest-v1.yml`. Sent 2026-08-04.
+**Revised spec received 2026-08-10** — what it answered is marked below.
 
 Status: **BLOCKING** = cannot ship a registering node without it. **WIRE** = changes
 the payload, cheap now and expensive after nodes are in the field. **OPS** = can be
@@ -21,7 +22,23 @@ sensible default `beam_width_deg` and `beam_azimuth_deg: null`, and add real UI 
 directional installs exist. Needs confirmation that a placeholder width is not worse
 than useless to the solver.
 
-### Q2 — no agreement record exists to send
+### Q2 — no agreement records exist to send
+
+**The 2026-08-10 revision made this larger, not smaller.** One `agreement` became three
+separately versioned records — `licence`, `remote_management` and `publication` — and
+the third is a product decision rather than a form field.
+
+`publication` carries `{version, accepted_at, choice}` where choice is `public` or
+`private`, and the spec is blunt about the stakes: publication is irreversible in the
+sense that matters, "the receiver's position is recoverable from the measurements
+whether or not the coordinate columns are published", and the disclosure "has to say
+plainly that the dwelling's position is published". Its version records which wording
+each owner saw.
+
+So the wizard now needs three pieces of versioned text and three recorded decisions, not
+a checkbox. Nothing on the node can manufacture any of them.
+
+#### The original question, still open
 
 `RegisterRequest.agreement` requires `{version, accepted_at}`. On the node today the
 wizard has an `agreements` step and an `/eula` page, but the EULA text is explicitly a
@@ -128,6 +145,10 @@ second field rather than a different source — the device type does not carry t
 
 ### Q16 — `config_version` makes an unconditional heartbeat impossible
 
+**Unchanged by the 2026-08-10 revision.** `config_version` is still required on
+`HeartbeatRequest` and the description still says the beat is sent "unconditionally",
+so the contradiction stands.
+
 `POST /nodes/heartbeat` says it is sent *"from process start until shutdown,
 **unconditionally**: whether or not detections are flowing, whether or not the last
 frame was empty, and whether or not `streaming_allowed` is false."*
@@ -161,10 +182,14 @@ state whose only purpose is to paper over this.
 
 ## OPS
 
-### Q9 — cadence is "server-issued" but nothing carries it
+### Q9 — cadence is "server-issued" but nothing carries it — **ANSWERED**
 
-Both `DetectionAck` and `HeartbeatResponse` lack a `detection_hz` /
-`heartbeat_interval_s`. Hardcode 2 Hz / 60 s for v1, or add the fields now?
+The 2026-08-10 revision makes both rates fixed rather than server-issued: "2 Hz, fixed"
+and "60 s, fixed" in the endpoint table. No field is needed and none was added.
+
+It also added a requirement we did not have: *"Apply a uniform random phase offset
+within the interval, so that a fleet restarting together does not settle into one bucket
+and post simultaneously every minute."* Implemented in `__main__.heartbeat_loop`.
 
 ### Q10 — `seq` across restarts
 
@@ -216,3 +241,38 @@ writes the file. It cannot masquerade as a `ret…` node. Full trace in
 `data-sources.md` §3, including two landmines: retina-gui's `get_node_id()` returns the
 string `'Unknown'` (do not reuse), and `default.yml` carries a
 `network.node_id: "ret000000000"` placeholder that fails the spec's pattern.
+
+
+---
+
+## Raised by the 2026-08-10 revision
+
+### Q17 — is `starting` or `error` right for a radar that has stopped?
+
+`NodeState` is now a closed set of five, which is a clear improvement over free text.
+Two of our four reportable states had no exact equivalent, so we map them:
+
+| Our situation | We send | Why |
+|---|---|---|
+| Registered, blah2 has never produced a frame | `starting` | Your description: "the window before the radar has produced anything" |
+| Registered, blah2 produced and then stopped | `error` | A working node with a broken radar, which is not a beginning |
+| Token refused by the server | `error` | Streaming has stopped and cannot resume without intervention |
+
+The middle row is the one we are least sure of. `error` may read as "the node is
+broken" when the node is fine and blah2 is not — and `health.blah2: "down"` already
+says which. If you would rather that case reported `starting` too, or if `error`
+should be reserved for something else, say so; it is one line.
+
+We never send `stopping`. A final heartbeat during shutdown would mean a network call
+on the way out, which can hang; the status document records it locally instead. Happy
+to add it if you would rather see it.
+
+### Q18 — `tx_callsign`: your example changed, and ours has a space
+
+Your example moved from an unset value to `"CRYSTAL_PALACE"`, which reads as a
+convention. We send `location.tx.name` verbatim, which on a real node is
+`"Crystal Palace"` — free text the operator typed in the tower step.
+
+Q5 already asked which you want. If the underscored form is a convention rather than an
+example, say so and we will normalise; if you want real regulatory callsigns,
+Tower-Finder holds them and that is a retina-gui change.

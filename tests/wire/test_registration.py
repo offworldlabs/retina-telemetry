@@ -3,14 +3,12 @@ import dataclasses
 import pydantic
 import pytest
 
-from retina_telemetry.collect.consent import Agreement, Consent
+from retina_telemetry.collect.consent import AcceptanceRecord, Consent
 from retina_telemetry.wire.registration import IncompletePayload, build_registration
+from tests.conftest import consented
 from tests.wire.test_config import OWL
 
-CONSENTED = Consent(
-    opted_in=True,
-    agreement=Agreement(version="2026-07-01", accepted_at="2026-07-31T09:12:00Z"),
-)
+CONSENTED = consented()
 
 
 def build(**overrides):
@@ -30,20 +28,40 @@ def test_every_field_traced_to_its_source():
 
     assert payload.node_id == "ret824685c9"  # identity.read_node_id
     assert payload.board_model == "pi5-v3-arm64"  # identity.read_board_model
-    assert payload.agreement.version == "2026-07-01"  # consent.agreement
+    assert payload.agreements.licence.version == "2026-07-01"  # consent.licence
     assert payload.config.tx_callsign == "Crystal Palace"  # via build_node_config
 
 
-def test_agreement_timestamp_is_parsed_not_passed_through():
-    """Stage 1 stores it as written; the generated model parses it, so a bad
+def test_all_three_records_reach_the_payload():
+    payload = build()
+
+    assert payload.agreements.licence.version == "2026-07-01"
+    assert payload.agreements.remote_management.version == "2026-07-01"
+    assert payload.agreements.publication.choice.value == "public"
+
+
+def test_the_publication_choice_is_carried_verbatim():
+    from retina_telemetry.collect.consent import PublicationChoice
+
+    payload = build(
+        consent=consented(
+            publication=PublicationChoice("2026-07-01", "2026-07-31T09:12:00Z", "private")
+        )
+    )
+
+    assert payload.agreements.publication.choice.value == "private"
+
+
+def test_agreement_timestamps_are_parsed_not_passed_through():
+    """Stage 1 stores them as written; the generated models parse them, so a bad
     timestamp fails here rather than being sent."""
     payload = build()
 
-    assert payload.agreement.accepted_at.tzinfo is not None
+    assert payload.agreements.licence.accepted_at.tzinfo is not None
 
 
-def test_naive_timestamp_is_rejected():
-    naive = Consent(opted_in=True, agreement=Agreement(version="1", accepted_at="not a date"))
+def test_a_naive_timestamp_is_rejected():
+    naive = consented(licence=AcceptanceRecord("1", "not a date"))
 
     with pytest.raises(pydantic.ValidationError):
         build(consent=naive)
@@ -68,23 +86,36 @@ def test_the_default_yml_placeholder_is_rejected():
 # ── consent gating ───────────────────────────────────────────────────
 
 
-def test_not_opted_in_refuses_to_build():
-    with pytest.raises(IncompletePayload, match="not opted in"):
-        build(consent=Consent(opted_in=False, agreement=CONSENTED.agreement))
+def test_a_missing_licence_refuses_to_build():
+    with pytest.raises(IncompletePayload, match="licence"):
+        build(consent=consented(licence=None))
 
 
-def test_opted_in_without_an_agreement_refuses_to_build():
-    with pytest.raises(IncompletePayload, match="agreement"):
-        build(consent=Consent(opted_in=True, agreement=None))
+def test_a_missing_remote_management_record_refuses_to_build():
+    with pytest.raises(IncompletePayload, match="remote_management"):
+        build(consent=consented(remote_management=None))
+
+
+def test_a_missing_publication_choice_refuses_to_build():
+    """It governs whether a dwelling's position reaches a public archive, so it
+    is the last record that should ever be assumed."""
+    with pytest.raises(IncompletePayload, match="publication"):
+        build(consent=consented(publication=None))
+
+
+def test_no_consent_record_is_ever_manufactured():
+    """A missing record means the owner was not shown that text."""
+    with pytest.raises(IncompletePayload, match="never shown"):
+        build(consent=Consent(licence=None, remote_management=None, publication=None))
 
 
 def test_the_default_state_of_every_node_today_refuses_to_build():
-    """Nothing writes the consent record yet, so this is what a real node
+    """Nothing writes the consent records yet, so this is what a real node
     currently produces."""
-    from retina_telemetry.collect.consent import DENIED
+    from retina_telemetry.collect.consent import NONE_GIVEN
 
     with pytest.raises(IncompletePayload, match="Q2"):
-        build(consent=DENIED)
+        build(consent=NONE_GIVEN)
 
 
 # ── the Q1 blocker surfaces as one exception type ────────────────────

@@ -7,9 +7,25 @@ state supplies.
 
 from __future__ import annotations
 
+import logging
+import re
+from typing import Any
+
 from retina_telemetry.collect.blah2 import DetectionPoll
 from retina_telemetry.wire.models import DetectionFrame
 from retina_telemetry.wire.units import km_to_us, ms_to_s
+
+log = logging.getLogger(__name__)
+
+#: The spec bounds each parallel array. Single figures in practice, so this
+#: only fires on something pathological — but the whole frame would be
+#: rejected otherwise, and a truncated frame beats no frame.
+MAX_DETECTIONS = 512
+
+#: The spec now constrains adsb_hex items. blah2-api emits lowercase ICAO
+#: hex, but one malformed entry would cost the entire frame, so anything
+#: that does not match becomes null — the same as unassociated.
+ICAO_HEX = re.compile(r"^[0-9a-f]{6}$")
 
 
 def build_detection_frame(
@@ -39,14 +55,22 @@ def build_detection_frame(
         config_version: server-issued, cached in ``state.py``. Never invented —
             the server returns it and the node adopts whatever comes back.
     """
+    if poll.n_detections > MAX_DETECTIONS:
+        log.warning(
+            "truncating %d detections to the spec's limit of %d",
+            poll.n_detections,
+            MAX_DETECTIONS,
+        )
+
+    limit = MAX_DETECTIONS
     return DetectionFrame(
         t=ms_to_s(poll.timestamp_ms),
         seq=seq,
         config_version=config_version,
-        delay=km_to_us(poll.delay_km),
-        doppler=list(poll.doppler_hz),
-        snr=list(poll.snr_db),
-        adsb_hex=_adsb_hex(poll),
+        delay=km_to_us(poll.delay_km[:limit]),
+        doppler=list(poll.doppler_hz[:limit]),
+        snr=list(poll.snr_db[:limit]),
+        adsb_hex=_adsb_hex(poll)[:limit],
     )
 
 
@@ -60,8 +84,21 @@ def _adsb_hex(poll: DetectionPoll) -> list[str | None]:
 
     An entry is an object or ``null``; ``.get("hex")`` rather than ``["hex"]``
     because a malformed association should cost one detection's association,
-    not the whole frame.
+    not the whole frame. The same reasoning applies to the spec's
+    ``^[0-9a-f]{6}$`` — an entry that does not match becomes null rather than
+    failing validation and taking every other detection with it.
     """
     if poll.adsb is None:
         return [None] * poll.n_detections
-    return [entry.get("hex") if entry is not None else None for entry in poll.adsb]
+    return [_hex(entry) for entry in poll.adsb]
+
+
+def _hex(entry: dict[str, Any] | None) -> str | None:
+    if entry is None:
+        return None
+    value = entry.get("hex")
+    if isinstance(value, str) and ICAO_HEX.match(value):
+        return value
+    if value is not None:
+        log.warning("discarding an association whose hex is not ICAO 24-bit: %r", value)
+    return None

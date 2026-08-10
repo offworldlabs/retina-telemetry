@@ -301,9 +301,10 @@ retina-gui and blah2-arm. These are new config fields plus GUI plumbing, not a m
 
 So registration cannot be populated today. Blocking — Q2.
 
-**Decided:** telemetry is opt-in, via an explicit action in the setup wizard. That
-record and the agreement record are the same artifact — opt-in state plus
-`{version, accepted_at}`, written by retina-gui, read by us. One file, not two.
+**Three records, not one.** The 2026-08-10 spec revision replaced the single
+`agreement` with an `agreements` object carrying three separately versioned entries,
+"because they are withdrawn separately: withdrawing the publication choice must not
+terminate the licence or stop the node".
 
 It lives at **`/data/retina-gui/telemetry-consent.json`**, alongside retina-gui's other
 device state. `DATA_DIR` is `/data/retina-gui` in production and `<repo>/dev_data` under
@@ -313,21 +314,47 @@ device state. `DATA_DIR` is `/data/retina-gui` in production and `<repo>/dev_dat
 
 ```json
 {
-  "opted_in": true,
-  "agreement": { "version": "2026-07-01", "accepted_at": "2026-07-31T09:12:00Z" }
+  "licence":           { "version": "2026-07-01", "accepted_at": "2026-07-31T09:12:00Z" },
+  "remote_management": { "version": "2026-07-01", "accepted_at": "2026-07-31T09:12:00Z" },
+  "publication":       { "version": "2026-07-01", "accepted_at": "2026-07-31T09:12:00Z",
+                         "choice": "public" }
 }
 ```
 
-Two things not to inherit from the neighbouring `cloud-services-disabled`: it is an
-**empty file with negative sense**, which cannot carry `{version, accepted_at}`, and
-`not exists` is indistinguishable from "the wizard never ran". Follow
-`setup-wizard.json` instead — JSON with content, positive sense. The nesting is
-deliberate: `agreement` maps straight onto the spec's `Agreement` schema so stage 2
-lifts the object wholesale, and `opted_in` stays separate because accepting the terms
-and consenting to telemetry are different facts.
+The shape mirrors the wire's `Agreements` object one-for-one, so there is no translation
+to get wrong between what the owner was shown and what the server is told.
 
-A missing file means "not opted in". That is a normal state, so `consent.py` is
-complete and testable before retina-gui writes anything.
+| Record | What it gates |
+|---|---|
+| `licence` | **streaming detections** — the spec is specific that only this one does |
+| `remote_management` | nothing directly; required for registration |
+| `publication` | nothing directly; required for registration |
+
+All three are required by `Agreements`, so registration needs all of them, and streaming
+needs registration. `licence` being the narrower gate matters only if the others are
+later made optional.
+
+### Nothing here is ever synthesised
+
+A missing record means the owner was not shown that text. The spec notes that a node
+arriving without a recorded publication choice is *treated as* `public` server-side —
+that is the server's decision about its own defaults, not licence for us to manufacture
+an acceptance record with a version and timestamp nobody generated.
+
+It matters most for `publication`, which governs whether a dwelling's position ends up
+in a public archive. The spec is blunt about the stakes: publication is irreversible in
+the sense that matters, and "the receiver's position is recoverable from the
+measurements whether or not the coordinate columns are published". The disclosure
+version records which wording the owner actually saw.
+
+Two things not to inherit from the neighbouring `cloud-services-disabled`: it is an
+**empty file with negative sense**, which cannot carry a version or a timestamp, and
+`not exists` is indistinguishable from "the wizard never ran". Follow
+`setup-wizard.json` instead — JSON with content, positive sense.
+
+A missing file means nothing was accepted. That is a normal state — it is the state of
+every node in the fleet today — so `consent.py` is complete and testable before
+retina-gui writes anything.
 
 An opted-out node still runs this container: it reads the flag, idles without
 registering, and keeps its status document fresh. Removing it from compose instead

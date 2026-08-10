@@ -434,6 +434,8 @@ through 3c first — it is independent of the detection path and the more valuab
 | Liveness derived in `collect/blah2.py` | it needs the poll and the CPI, both of which live in stage 1; the wedged case is invisible to anything watching container state |
 | Payload models generated from the spec | the spec is someone else's contract and drift is the failure mode; generation makes "the spec is the scope" mechanical, and brings the spec's own constraints along — `node_id="Unknown"` and `config_version=0` are rejected at construction without anyone remembering |
 | Payloads serialised via `wire.to_wire` | `exclude_none=True` drops `beam_azimuth_deg`, which is required *and* nullable, producing a payload the server rejects |
+| A local state vocabulary, mapped to the wire's | the spec's `NodeState` is a closed set of five; ours has ten because the status document can report things a node with no token cannot say to the server at all |
+| No consent record is ever synthesised | a missing record means the owner was not shown that text. The server may default an absent publication choice to `public` — that is its decision about its own archive, not licence for us to invent an acceptance |
 | `uptime_s` is the device's | the heartbeat is the node's account of itself and "the node" is the board. blah2 reports its own at `/api/timing` and this process knows its own; neither is what the field means |
 | A written mock, not a generated one | a generated mock always cooperates, and every behaviour worth testing in stage 3 is the server refusing |
 | No docker socket | liveness falls out of the detection poll; versions come from compose env |
@@ -450,7 +452,6 @@ stage they land in.
 |---|---|---|
 | Missing `node_id`: exit non-zero, or hold and re-check? | stage 3b | crash-loop is honest but noisy; holding keeps the status document fresh |
 | Status document path and format | stage 3b | retina-gui reads it; needs a contract either way |
-| `state` vocabulary | stage 3b | ours (`streaming`, `paused`, …) with retina-gui's `updating_*` folded in, or theirs. `build_heartbeat` takes it as a string, so the decision sits with the lifecycle |
 | **Own compose project, or a service in `retina-node`?** | stage 4 | see below |
 
 ### The compose placement question
