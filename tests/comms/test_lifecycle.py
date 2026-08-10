@@ -2,29 +2,13 @@ import pytest
 
 from retina_telemetry.comms.client import Backoff, Client, Kind
 from retina_telemetry.comms.lifecycle import NodeState, Registrar, derive_state, explain
-from retina_telemetry.state import State
-from retina_telemetry.wire.config import build_node_config
-from retina_telemetry.wire.serialise import to_wire
-from tests.wire.test_config import OWL
-from tools.mock_server import MockServer
-
-REGISTRATION = {
-    "node_id": "ret824685c9",
-    "board_model": "pi5-v3-arm64",
-    "agreement": {"version": "2026-07-01", "accepted_at": "2026-07-31T09:12:00Z"},
-    "config": to_wire(build_node_config(OWL)),
-}
+from tests.comms.conftest import REGISTRATION
 
 
 @pytest.fixture
-def server():
-    with MockServer() as running:
-        yield running
-
-
-@pytest.fixture
-def state(tmp_path):
-    return State(tmp_path / "token")
+def state(unregistered):
+    """These tests drive registration themselves, so they start from nothing."""
+    return unregistered
 
 
 @pytest.fixture
