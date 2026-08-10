@@ -229,3 +229,15 @@ def test_close_closes_the_session():
     blah2.close()
 
     assert session.closed
+
+
+def test_a_non_array_adsb_is_rejected():
+    with pytest.raises(MalformedFrame, match="adsb must be an array"):
+        parse_frame({"timestamp": 1, "delay": [], "doppler": [], "snr": [], "adsb": "4ca1f2"})
+
+
+def test_an_adsb_entry_that_is_not_an_object_is_rejected():
+    """blah2-api emits objects or null. A bare hex string would mean the
+    enrichment changed shape underneath us."""
+    with pytest.raises(MalformedFrame, match="objects or null"):
+        parse_frame(frame(delay=[1.0], doppler=[1.0], snr=[1.0], adsb=["4ca1f2"]))

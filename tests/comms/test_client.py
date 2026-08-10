@@ -232,3 +232,54 @@ def test_jitter_stays_within_the_cap():
     for seed in range(200):
         backoff = Backoff(base_s=100.0, maximum_s=100.0, rng=random.Random(seed))
         assert backoff.next_delay() <= 100.0
+
+
+# ── malformed responses ──────────────────────────────────────────────
+
+
+def test_an_unparseable_body_is_not_an_error(client, server):
+    """A server that answers with something other than JSON still answered.
+    The status code is what we act on."""
+    server.enqueue("register", 500, body=None)
+
+    outcome = client.post("/nodes/register", REGISTRATION)
+
+    assert outcome.kind is Kind.SERVER_ERROR
+    assert outcome.status == 500
+
+
+def test_a_non_integer_retry_after_is_ignored(client, server, caplog):
+    """The spec's header schema is integer/minimum 0. An HTTP-date would be the
+    server departing from its own contract, and guessing at one is worse than
+    falling back to our own backoff."""
+    from retina_telemetry.comms.client import _retry_after
+
+    class Response:
+        headers = {"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"}
+
+    with caplog.at_level("WARNING"):
+        assert _retry_after(Response()) is None
+
+    assert "Retry-After" in caplog.text
+
+
+def test_a_negative_retry_after_is_clamped():
+    from retina_telemetry.comms.client import _retry_after
+
+    class Response:
+        headers = {"Retry-After": "-5"}
+
+    assert _retry_after(Response()) == 0
+
+
+def test_describe_falls_back_to_the_kind(client):
+    """An outcome with no error string still has to say something useful."""
+    from retina_telemetry.comms.client import Outcome
+
+    assert "202" in Outcome(Kind.OK, 202, None, None, None).describe()
+
+
+def test_there_is_no_put_helper(client):
+    """Deliberate: the only PUT is the config resend, which goes through
+    send_until_delivered rather than here."""
+    assert not hasattr(client, "put")

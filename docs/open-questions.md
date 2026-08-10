@@ -126,6 +126,37 @@ not be what the example implies. The field is free text in the schema, so nothin
 either way. If you would rather have RAM size or hardware revision in there, that is a
 second field rather than a different source — the device type does not carry them.
 
+### Q16 — `config_version` makes an unconditional heartbeat impossible
+
+`POST /nodes/heartbeat` says it is sent *"from process start until shutdown,
+**unconditionally**: whether or not detections are flowing, whether or not the last
+frame was empty, and whether or not `streaming_allowed` is false."*
+
+But `HeartbeatRequest` marks `config_version` **required**, and that value is yours —
+the node only learns it from a registration or a `PUT /nodes/config` response. So there
+is no heartbeat a node can send before it has one, and "unconditionally" cannot be
+honoured literally.
+
+It bites in two places:
+
+1. **Every restart.** We persist only the bearer token, since `config_version` is
+   re-obtainable from a `PUT /nodes/config` and the token is not re-obtainable from
+   anything (see `docs/implementation-plan.md`). So a restarted node is silent until
+   that PUT lands — a second or two, normally.
+2. **A node whose `config.yml` is unreadable**, which is permanent. It cannot build a
+   `NodeConfig`, so it cannot PUT, so it never gets a `config_version`, so it never
+   heartbeats. A node that cannot report its configuration is exactly the node worth
+   hearing from, and it is the one that goes quiet.
+
+**Proposal: make `config_version` optional on `HeartbeatRequest` only.** Its absence
+would mean "I have not been told one yet", which is information rather than a gap — and
+it would let the sentence in the description be true. It stays required on
+`DetectionFrame`, where a frame genuinely cannot be filed without it.
+
+Caching the last known version on disk was the alternative and we rejected it: it means
+a node can report a `config_version` the server has since replaced, and it adds durable
+state whose only purpose is to paper over this.
+
 ---
 
 ## OPS

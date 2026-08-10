@@ -110,6 +110,9 @@ class State:
     token: str | None = None
     node_ref: str = "nd4f2k9xq7m3b8vc"
     config_version: int = 1
+    #: The configuration behind the active version, so a resend of something
+    #: identical does not create a new one.
+    active_config: dict[str, Any] | None = None
 
     # The levels every response restates. The spec makes these levels rather
     # than edges precisely so a node that missed one still learns.
@@ -123,6 +126,7 @@ class State:
             self.scripted.clear()
             self.token = None
             self.config_version = 1
+            self.active_config = None
             self.config_stale = False
             self.streaming_allowed = True
 
@@ -365,10 +369,14 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _config(self, body: dict[str, Any]) -> None:
         with self.state.lock:
-            # The server creates a new version only when the configuration
-            # differs from the active one, and returns the active version
-            # either way.
-            self.state.config_version += 1
+            # A new version only when the configuration differs from the active
+            # one; the active version is returned either way. Getting this wrong
+            # matters: a mock that bumps on every PUT makes a node look like it
+            # is churning versions when a real server would leave it alone, and
+            # hides any bug that only appears when the version does *not* move.
+            if body != self.state.active_config:
+                self.state.config_version += 1
+                self.state.active_config = body
             self.state.config_stale = False
             self._send(200, {"config_version": self.state.config_version})
 
