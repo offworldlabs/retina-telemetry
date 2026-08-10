@@ -278,3 +278,31 @@ def test_two_servers_get_different_ports(server):
     """Binding port 0 means tests can run in parallel without collisions."""
     with MockServer() as other:
         assert other.port != server.port
+
+
+def test_an_unchanged_configuration_does_not_create_a_version(server):
+    """The spec: a new version only if the configuration differs from the
+    active one, and the active version returned either way."""
+    token, _ = register(server)
+    payload = to_wire(build_node_config(OWL))
+
+    _, first, _ = post(f"{server.url}/nodes/config", payload, token, method="PUT")
+    _, second, _ = post(f"{server.url}/nodes/config", payload, token, method="PUT")
+
+    assert first["config_version"] == second["config_version"]
+
+
+def test_a_changed_configuration_creates_a_version(server):
+    import dataclasses
+
+    token, _ = register(server)
+    _, first, _ = post(
+        f"{server.url}/nodes/config", to_wire(build_node_config(OWL)), token, method="PUT"
+    )
+
+    moved = dataclasses.replace(OWL, rx_lat=51.5)
+    _, second, _ = post(
+        f"{server.url}/nodes/config", to_wire(build_node_config(moved)), token, method="PUT"
+    )
+
+    assert second["config_version"] == first["config_version"] + 1
