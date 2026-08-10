@@ -163,6 +163,7 @@ retina-telemetry/
 │   └── fakes/               scripted server, captured blah2-api responses
 ├── tools/
 │   ├── generate-models.sh   regenerate wire/models.py; --check guards drift
+│   ├── mock_server.py       local stand-in for api.retina.fm; hosted or in-process
 │   ├── live-probe.sh        run the probes on a node over ssh
 │   ├── probe_collection.py  stage 1 — tests the container environment
 │   ├── probe_wire.py        stage 2 — real data through the builders
@@ -220,8 +221,8 @@ turns a deliberate revocation into a registration storm.
 - Repo skeleton, `pyproject.toml`, Dockerfile, ruff/pytest.
 - Payload validation derived from `docs/node-ingest-v1.yml`, so stage 2 can be checked
   against the real contract without a server running.
-- **Mock server from the spec.** Needed from 3a onward; stages 1 and 2 need no server
-  at all, not even a mock.
+- **`tools/mock_server.py`** — a local stand-in for `api.retina.fm`. Needed from 3a
+  onward; stages 1 and 2 need no server at all, not even a mock.
 
 ### Stage 1 — collection
 
@@ -319,7 +320,65 @@ Found by `tools/probe_wire.py` printing a real payload, not by unit tests.
 Session, auth, jittered exponential backoff, `Retry-After`, clock offset against
 `server_time`, and the shared level applier. Built once, used by all four endpoints.
 
-Testable in full against a scripted fake before any endpoint logic exists.
+Testable in full against `tools/mock_server.py` before any endpoint logic exists.
+
+#### The mock is scriptable, not generated
+
+Generating one from the OpenAPI document (Prism) gives correctly-shaped replies for
+free, but it always cooperates — and everything worth testing here is the server
+*refusing*. A revoked token must stop the stream **without** re-registering, since
+treating a `401` as a reason to re-register turns one deliberate revocation into a
+registration storm. A `409` must force a config resend and then resume. A `Retry-After`
+must actually be waited out rather than replaced by our own backoff. None of that is
+reachable from a server that only says yes.
+
+So it is written rather than generated, standard library only, and the control channel
+is the point of it:
+
+```
+POST /_control/enqueue   {"endpoint":"detection","status":429,"retry_after":30}
+POST /_control/levels    {"streaming_allowed": false}
+GET  /_control/requests
+```
+
+Requests are validated against the same generated models the client builds them with, so
+a malformed payload is rejected the way the real server would reject it. One test posts
+a `NodeConfig` serialised with `exclude_none=True` and watches the mock return `400` —
+the serialisation bug, demonstrated against something that behaves like the server
+rather than against an assertion we wrote ourselves.
+
+It speaks HTTP/1.1 so keep-alive works; the client holds one connection open across
+every request, and a mock that closed each time would hide any bug in that.
+
+It is deliberately **not** a simulator. Registration rate limits, the reflash window and
+the Mender acceptance sweep are server-side concerns a node can only observe as an
+opaque `403`, so they are scripted rather than modelled — the node behaves identically
+either way, and modelling them would invent detail the spec withholds on purpose.
+
+#### Driving it from a real node
+
+The mock binds `127.0.0.1` and should stay that way. To have the Owl node talk to it,
+use an SSH **reverse** tunnel rather than exposing a port:
+
+```
+ssh -R 18080:127.0.0.1:18080 owl      # node then reaches it at 127.0.0.1:18080
+```
+
+Verified 2026-08-10: a registration sent from the node arrived and was recorded. Three
+things this sidesteps, all of which block the direct approach — the mock binding
+loopback, the dev machine sitting behind WSL2's NAT, and the node needing a route back.
+Nothing is exposed to any network and the tunnel dies with the session.
+
+Two details that matter:
+
+- **Not port 8080** — tar1090 already holds it on the node, and the forward fails with
+  `remote port forwarding failed`. 18080 is clear.
+- `--network host` on the container means `127.0.0.1` inside it *is* the host's
+  loopback, so the tunnel is reachable from the container too, not just from a shell.
+
+What this cannot exercise is **TLS**. The spec is HTTPS-only through Cloudflare, so the
+handshake, certificate handling and Cloudflare's idle timeout on the kept-alive
+connection (Q14) stay untested until there is a real endpoint.
 
 ### Stage 3b — lifecycle and gating
 
@@ -376,6 +435,7 @@ through 3c first — it is independent of the detection path and the more valuab
 | Payload models generated from the spec | the spec is someone else's contract and drift is the failure mode; generation makes "the spec is the scope" mechanical, and brings the spec's own constraints along — `node_id="Unknown"` and `config_version=0` are rejected at construction without anyone remembering |
 | Payloads serialised via `wire.to_wire` | `exclude_none=True` drops `beam_azimuth_deg`, which is required *and* nullable, producing a payload the server rejects |
 | `uptime_s` is the device's | the heartbeat is the node's account of itself and "the node" is the board. blah2 reports its own at `/api/timing` and this process knows its own; neither is what the field means |
+| A written mock, not a generated one | a generated mock always cooperates, and every behaviour worth testing in stage 3 is the server refusing |
 | No docker socket | liveness falls out of the detection poll; versions come from compose env |
 | Telemetry is opt-in | explicit user action in the setup wizard; also answers Q2's "is a silent node intended" with a deliberate yes |
 | Outward status document | three failure modes must reach the operator, and we bind no ports |
@@ -388,7 +448,6 @@ stage they land in.
 
 | Question | Lands in | Options |
 |---|---|---|
-| Mock: Prism, an in-process fake, or both? | stage 3a | Prism validates shape; only a scriptable fake can force 401/409/429 sequences |
 | Missing `node_id`: exit non-zero, or hold and re-check? | stage 3b | crash-loop is honest but noisy; holding keeps the status document fresh |
 | Status document path and format | stage 3b | retina-gui reads it; needs a contract either way |
 | `state` vocabulary | stage 3b | ours (`streaming`, `paused`, …) with retina-gui's `updating_*` folded in, or theirs. `build_heartbeat` takes it as a string, so the decision sits with the lifecycle |
