@@ -162,10 +162,10 @@ class Client:
         self._session = session
 
     def post(self, path: str, payload: dict[str, Any], **kwargs: Any) -> Outcome:
+        """Registration and detections. There is deliberately no ``put``: the
+        only PUT we make is the configuration resend, and that goes through
+        ``reliable.send_until_delivered``, which is generic over method."""
         return self.request("POST", path, payload, **kwargs)
-
-    def put(self, path: str, payload: dict[str, Any], **kwargs: Any) -> Outcome:
-        return self.request("PUT", path, payload, **kwargs)
 
     def request(
         self,

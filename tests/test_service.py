@@ -324,3 +324,43 @@ def test_the_final_status_is_written_on_shutdown(node, server):
     run_briefly(service, seconds=0.5)
 
     assert status(node)["written_at"]
+
+
+# ── config faults reach the operator ─────────────────────────────────
+
+
+def test_an_unreadable_config_is_reported_not_crashed(node, server):
+    """A node that cannot read its configuration cannot register, and must say
+    so rather than exit."""
+    (node / "config.yml").write_text("key: [unclosed\n")
+    service = Service(settings_for(node, server))
+
+    run_briefly(service, seconds=1.0, until=lambda: status(node).get("detail"))
+
+    assert "not valid YAML" in status(node)["detail"]
+    assert server.received("register") == []
+
+
+def test_a_missing_config_is_reported(node, server):
+    (node / "config.yml").unlink()
+    service = Service(settings_for(node, server))
+
+    run_briefly(service, seconds=1.0, until=lambda: status(node).get("detail"))
+
+    assert "does not exist" in status(node)["detail"]
+
+
+def test_beam_geometry_removed_after_registration_blocks_the_resend(node, server):
+    """The Q1 field disappearing mid-run is the same fault as it never being
+    there, and must not be retried into silence."""
+    service = Service(settings_for(node, server))
+    run_briefly(service, until=lambda: service.state.snapshot().registered)
+
+    document = yaml.safe_load((node / "config.yml").read_text())
+    del document["location"]["rx"]["beam_width"]
+    (node / "config.yml").write_text(yaml.safe_dump(document))
+    service.state.request_config_resend()
+
+    run_briefly(service, seconds=1.0, until=lambda: "Q1" in (status(node).get("detail") or ""))
+
+    assert "Q1" in status(node)["detail"]

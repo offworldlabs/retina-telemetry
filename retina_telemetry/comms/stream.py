@@ -100,6 +100,7 @@ class DetectionStream:
         self._timeout_s = timeout_s
         self._sent = 0
         self._failed = 0
+        self._last_error: str | None = None
 
     def send_pending(self, timeout: float | None = 0.5) -> bool:
         """Take one frame and send it. Returns whether it was accepted.
@@ -129,10 +130,15 @@ class DetectionStream:
 
         if outcome.ok:
             self._sent += 1
+            self._last_error = None
             _check_accepted(outcome.body, frame)
             return True
 
         self._failed += 1
+        # Recorded rather than only logged: a 409 or 429 between beats is
+        # precisely the transient fault errors[] exists to carry, and a log
+        # line inside a container reaches nobody.
+        self._last_error = outcome.describe()
         if outcome.kind is Kind.CONFLICT:
             # apply_response has already queued the resend. The frame itself is
             # abandoned: re-sending it after the configuration lands would put a
@@ -147,6 +153,11 @@ class DetectionStream:
             # a dropped frame, which is ordinary under this discipline.
             log.debug("detection dropped: %s", outcome.describe())
         return False
+
+    @property
+    def last_error(self) -> str | None:
+        """The most recent failure, for the heartbeat's ``errors`` list."""
+        return self._last_error
 
     @property
     def sent(self) -> int:

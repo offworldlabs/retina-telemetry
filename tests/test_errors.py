@@ -149,3 +149,20 @@ def test_concurrent_adds_are_all_counted():
         thread.join()
 
     assert errors.snapshot() == ["shared fault (x1600)"]
+
+
+def test_len_counts_distinct_faults():
+    errors = Errors()
+    errors.add("one")
+    errors.add("one")
+    errors.add("two")
+
+    assert len(errors) == 2
+
+
+def test_a_batch_knows_how_many_it_carries():
+    errors = Errors()
+    errors.add("one")
+    errors.add("two")
+
+    assert len(errors.take()) == 2

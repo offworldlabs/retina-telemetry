@@ -151,7 +151,10 @@ class Service:
 
     def send_loop(self) -> None:
         while not self.stop.is_set():
-            self.stream.send_pending(timeout=self.settings.poll_interval_s)
+            if not self.stream.send_pending(timeout=self.settings.poll_interval_s) and (
+                error := self.stream.last_error
+            ):
+                self.errors.add(error)
 
     def heartbeat_loop(self) -> None:
         while not self.stop.is_set():

@@ -238,3 +238,41 @@ def test_levels_on_the_ack_are_applied(stream, slot, state, server):
 
     assert not state.snapshot().streaming_allowed
     assert state.config_resend.is_set()
+
+
+# ── failures reach the heartbeat ─────────────────────────────────────
+
+
+def test_a_failed_send_is_recorded_for_the_heartbeat(stream, slot, server, state):
+    """A 429 between beats is precisely the transient fault errors[] exists to
+    carry. Found by a live run where fifty 401s produced an empty list."""
+    server.enqueue("detection", 429, retry_after=30)
+    slot.put(frame(1, state.snapshot().config_version))
+
+    stream.send_pending()
+
+    assert "429" in stream.last_error
+
+
+def test_a_conflict_is_recorded(stream, slot, state):
+    slot.put(frame(1, config_version=99))
+
+    stream.send_pending()
+
+    assert "409" in stream.last_error
+
+
+def test_a_successful_send_clears_the_error(stream, slot, server, state):
+    version = state.snapshot().config_version
+    server.enqueue("detection", 503)
+    slot.put(frame(1, version))
+    stream.send_pending()
+
+    slot.put(frame(2, version))
+    stream.send_pending()
+
+    assert stream.last_error is None
+
+
+def test_no_error_before_anything_is_sent(stream):
+    assert stream.last_error is None
