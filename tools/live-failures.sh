@@ -27,7 +27,8 @@ HOST="${1:-owl}"
 PORT="${MOCK_PORT:-18080}"
 IMAGE="${PROBE_IMAGE:-python:3.11-slim}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PYTHON="$REPO_ROOT/.venv/bin/python"
+PYTHON="${PYTHON:-$REPO_ROOT/.venv/bin/python}"
+[[ -x "$PYTHON" ]] || { echo "no venv at $PYTHON — run: pip install -e '.[dev]'" >&2; exit 1; }
 MOCK_PID=""
 SSH_PID=""
 
