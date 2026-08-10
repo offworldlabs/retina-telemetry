@@ -40,6 +40,8 @@ SECONDS_TO_RUN="${2:-45}"
 PORT="${MOCK_PORT:-18080}"
 IMAGE="${PROBE_IMAGE:-python:3.11-slim}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PYTHON="${PYTHON:-$REPO_ROOT/.venv/bin/python}"
+[[ -x "$PYTHON" ]] || { echo "no venv at $PYTHON — run: pip install -e '.[dev]'" >&2; exit 1; }
 MOCK_PID=""
 
 cleanup() {
@@ -48,7 +50,7 @@ cleanup() {
 trap cleanup EXIT
 
 echo "→ starting mock ingest on 127.0.0.1:$PORT"
-"$REPO_ROOT/.venv/bin/python" "$REPO_ROOT/tools/mock_server.py" --port "$PORT" --quiet &
+"$PYTHON" "$REPO_ROOT/tools/mock_server.py" --port "$PORT" --quiet &
 MOCK_PID=$!
 sleep 2
 
@@ -123,4 +125,4 @@ REMOTE
 echo
 echo "── what the mock received ──────────────────────────────────"
 curl -s "http://127.0.0.1:$PORT/_control/requests" \
-  | "$REPO_ROOT/.venv/bin/python" "$REPO_ROOT/tools/summarise_run.py"
+  | "$PYTHON" "$REPO_ROOT/tools/summarise_run.py"

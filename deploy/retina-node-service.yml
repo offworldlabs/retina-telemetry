@@ -1,0 +1,53 @@
+# The entry to add to retina-node/docker-compose.yml.
+#
+# Not a compose file of its own: Mender's docker-compose update module keeps a
+# single global store at /data/mender-docker-compose and deploys one project per
+# device, so a second project would be a second artifact competing for the same
+# store rather than a second file. This lives here as the reviewable text of a
+# change that belongs in the retina-node repo.
+#
+# Paste under `services:` and add TELEMETRY_V to the version list in the header
+# comment alongside BLAH2_V and the rest.
+
+  retina-telemetry:
+    restart: always
+    image: ghcr.io/offworldlabs/retina-telemetry:${TELEMETRY_V:-v0.1.0}
+    container_name: retina-telemetry
+
+    # network_mode: host to reach blah2-api on 127.0.0.1:3000. It binds no
+    # listening ports of its own — every input is a poll or a file read.
+    network_mode: host
+
+    # NO depends_on. This is the one service that must keep reporting while the
+    # rest of the stack is crash-looping, which is the whole point of it. Gating
+    # it on config-merger like the others would leave it dead exactly when its
+    # telemetry matters most, and it re-reads its inputs anyway, so a config
+    # that appears later is picked up without a restart.
+
+    volumes:
+      # Identity: node_id and device_type. Read-only, and the only reason this
+      # container runs as root — the files are 0600 root-owned.
+      - ${MENDER_DATA_DIR:-/data/mender}:/data/mender:ro
+      # The merged node configuration, same mount every other service takes.
+      - ${CONFIG_DIR:-/data/retina-node/config}:/data/retina-node/config:ro
+      # retina-gui's device state, for the telemetry consent record. Read-only:
+      # retina-gui writes it, we only ever read.
+      - ${GUI_DATA_DIR:-/data/retina-gui}:/data/retina-gui:ro
+      # The only writable mount. Holds the bearer token at 0600 and the status
+      # document at 0644, and lives under /data so the token survives an OS
+      # update. Losing it means re-registering, which needs an operator to open
+      # a reflash window.
+      - ${TELEMETRY_DATA_DIR:-/data/retina-telemetry}:/data/retina-telemetry
+
+    # No docker socket. blah2 and ADS-B liveness are derived from the detection
+    # poll — which distinguishes down from wedged, where container state cannot
+    # — and versions come from the env vars below.
+
+    environment:
+      # Image tags, so `versions` in the heartbeat reports something true.
+      # RETINA_NODE_V has no source on a node today; it is passed here so it
+      # starts working the moment one exists.
+      - BLAH2_V=${BLAH2_V:-v0.3.16}
+      - OWL_OS_V=${OWL_OS_V:-}
+      - RETINA_NODE_V=${RETINA_NODE_V:-}
+      - LOG_LEVEL=${TELEMETRY_LOG_LEVEL:-INFO}

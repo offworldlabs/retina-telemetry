@@ -24,7 +24,22 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SPEC="$REPO_ROOT/docs/node-ingest-v1.yml"
 TARGET="$REPO_ROOT/retina_telemetry/wire/models.py"
-PYTHON="${PYTHON:-$REPO_ROOT/.venv/bin/python}"
+# The venv when there is one, whatever is on PATH otherwise. CI installs into
+# the runner's Python and has no .venv, and a hardcoded path there fails with
+# "No such file or directory" rather than anything that points at the cause.
+if [[ -n "${PYTHON:-}" ]]; then
+  :
+elif [[ -x "$REPO_ROOT/.venv/bin/python" ]]; then
+  PYTHON="$REPO_ROOT/.venv/bin/python"
+else
+  PYTHON="$(command -v python3 || command -v python)"
+fi
+
+if ! "$PYTHON" -c "import datamodel_code_generator" 2>/dev/null; then
+  echo "datamodel-code-generator is not installed for $PYTHON" >&2
+  echo "  pip install -e '.[dev]'" >&2
+  exit 1
+fi
 
 generate() {
   "$PYTHON" -m datamodel_code_generator \
