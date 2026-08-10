@@ -63,9 +63,11 @@ scratch = pathlib.Path(sys.argv[1])
 config = yaml.safe_load(pathlib.Path("/data/retina-node/config/config.yml").read_text())
 config["location"]["rx"]["beam_width"] = 60
 (scratch / "config.yml").write_text(yaml.safe_dump(config))
+ACCEPTED = {"version": "2026-07-01", "accepted_at": "2026-07-31T09:12:00Z"}
 (scratch / "consent.json").write_text(json.dumps({
-    "opted_in": True,
-    "agreement": {"version": "2026-07-01", "accepted_at": "2026-07-31T09:12:00Z"},
+    "licence": ACCEPTED,
+    "remote_management": ACCEPTED,
+    "publication": {**ACCEPTED, "choice": "public"},
 }))
 PY
 docker run --rm --network host --pull missing \
