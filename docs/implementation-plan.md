@@ -119,7 +119,7 @@ latest-wins, expressed in one data structure.
 **The threads are not peers.** Heartbeat needs a token and a `config_version`;
 detections need both plus `streaming_allowed`. None of those exist until registration
 succeeds, and registration can legitimately sit in `403` for hours waiting on an
-operator to open a reflash window. So the supervisor gates thread startup rather than
+operator to reactivate the node. So the supervisor gates thread startup rather than
 letting three loops spin against a `None` token. Only the status writer runs
 unconditionally, because a node that cannot register is precisely the node whose
 operator needs to be told why.
@@ -139,7 +139,7 @@ retina-telemetry/
 │   │   ├── blah2.py         poll, dedupe, structural validation, derived liveness
 │   │   ├── node_config.py   config.yml read + change hashing (no conversion)
 │   │   ├── identity.py      /data/mender/node_id reader — raises, never defaults
-│   │   ├── consent.py       opt-in + agreement record reader
+│   │   ├── consent.py       licence, remote management and publication records
 │   │   └── host.py          cpu / temp / disk / uptime from /proc, /sys, statvfs
 │   │
 │   ├── wire/                ── stage 2 ──
@@ -244,9 +244,11 @@ The four incoming interfaces and the one outgoing one. Full inventory in
   reformat or an unmapped edit cannot trigger a `PUT /nodes/config`.
 - `identity.py` — the hard-error behaviour, and a test that `'Unknown'` can never
   appear in a payload.
-- `consent.py` — opt-in state and the agreement record, read from
-  `/data/retina-gui/telemetry-consent.json`. A missing file is a normal state meaning
-  "not opted in", so this module is complete and testable before retina-gui writes it.
+- `consent.py` — the three acceptance records, read from
+  `/data/retina-gui/telemetry-consent.json`. A missing file means nothing was accepted,
+  which is a normal state — it is the state of every node today — so this module is
+  complete and testable before retina-gui writes it. Nothing here is ever synthesised:
+  a missing record means the owner was not shown that text.
 - `host.py` — cpu, temp, disk, uptime, and nothing else. `/proc` is not namespaced, so
   `cpu_pct` is correctly host-wide; `statvfs` *is*, so it must be called on `/data`
   rather than `/` or it measures the container's overlay.
@@ -287,7 +289,7 @@ four payloads, including the rows marked "caller" that mark where `state.py` and
 plug in.
 
 **Blocked, and scoped around:** the registration payload needs `beam_width_deg` /
-`beam_azimuth_deg` (Q1) and the agreement record (Q2). The other eleven `NodeConfig`
+`beam_azimuth_deg` (Q1) and the three acceptance records (Q2). The other eleven `NodeConfig`
 fields, the detection frame and the heartbeat body are all unblocked. Build the seam,
 leave the two fields open. `build_node_config` and `build_registration` therefore raise
 on a real node today — that is tested, but it means neither has executed end to end
@@ -350,7 +352,7 @@ rather than against an assertion we wrote ourselves.
 It speaks HTTP/1.1 so keep-alive works; the client holds one connection open across
 every request, and a mock that closed each time would hide any bug in that.
 
-It is deliberately **not** a simulator. Registration rate limits, the reflash window and
+It is deliberately **not** a simulator. Registration rate limits, operator reactivation and
 the Mender acceptance sweep are server-side concerns a node can only observe as an
 opaque `403`, so they are scripted rather than modelled — the node behaves identically
 either way, and modelling them would invent detail the spec withholds on purpose.

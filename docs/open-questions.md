@@ -40,22 +40,23 @@ a checkbox. Nothing on the node can manufacture any of them.
 
 #### The original question, still open
 
-`RegisterRequest.agreement` requires `{version, accepted_at}`. On the node today the
-wizard has an `agreements` step and an `/eula` page, but the EULA text is explicitly a
-placeholder and the checkbox only enables the Continue button. **Nothing is persisted.**
+On the node today the wizard has an `agreements` step and an `/eula` page, but the EULA
+text is explicitly a placeholder and the checkbox only enables the Continue button.
+**Nothing is persisted**, and three records are now needed rather than one.
 
 Needs: real EULA text, a version string and its format, persisted acceptance under
 `/data`.
 
-**Partly resolved node-side (2026-08-05).** Telemetry will be opt-in via an explicit
-action in the setup wizard, and that opt-in record and the agreement record are the same
-artifact — written by retina-gui, read by this service. An opted-out or un-accepted node
-runs the container, idles without registering, and reports why in its status document.
+**Partly resolved node-side.** The records are written by retina-gui and read by this
+service. A node missing any of them runs the container, idles without registering, and
+reports which are missing in its status document. Accepting the licence is what enables
+streaming — there is no separate opt-in toggle, because the licence acceptance is the
+opt-in.
 
 So the sub-question "an un-accepted node is silent, is that the intent?" is answered:
 yes, deliberately. What remains for the server author:
 
-- If the agreement version bumps later, does the server want a re-accept, and how does
+- If any of the three versions bumps later, does the server want a re-accept, and how does
   it signal that? There is no control field for it today, and `config_stale` is the only
   existing precedent for the server asking a node to resend something.
 

@@ -290,9 +290,9 @@ omnidirectional as the fleet default anyway.
 `beam_width_deg` and `beam_azimuth_deg` returned zero hits across owl-os, retina-node,
 retina-gui and blah2-arm. These are new config fields plus GUI plumbing, not a mapping.
 
-### Agreement, and the telemetry opt-in
+### The agreements, and the publication choice
 
-`RegisterRequest.agreement` requires `{version, accepted_at}`. Today:
+`RegisterRequest.agreements` requires three records. Today:
 
 - The setup wizard has an `agreements` step (`retina-gui/src/device_state.py:382`).
 - `templates/eula.html` is explicitly *"Placeholder - to be replaced with actual terms."*
