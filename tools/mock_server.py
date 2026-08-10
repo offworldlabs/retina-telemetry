@@ -102,6 +102,9 @@ class State:
 
     lock: threading.Lock = field(default_factory=threading.Lock)
     requests: list[RecordedRequest] = field(default_factory=list)
+    #: TCP connections accepted, not requests served. The client is meant to
+    #: hold one open across every request, so this is how keep-alive is proved.
+    connections: int = 0
     scripted: dict[str, list[ScriptedResponse]] = field(default_factory=dict)
 
     token: str | None = None
@@ -116,6 +119,7 @@ class State:
     def reset(self) -> None:
         with self.lock:
             self.requests.clear()
+            self.connections = 0
             self.scripted.clear()
             self.token = None
             self.config_version = 1
@@ -133,7 +137,13 @@ class _Handler(BaseHTTPRequestHandler):
     # any bug in that.
     protocol_version = "HTTP/1.1"
 
-    state: State  # injected by make_server
+    state: State  # injected by MockServer
+
+    def setup(self) -> None:
+        # Called once per accepted connection rather than per request.
+        super().setup()
+        with self.state.lock:
+            self.state.connections += 1
 
     def log_message(self, fmt: str, *args: Any) -> None:
         if self.server.verbose:  # type: ignore[attr-defined]
@@ -206,6 +216,7 @@ class _Handler(BaseHTTPRequestHandler):
                         "config_stale": self.state.config_stale,
                         "streaming_allowed": self.state.streaming_allowed,
                         "node_ref": self.state.node_ref,
+                        "connections": self.state.connections,
                         "scripted": {k: len(v) for k, v in self.state.scripted.items()},
                     },
                 )
@@ -381,6 +392,12 @@ class MockServer:
     def url(self) -> str:
         """Base URL including the version prefix, as the spec's server block has it."""
         return f"http://127.0.0.1:{self.port}{BASE_PATH}"
+
+    @property
+    def connections(self) -> int:
+        """TCP connections accepted. One, if the client keeps its alive."""
+        with self.state.lock:
+            return self.state.connections
 
     @property
     def requests(self) -> list[RecordedRequest]:
