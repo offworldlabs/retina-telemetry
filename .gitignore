@@ -15,3 +15,12 @@ htmlcov/
 *.token
 token
 .env
+.env
+
+# Correspondence with the server author. Deliberately untracked: these are
+# outbound drafts that get rewritten between sends and would otherwise read as
+# a second, competing spec. The durable record lives in docs/open-questions.md,
+# which is where an answer should land once one arrives.
+docs/for-server-author.*
+docs/node-ingest-v1.annotated.yml
+tools/annotate-spec.py
