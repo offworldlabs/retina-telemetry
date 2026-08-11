@@ -33,6 +33,10 @@ of ``0`` are both rejected at construction without anyone remembering to check.
 | ``snr`` | ``DetectionPoll.snr_db`` | none |
 | ``adsb_hex`` | ``DetectionPoll.adsb`` | ``.hex`` per entry, or ``[None] * n`` |
 
+Every array is truncated to the spec's ``maxItems`` of 512, and an ``adsb_hex``
+entry failing ``^[0-9a-f]{6}$`` becomes ``null``. Both are the same trade: one
+bad value must not cost the other detections in the frame.
+
 ### NodeConfig — ``config.build_node_config``
 
 | Wire field | Source | Conversion |
@@ -53,14 +57,20 @@ of ``0`` are both rejected at construction without anyone remembering to check.
 |---|---|
 | ``node_id`` | ``identity.read_node_id()`` |
 | ``board_model`` | ``identity.read_board_model()`` |
-| ``agreement`` | ``Consent.agreement`` — **Q2, absent today** |
+| ``agreements.licence`` | ``Consent.licence`` — **Q2, absent today** |
+| ``agreements.remote_management`` | ``Consent.remote_management`` — **Q2** |
+| ``agreements.publication`` | ``Consent.publication`` — **Q2** |
 | ``config`` | ``build_node_config`` |
+
+None of the three is ever synthesised. A missing record means the owner was not
+shown that text, so the builder raises ``IncompletePayload`` naming which are
+absent rather than producing a payload that would misrepresent them.
 
 ### HeartbeatRequest — ``heartbeat.build_heartbeat``
 
 | Wire field | Source |
 |---|---|
-| ``state`` | caller (``comms/lifecycle.py``, stage 3b) |
+| ``state`` | caller (``comms/lifecycle.py``, stage 3b — already a wire value) |
 | ``uptime_s`` | ``HostSnapshot.host_uptime_s`` — the **device's**, not ours |
 | ``config_version`` | caller (``state.py``) |
 | ``health.cpu_pct`` | ``HostSnapshot.cpu_pct`` |
@@ -80,7 +90,6 @@ from retina_telemetry.wire.config import build_node_config
 from retina_telemetry.wire.detection import build_detection_frame
 from retina_telemetry.wire.heartbeat import build_heartbeat
 from retina_telemetry.wire.registration import IncompletePayload, build_registration
-from retina_telemetry.wire.serialise import to_wire, to_wire_json
 
 __all__ = [
     "IncompletePayload",
@@ -88,6 +97,4 @@ __all__ = [
     "build_heartbeat",
     "build_node_config",
     "build_registration",
-    "to_wire",
-    "to_wire_json",
 ]

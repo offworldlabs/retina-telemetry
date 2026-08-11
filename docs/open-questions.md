@@ -11,17 +11,6 @@ decided during the build.
 
 ## BLOCKING
 
-### Q1 — `beam_width_deg` / `beam_azimuth_deg` do not exist anywhere
-
-Zero hits across owl-os, retina-node, retina-gui, blah2-arm. `NodeConfig` marks both
-required, so registration cannot be populated. This is new config fields + GUI form +
-wizard step, not a mapping.
-
-**Proposal:** are current nodes all effectively omnidirectional? If so, ship v1 with a
-sensible default `beam_width_deg` and `beam_azimuth_deg: null`, and add real UI once
-directional installs exist. Needs confirmation that a placeholder width is not worse
-than useless to the solver.
-
 ### Q2 — no agreement records exist to send
 
 **The 2026-08-10 revision made this larger, not smaller.** One `agreement` became three
@@ -64,19 +53,33 @@ yes, deliberately. What remains for the server author:
 
 ## WIRE
 
-### Q3 — timestamp window edge, and `cpi_s`
+### Q3 — timestamp window edge, and the detection rate
 
 `t` is currently the **end** of the capture window (see `data-sources.md` §2). The spec
-says "the capture time of the CPI", which is ambiguous. Two asks:
+says "the capture time of the CPI", which is ambiguous. One ask, plus one disclosure:
 
-1. State which edge — start, centre, or end.
-2. Add **`cpi_s` to `NodeConfig`**. The offset scales with `cpi`, which is per-node
-   config the server never sees, so it currently cannot correct for it. The same field
-   also makes capture gaps detectable (`t[n+1] - t[n] > cpi_s`), which nothing else
-   reveals — `seq` stays contiguous through capture loss.
+1. **State which edge** — start, centre, or end.
+2. **The endpoint table's "2 Hz, fixed" cannot be honoured**, and not merely because
+   processing is slow today. The node has no send cadence: one POST per frame blah2
+   produces, no timer, no batching, at most one in flight. The arrival rate at the server
+   therefore *is* the radar's frame rate, which is processing-bound — ~886 ms on Owl
+   against a configured `cpi: 0.5`, and varying with load and hardware.
 
-Not asking for sub-CPI resolution. 0.5 s is the practical floor and ±0.25 s against a
-4 s association window is fine.
+**The `cpi_s` request was dropped on 2026-08-11, and the reasoning is worth keeping.**
+It was justified on two grounds and neither survived:
+
+- *Correcting the window-edge offset.* `cpi` is 0.5 across the whole fleet, so the offset
+  is a constant the server can be told once in prose. It is ±0.25 s inside a 4 s
+  association window. The "two nodes on different `cpi`" case that motivated it is
+  hypothetical — we have no such nodes.
+- *Detecting capture gaps.* See `data-sources.md` §2: the test fires on every frame,
+  because processing exceeds the CPI everywhere. It detects the permanent condition, not
+  an event.
+
+What remains is that `cpi_s` would let the server compute coverage fraction. That is a
+real signal, but it is a want of theirs to express rather than a field for us to lobby
+for — the same discipline as `CLAUDE.md`'s "the spec is the scope", applied in the
+outbound direction.
 
 ### Q4 — units: `delay` and altitudes
 
@@ -109,17 +112,6 @@ hypotheses made under different thresholds.
 
 **Proposal:** either carry the residuals (blah2-api already computes them) or put the
 two tolerances in `NodeConfig` so the server knows what it is comparing.
-
-### Q8 — detections only: where do track events go?
-
-The node already runs retina-tracker, producing track lifecycle events
-(`track_id`, `adsb_hex`, `timestamp`, `length`, `detections[]`, `is_anomalous`,
-`anomaly_types[]`) as JSONL. Is all tracking moving server-side into retina-analytics,
-with retina-tracker staying local purely for GUI preview and Auto-Calibrate?
-
-Asking because the answer decides whether this container is built detections-only or
-with a second, lower-rate, must-not-lose stream from day one. Retrofitting that later
-is the expensive path.
 
 ---
 
@@ -224,6 +216,46 @@ connection? A 60 s heartbeat should keep it warm, but confirmation beats discove
 ---
 
 ## Answered
+
+### Q1 — the beam geometry fields do not exist anywhere — CLOSED 2026-08-11
+
+**Resolved by a spec change, agreed with the server author and relayed by Josh.** Both
+fields were removed from `NodeConfig.required` in `docs/node-ingest-v1.yml`, so an
+uncharacterised antenna omits both keys.
+
+**This is the one time the spec has been edited on our side**, a deliberate exception to
+the working agreement that it is read-only input. The edit lives in our copy, not theirs:
+if they send another revision it will not carry the change unless they made it upstream
+too. Check `NodeConfig.required` when adopting one.
+
+retina-gui is not collecting the geometry from owners for the foreseeable future, so
+absent is the fleet-wide steady state rather than a temporary gap. Nothing is substituted.
+
+**Two superseded positions, recorded so they are not re-derived.** The original was "a
+guessed beam width is worse than a node that will not register" — correct while the field
+was mandatory, and it made `build_node_config` raise `IncompleteConfig`. The intermediate
+defaulted an unset width to 360, on the grounds that refusing traded a silent misreport
+for a silent node. Both are moot now the field is optional, and the second was still a
+claim the node had not made.
+
+**Knock-on:** `beam_azimuth_deg` was the spec's only required-and-nullable field and the
+sole reason `wire/serialise.py` existed. With no subject left, that module was deleted
+and payloads now go out as `model_dump(mode="json", exclude_none=True)`. The assumptions
+that makes safe are guarded by `tests/wire/test_payload_encoding.py`.
+
+### Q8 — detections only: where do track events go? — DECIDED 2026-08-11
+
+**This service does not communicate tracks.** Josh's call; not a question for the server
+author and withdrawn before it was ever sent.
+
+retina-tracker keeps producing track lifecycle events as JSONL for GUI preview and
+Auto-Calibrate, and they stay on the node. That leaves this container detections-only,
+with one transport discipline rather than two — latest-wins throughout, no must-land
+stream and no spool.
+
+Recorded because the question was real: a second, lower-rate, must-not-lose stream is
+the expensive thing to retrofit, so a later reader should know it was considered and
+ruled out rather than overlooked.
 
 ### Are the four arrays genuinely parallel and equal-length? — YES
 

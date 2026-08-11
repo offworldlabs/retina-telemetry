@@ -100,8 +100,9 @@ class NodeConfig(BaseModel):
         float, Field(description="Sample rate, Hz.", examples=[2000000], ge=100000.0, le=20000000.0)
     ]
     beam_width_deg: Annotated[
-        float, Field(description="Antenna beam width, degrees.", examples=[60], gt=0.0, le=360.0)
-    ]
+        float | None,
+        Field(description="Antenna beam width, degrees.", examples=[60], gt=0.0, le=360.0),
+    ] = None
     beam_azimuth_deg: Annotated[
         float | None,
         Field(
@@ -110,7 +111,7 @@ class NodeConfig(BaseModel):
             ge=0.0,
             lt=360.0,
         ),
-    ]
+    ] = None
     max_range_km: Annotated[
         float,
         Field(description="Maximum range of interest, km.", examples=[150], gt=0.0, le=1000.0),

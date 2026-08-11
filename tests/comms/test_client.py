@@ -6,7 +6,6 @@ import pytest
 
 from retina_telemetry.comms.client import Backoff, Client, Kind
 from retina_telemetry.wire.config import build_node_config
-from retina_telemetry.wire.serialise import to_wire
 from tests.wire.test_config import OWL
 from tools.mock_server import MockServer
 
@@ -22,7 +21,7 @@ REGISTRATION = {
             "choice": "public",
         },
     },
-    "config": to_wire(build_node_config(OWL)),
+    "config": build_node_config(OWL).model_dump(mode="json", exclude_none=True),
 }
 
 

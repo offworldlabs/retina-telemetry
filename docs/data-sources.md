@@ -150,10 +150,14 @@ Resolution is one CPI (0.5 s) and that is the practical floor — one timestamp 
 frame is all blah2 produces. Against the server's 4 s association window, ±0.25 s of
 quantisation is ~6% and not worth chasing.
 
-What *is* worth fixing is that the window edge is undocumented, and that the offset
-scales with `cpi`, which is per-node config the server does not currently receive.
-Two nodes on different `cpi` have different common-mode offsets and the server cannot
-correct for it. See open question Q3 — the fix is one field, `cpi_s`, in `NodeConfig`.
+What *is* worth fixing is that the window edge is undocumented. See open question Q3,
+which asks the server author to state it.
+
+The offset does scale with `cpi`, so two nodes on different `cpi` would carry different
+common-mode offsets the server could not correct. That argued for sending `cpi_s` and no
+longer does: `cpi` is 0.5 across the whole fleet, which makes the offset a constant the
+server can be told once in prose rather than a field it has to carry. Q3 records why the
+request was withdrawn.
 
 ### Capture gaps
 
@@ -168,15 +172,25 @@ holds the lock for the whole extraction), so measurements within a frame are val
 What is lost is temporal *coverage* between frames — a target crossing during the gap
 never appears.
 
-This is detectable without any new mechanism: `t[n+1] - t[n] > cpi_s` means capture
-was dropped in between. Another reason `cpi_s` earns its place in `NodeConfig`.
+`t[n+1] - t[n] > cpi_s` does mean capture was dropped in between, but **it is not a
+useful detector and an earlier version of this document was wrong to present it as one.**
+Processing exceeds the CPI on every node we have measured, so the condition holds for
+every frame — 27 of 27 gaps in a captured run, minimum 0.866 s against a 0.5 s CPI. It
+describes the permanent state of the fleet rather than an event. It would only
+discriminate once processing fits inside the CPI, at which point there would be nothing
+to detect.
+
+What the ratio does give is a magnitude: `cpi_s / (t[n+1] - t[n])` is the fraction of
+time actually covered — 56% mean over that run, ranging 46–58%. That is worth knowing
+locally. It is not worth asking the server to carry a field for, which is why the
+`cpi_s` request was dropped from Q3.
 
 Note the distinction, because the spec conflates them under `seq`:
 
 | Signal | Reveals |
 |---|---|
 | `seq` gaps | **transport** loss — deliberate and constant under latest-wins |
-| `t` spacing > `cpi_s` | **capture** loss — invisible any other way |
+| `t` spacing vs one CPI | **capture** loss. Currently always present, so the ratio is a magnitude rather than a flag |
 
 ---
 
@@ -258,10 +272,10 @@ Source of truth on the node: `/data/retina-node/config/config.yml`, produced by
 | `fc_hz` | `capture.fc` | — |
 | `fs_hz` | `capture.fs` | — |
 | `max_range_km` | `process.ambiguity.delayMax` | `delayMax × c / fs / 1000` = 60 km at 400 bins / 2 MHz — Q6 |
-| `beam_width_deg` | `location.rx.beam_width` — **not written yet** | Q1 — blocking |
-| `beam_azimuth_deg` | `location.rx.beam_azimuth` — **not written yet** | Q1 — blocking |
+| `beam_width_deg` | `location.rx.beam_width` — **not written, and not planned** | optional; key omitted when unset |
+| `beam_azimuth_deg` | `location.rx.beam_azimuth` — **not written, and not planned** | optional; key omitted when unset |
 
-### Beam geometry: scaffolded, not sourced
+### Beam geometry: scaffolded, optional, and absent everywhere
 
 Both are required by the spec and neither exists on a node. Re-verified 2026-08-06:
 one hit across all four repos, `boresight: 0.0` in
@@ -280,12 +294,25 @@ no antenna section), both read as optional, and landing the retina-gui work shou
 config change rather than a code change. If retina-gui puts them elsewhere, those two
 constants are the only edit.
 
-**The two `None`s do not mean the same thing.** A missing `beam_width_deg` is
-unconfigured and blocks registration. A missing `beam_azimuth_deg` is
-broadside/omnidirectional and is a *valid* wire value — the spec asks for `null` rather
-than `0.0` for exactly that case. So an unconfigured azimuth and a deliberate
-omnidirectional one are indistinguishable, which is acceptable because Q1 proposes
-omnidirectional as the fleet default anyway.
+**Both are optional, and absent is the normal case.** The 2026-08-11 revision removed
+them from `NodeConfig.required` with the server author's agreement, and retina-gui is not
+collecting the geometry from owners for the foreseeable future. So every node in the
+fleet omits both keys, and that is the steady state rather than a gap awaiting cleanup.
+
+Nothing is substituted for a missing value — no value the node did not give us reaches
+the server, the same discipline as the consent records.
+
+Two superseded designs, recorded so they are not re-derived. The first raised, on the
+grounds that a guessed beam width is worse than a node that will not register; correct
+while the field was mandatory. The second defaulted an unset width to 360, on the grounds
+that refusing traded a silent misreport for a silent node; still a claim the node had not
+made. Both are moot now the field is optional. See Q1.
+
+**One distinction the spec draws that we cannot express.** An absent `beam_azimuth_deg`
+means "not characterised"; an explicit `null` means "characterised, and
+broadside/omnidirectional". An unset config key reads as `None`, so we can only ever
+produce the first. If retina-gui ever grows an explicit omnidirectional choice, the
+second becomes expressible with no change to `collect/` or `wire/`.
 
 `beam_width_deg` and `beam_azimuth_deg` returned zero hits across owl-os, retina-node,
 retina-gui and blah2-arm. These are new config fields plus GUI plumbing, not a mapping.
@@ -482,7 +509,7 @@ with mounts and dependencies it cannot justify.
 | Pi throttle flags | No field. `vcgencmd get_throttled` works but needs `/dev/vcio` mounted plus the Pi userland binary in the image; `/sys/class/hwmon/*/name == rpi_volt` exposes `in0_lcrit_alarm` for free, but with nowhere to send it that is moot |
 | `truth.adsb.delay_tolerance`, `doppler_tolerance` | Q7 proposes sending them so the server knows what it is comparing. Until it does, nothing local needs them |
 | `truth.adsb.enabled` | Redundant. `api/server.js:328` gates the whole enrichment on it, so the `adsb` key is present on a polled frame if and only if the flag is set — key presence *is* the flag |
-| `process.data.cpi` | Its only consumer was a staleness window that no longer exists (see below). Q3 proposes sending it |
+| `process.data.cpi` | Its only consumer was a staleness window that no longer exists (see below). Q3 briefly proposed sending it as `cpi_s`; that request was withdrawn on 2026-08-11 |
 
 If any of these become genuinely necessary, the route is an open question to the server
 author, not a field we invent.
@@ -539,8 +566,11 @@ Two consequences for us:
 
 1. **A staleness window must derive from the observed frame period, not `cpi_s`.** The
    configured value is not what the node honours, and is out by 1.8× here.
-2. It makes Q3 sharper. The server sees 1.13 Hz and cannot tell a configured rate from a
-   node dropping half its capture coverage, because it never receives `cpi_s`.
+2. It makes Q3 sharper, though not in the direction first assumed. The server sees
+   1.13 Hz against a spec that promises "2 Hz, fixed", and since we POST once per frame
+   with no cadence of our own, the arrival rate *is* the radar's frame rate. That is
+   worth telling them plainly. It does not follow that they need `cpi_s` to make sense
+   of it — the coverage loss it would quantify is ours to fix, not theirs to weigh.
 
 Expanding the ring buffer is the fix and is separate work — there is RAM headroom. This
 is recorded as expected behaviour, not a defect.
@@ -569,8 +599,9 @@ From `retina-node/docker-compose.yml`, which this service must slot into:
 ## 7. Reference implementations worth borrowing
 
 - `retina-gui/src/retina_tracker_client.py` — JSONL tailer that already handles the
-  truncate-on-restart case, and a best-effort TCP sender with lazy reconnect. If track
-  events are ever added (Q8), start here.
+  truncate-on-restart case, and a best-effort TCP sender with lazy reconnect. Track
+  events are out of scope by decision rather than oversight (Q8), so this is a pointer
+  for whoever reopens it, not a plan.
 - `retina-gui/src/config_manager.py` — how the GUI reads and writes node config.
 - `retina-gui/src/device_state.py` — install locks and Mender status, for the
   heartbeat `state` field.

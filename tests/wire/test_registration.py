@@ -121,17 +121,25 @@ def test_the_default_state_of_every_node_today_refuses_to_build():
 # ── the Q1 blocker surfaces as one exception type ────────────────────
 
 
-def test_missing_beam_width_surfaces_as_incomplete_payload():
-    """IncompleteConfig is wrapped so a caller has one thing to catch."""
-    with pytest.raises(IncompletePayload, match="Q1"):
-        build(config=dataclasses.replace(OWL, beam_width_deg=None))
+def test_a_node_without_beam_geometry_still_registers():
+    """The normal case for every node in the fleet: retina-gui does not collect
+    the geometry, so registration must not depend on it."""
+    payload = build(config=dataclasses.replace(OWL, beam_width_deg=None)).model_dump(
+        mode="json", exclude_none=True
+    )
+
+    assert "beam_width_deg" not in payload["config"]
+    assert payload["config"]["rx_lat"] == 51.4769
 
 
 def test_incomplete_is_distinct_from_a_server_refusal():
     """A 403 means retry; this means there is nothing to retry with until
-    something changes locally."""
+    something changes locally. Consent is the only trigger now — the beam fields
+    stopped being one when the spec made them optional."""
+    from retina_telemetry.collect.consent import NONE_GIVEN
+
     with pytest.raises(IncompletePayload):
-        build(config=dataclasses.replace(OWL, beam_width_deg=None))
+        build(consent=NONE_GIVEN)
 
 
 # ── board_model is diagnostic only ───────────────────────────────────

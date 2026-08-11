@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from retina_telemetry.collect.consent import Consent
 from retina_telemetry.collect.node_config import NodeConfigRaw
-from retina_telemetry.wire.config import IncompleteConfig, build_node_config
+from retina_telemetry.wire.config import build_node_config
 from retina_telemetry.wire.models import (
     AcceptanceRecord,
     Agreements,
@@ -60,9 +60,8 @@ def build_registration(
         config: from ``collect.node_config.read_config()``.
 
     Raises:
-        IncompletePayload: if any consent record is absent, or the configuration
-            cannot be built. Both mean local work is outstanding, not that the
-            server said no.
+        IncompletePayload: if any consent record is absent. That means local work
+            is outstanding, not that the server said no.
     """
     if not consent.complete:
         raise IncompletePayload(
@@ -72,10 +71,7 @@ def build_registration(
             "(open question Q2)."
         )
 
-    try:
-        wire_config = build_node_config(config)
-    except IncompleteConfig as exc:
-        raise IncompletePayload(str(exc)) from exc
+    wire_config = build_node_config(config)
 
     # Narrowed by `consent.complete`, which mypy cannot see.
     assert consent.licence and consent.remote_management and consent.publication
