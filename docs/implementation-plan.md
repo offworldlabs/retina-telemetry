@@ -517,7 +517,8 @@ change to `routes/mode.py`, not a reason to fight Mender's deployment model.
 ## Deliberately not doing
 
 - IQ upload. Not in the spec, not in scope.
-- Track events, pending **Q8**.
+- Track events. Decided rather than deferred: this service does not communicate
+  tracks, so there is one transport discipline rather than two (Q8).
 - A downlink command channel.
 - Log shipping. If that is ever wanted, use Vector or the OTel Collector rather than
   growing it here — those solve log transport properly and this service should stay

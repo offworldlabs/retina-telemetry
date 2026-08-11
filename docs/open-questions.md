@@ -124,17 +124,6 @@ hypotheses made under different thresholds.
 **Proposal:** either carry the residuals (blah2-api already computes them) or put the
 two tolerances in `NodeConfig` so the server knows what it is comparing.
 
-### Q8 — detections only: where do track events go?
-
-The node already runs retina-tracker, producing track lifecycle events
-(`track_id`, `adsb_hex`, `timestamp`, `length`, `detections[]`, `is_anomalous`,
-`anomaly_types[]`) as JSONL. Is all tracking moving server-side into retina-analytics,
-with retina-tracker staying local purely for GUI preview and Auto-Calibrate?
-
-Asking because the answer decides whether this container is built detections-only or
-with a second, lower-rate, must-not-lose stream from day one. Retrofitting that later
-is the expensive path.
-
 ---
 
 ### Q15 — `board_model` will not look like your example
@@ -238,6 +227,20 @@ connection? A 60 s heartbeat should keep it warm, but confirmation beats discove
 ---
 
 ## Answered
+
+### Q8 — detections only: where do track events go? — DECIDED 2026-08-11
+
+**This service does not communicate tracks.** Josh's call; not a question for the server
+author and withdrawn before it was ever sent.
+
+retina-tracker keeps producing track lifecycle events as JSONL for GUI preview and
+Auto-Calibrate, and they stay on the node. That leaves this container detections-only,
+with one transport discipline rather than two — latest-wins throughout, no must-land
+stream and no spool.
+
+Recorded because the question was real: a second, lower-rate, must-not-lose stream is
+the expensive thing to retrofit, so a later reader should know it was considered and
+ruled out rather than overlooked.
 
 ### Are the four arrays genuinely parallel and equal-length? — YES
 

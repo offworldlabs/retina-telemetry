@@ -586,8 +586,9 @@ From `retina-node/docker-compose.yml`, which this service must slot into:
 ## 7. Reference implementations worth borrowing
 
 - `retina-gui/src/retina_tracker_client.py` — JSONL tailer that already handles the
-  truncate-on-restart case, and a best-effort TCP sender with lazy reconnect. If track
-  events are ever added (Q8), start here.
+  truncate-on-restart case, and a best-effort TCP sender with lazy reconnect. Track
+  events are out of scope by decision rather than oversight (Q8), so this is a pointer
+  for whoever reopens it, not a plan.
 - `retina-gui/src/config_manager.py` — how the GUI reads and writes node config.
 - `retina-gui/src/device_state.py` — install locks and Mender status, for the
   heartbeat `state` field.

@@ -65,7 +65,7 @@ All at `/home/joshp/retina/`, all separate git repos:
 | `blah2-arm` | The radar itself (C++) plus `api/` (Node). Source of detections |
 | `retina-node` | `docker-compose.yml` for the whole node stack, and the config defaults |
 | `retina-gui` | On-node web UI, config authority, setup wizard, Mender/device state |
-| `retina-tracker` | Tracking sidecar. Out of scope pending Q8 |
+| `retina-tracker` | Tracking sidecar. Out of scope — decided, not pending. This service does not communicate tracks |
 | `owl-os` | Ansible OS build. Owns the Mender identity script |
 
 ## Facts that are easy to get wrong

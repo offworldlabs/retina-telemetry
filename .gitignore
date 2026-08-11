@@ -15,7 +15,6 @@ htmlcov/
 *.token
 token
 .env
-.env
 
 # Correspondence with the server author. Deliberately untracked: these are
 # outbound drafts that get rewritten between sends and would otherwise read as
