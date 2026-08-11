@@ -20,21 +20,49 @@ starts catching NEW dead code immediately; working through them is separate.
 _ = type("_", (), {})()
 
 # ── Contracts: referenced by something vulture cannot see ─────────────────────
-# generated from docs/node-ingest-v1.yml; part of the wire contract
-#   retina_telemetry/wire/models.py:241
+
+# retina_telemetry/wire/models.py is GENERATED from docs/node-ingest-v1.yml by
+# tools/generate-models.sh. Vulture can never usefully analyse it, for two
+# reasons that will not change:
+#
+#   - pydantic reads `model_config` and RootModel's `root` itself, so nothing in
+#     our code names them.
+#   - the enum members are the spec's vocabulary. A value we deliberately never
+#     send — `stopping`, `unknown` — is still part of the contract, and the ones
+#     we do send travel as strings, so the attribute is never named either.
+#
+# Listed without line numbers on purpose. They churn on every regeneration, and
+# the stale ones this replaces pointed at unrelated code after the 2026-08-10
+# spec revision. If a future revision adds a name, this gate fails and someone
+# reads it — which is the right outcome, since a new name in the wire contract
+# is worth a glance.
+_.model_config
+_.root
+
+# NodeState.stopping — never sent; a final beat during shutdown means a network
+# call on the way out. See Q17.
+stopping
+# Blah2.unknown / Adsb.unknown — we distinguish "have not looked" (omit the
+# field) from "looked and could not tell", and only the first happens to us.
+unknown
+# PublicationChoice.public / .private — carried as strings, so the members are
+# never named.
+public
+private
+
+# The generated schema classes. Nothing constructs the response types: the
+# client validates against them by name, which vulture does not follow.
 ConfigResponse
-# generated from docs/node-ingest-v1.yml; part of the wire contract
-#   retina_telemetry/wire/models.py:147
 DetectionAck
-# generated from docs/node-ingest-v1.yml; part of the wire contract
-#   retina_telemetry/wire/models.py:252
-Error
-# generated from docs/node-ingest-v1.yml; part of the wire contract
-#   retina_telemetry/wire/models.py:212
 HeartbeatResponse
-# generated from docs/node-ingest-v1.yml; part of the wire contract
-#   retina_telemetry/wire/models.py:70
 RegisterResponse
+# Two of these exist because datamodel-codegen collided on the name. `Error` is
+# now the item type of HeartbeatRequest.errors, and `Error1` is the actual error
+# response schema from components/schemas/Error. Both are generated; neither is
+# ours to rename.
+Error
+Error1
+
 # read by socketserver.ThreadingMixIn
 #   tools/mock_server.py:392
 _.daemon_threads
