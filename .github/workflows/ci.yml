@@ -23,6 +23,9 @@ jobs:
           ruff check .
           ruff format --check .
 
+      - name: Dead code
+        run: tools/check-dead-code.sh
+
       # The spec is someone else's contract, so the models are derived from it
       # rather than maintained alongside it. This fails if the checked-in copy
       # has drifted, which is how a revision upstream announces itself.
