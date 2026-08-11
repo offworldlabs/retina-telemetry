@@ -35,6 +35,12 @@ from dataclasses import dataclass, field
 #: dropped.
 DEFAULT_LIMIT = 20
 
+#: The spec bounds ``errors`` items at 512 characters, and says anything beyond
+#: the list bound is dropped node-side rather than truncating the request. A
+#: message long enough to hit this is a traceback that lost its way, and the
+#: first 512 characters of one are the useful part anyway.
+MAX_MESSAGE = 512
+
 
 @dataclass
 class Batch:
@@ -77,6 +83,8 @@ class Errors:
         """Record a fault. Repeats are counted rather than appended."""
         if not message:
             return
+        if len(message) > MAX_MESSAGE:
+            message = message[: MAX_MESSAGE - 1] + "…"
         with self._lock:
             if message not in self._counts and len(self._counts) >= self._limit:
                 # Drop the least frequent distinct fault rather than the

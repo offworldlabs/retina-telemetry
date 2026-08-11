@@ -20,8 +20,8 @@ def ready(state, **overrides):
     """The facts that hold for a fully working node."""
     return {
         "has_identity": True,
-        "opted_in": True,
-        "has_agreement": True,
+        "licence_accepted": True,
+        "all_records_present": True,
         **overrides,
     }
 
@@ -32,14 +32,16 @@ def ready(state, **overrides):
 def test_an_opted_out_node_reports_that_first(state):
     """Precedence runs from what we control least to most. A missing identity
     on an opted-out node is not worth reporting — nothing would be done."""
-    derived = derive_state(state.snapshot(), **ready(state, opted_in=False, has_identity=False))
+    derived = derive_state(
+        state.snapshot(), **ready(state, licence_accepted=False, has_identity=False)
+    )
 
     assert derived is NodeState.OPTED_OUT
 
 
 def test_a_missing_identity_outranks_a_missing_agreement(state):
     derived = derive_state(
-        state.snapshot(), **ready(state, has_identity=False, has_agreement=False)
+        state.snapshot(), **ready(state, has_identity=False, all_records_present=False)
     )
 
     assert derived is NodeState.NO_IDENTITY
@@ -47,7 +49,7 @@ def test_a_missing_identity_outranks_a_missing_agreement(state):
 
 def test_a_missing_agreement_blocks_registration(state):
     assert (
-        derive_state(state.snapshot(), **ready(state, has_agreement=False))
+        derive_state(state.snapshot(), **ready(state, all_records_present=False))
         is NodeState.NO_AGREEMENT
     )
 
@@ -97,15 +99,30 @@ def test_a_revoked_token_outranks_awaiting_config(state):
     assert derive_state(state.snapshot(), **ready(state)) is NodeState.REVOKED
 
 
-def test_no_detections_when_blah2_is_unreachable(state):
-    """The server flags a node claiming to stream while no frames arrive, and
-    it would be right to. Saying so directly puts the answer beside
-    health.blah2 instead of leaving the server to infer it."""
+def test_a_radar_that_has_never_produced_is_starting(state):
+    """The spec's word for exactly this window: "before the radar has produced
+    anything, which is where a new owner most often needs support"."""
     state.store_token("tok_abc", node_ref="nd1", config_version=7)
 
-    derived = derive_state(state.snapshot(), **ready(state), detections_flowing=False)
+    derived = derive_state(
+        state.snapshot(), **ready(state), detections_flowing=False, ever_detected=False
+    )
+
+    assert derived is NodeState.STARTING
+    assert derived.wire.value == "starting"
+
+
+def test_a_radar_that_has_stopped_is_a_fault(state):
+    """A working node with a broken radar is not a beginning, so it maps to
+    `error` rather than `starting`."""
+    state.store_token("tok_abc", node_ref="nd1", config_version=7)
+
+    derived = derive_state(
+        state.snapshot(), **ready(state), detections_flowing=False, ever_detected=True
+    )
 
     assert derived is NodeState.NO_DETECTIONS
+    assert derived.wire.value == "error"
     assert derived.reaches_the_server
 
 
@@ -159,10 +176,29 @@ def test_only_states_a_node_can_report_reach_the_server():
 
     assert reaching == {
         NodeState.STREAMING,
+        NodeState.STARTING,
         NodeState.NO_DETECTIONS,
         NodeState.PAUSED,
         NodeState.REVOKED,
     }
+
+
+def test_every_state_maps_onto_the_spec_s_closed_set(state):
+    """Ours is richer because the status document can report things the wire
+    cannot. Everything must still land on one of their five."""
+    from retina_telemetry.wire.models import NodeState as WireState
+
+    assert {s.wire for s in NodeState} <= set(WireState)
+
+
+def test_a_revoked_token_is_an_error_on_the_wire():
+    assert NodeState.REVOKED.wire.value == "error"
+
+
+def test_states_that_never_reach_the_server_still_map_to_something_true():
+    """`starting` is true of all of them, and none is ever sent."""
+    for state in (NodeState.OPTED_OUT, NodeState.NO_IDENTITY, NodeState.AWAITING_CONFIG):
+        assert state.wire.value == "starting"
 
 
 def test_every_blocked_state_explains_itself():
@@ -172,6 +208,7 @@ def test_every_blocked_state_explains_itself():
         NodeState.OPTED_OUT,
         NodeState.NO_IDENTITY,
         NodeState.NO_AGREEMENT,
+        NodeState.STARTING,
         NodeState.NO_DETECTIONS,
         NodeState.REVOKED,
     ):

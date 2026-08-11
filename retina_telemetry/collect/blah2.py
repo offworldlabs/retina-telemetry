@@ -205,6 +205,17 @@ class Blah2Client:
             closer()
 
     @property
+    def has_produced(self) -> bool:
+        """Whether any frame has ever been polled.
+
+        Collected because a required field depends on it: the spec's `starting`
+        state means "before the radar has produced anything", which is a
+        different thing from a radar that produced and stopped, and only this
+        distinguishes them.
+        """
+        return self._last_timestamp_ms is not None
+
+    @property
     def last_poll_ok(self) -> bool | None:
         """Whether the most recent poll reached blah2-api.
 

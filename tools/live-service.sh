@@ -20,7 +20,7 @@
 # Everything is real except the two fields that do not exist on any node yet:
 #
 #   beam_width_deg   Q1 — no config key for it anywhere in the stack
-#   consent record   Q2 — the wizard's agreements step persists nothing
+#   consent records  Q2 — three of them now, and the wizard persists none
 #
 # Both are written to a scratch directory and pointed at with env vars. The
 # rest of the configuration is copied verbatim from the node's own config.yml,
@@ -80,9 +80,14 @@ scratch = pathlib.Path(sys.argv[1])
 config = yaml.safe_load(pathlib.Path("/data/retina-node/config/config.yml").read_text())
 config["location"]["rx"]["beam_width"] = 60          # Q1: synthetic
 (scratch / "config.yml").write_text(yaml.safe_dump(config))
-(scratch / "consent.json").write_text(json.dumps({   # Q2: synthetic
-    "opted_in": True,
-    "agreement": {"version": "2026-07-01", "accepted_at": "2026-07-31T09:12:00Z"},
+# Q2: synthetic. Three separately versioned records since the 2026-08-10
+# revision; `publication` is a privacy decision the wizard must actually put
+# to the owner, and nothing on a node may manufacture one.
+ACCEPTED = {"version": "2026-07-01", "accepted_at": "2026-07-31T09:12:00Z"}
+(scratch / "consent.json").write_text(json.dumps({
+    "licence": ACCEPTED,
+    "remote_management": ACCEPTED,
+    "publication": {**ACCEPTED, "choice": "public"},
 }))
 print(f"   rx {config['location']['rx']['latitude']}, {config['location']['rx']['longitude']}"
       f" @ {config['location']['rx']['altitude']} m")

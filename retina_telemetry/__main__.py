@@ -32,9 +32,12 @@ back, which is what keeps the disciplines in one place.
 from __future__ import annotations
 
 import logging
+import random
 import signal
 import threading
 from typing import Any
+
+import pydantic
 
 from retina_telemetry.collect import consent as consent_reader
 from retina_telemetry.collect import identity as identity_reader
@@ -119,10 +122,13 @@ class Service:
         return derive_state(
             self.state.snapshot(),
             has_identity=self.node_id() is not None,
-            opted_in=record.opted_in,
-            has_agreement=record.agreement is not None,
+            # The licence is what the spec says gates streaming; the other two
+            # gate registration, and `complete` is what build_registration needs.
+            licence_accepted=record.may_stream,
+            all_records_present=record.complete,
             registering=self._registering.is_set(),
             detections_flowing=self.blah2.last_poll_ok,
+            ever_detected=self.blah2.has_produced,
         )
 
     # ── the loops ────────────────────────────────────────────────────
@@ -139,12 +145,21 @@ class Service:
             if poll is not None:
                 snapshot = self.state.snapshot()
                 if snapshot.config_version is not None:
-                    frame = build_detection_frame(
-                        poll,
-                        seq=self.state.next_seq(),
-                        config_version=snapshot.config_version,
-                    )
-                    self.slot.put(to_wire(frame))
+                    try:
+                        frame = build_detection_frame(
+                            poll,
+                            seq=self.state.next_seq(),
+                            config_version=snapshot.config_version,
+                        )
+                    except pydantic.ValidationError as exc:
+                        # The spec bounds every field, so a value outside them
+                        # now fails here rather than at the server. Dropping the
+                        # frame is the discipline anyway; letting it escape
+                        # would take the poll loop with it.
+                        self.errors.add(f"frame rejected before sending: {exc.errors()[0]['msg']}")
+                        log.warning("discarding an unsendable frame: %s", exc)
+                    else:
+                        self.slot.put(to_wire(frame))
             elif self.blah2.last_error:
                 self.errors.add(self.blah2.last_error)
             self.stop.wait(self.settings.poll_interval_s)
@@ -157,6 +172,12 @@ class Service:
                 self.errors.add(error)
 
     def heartbeat_loop(self) -> None:
+        # A uniform random phase offset within the interval, so that a fleet
+        # restarting together does not settle into one bucket and post
+        # simultaneously every minute. Same reasoning as the registration
+        # jitter, and the spec asks for it explicitly.
+        if self.stop.wait(random.uniform(0, self.settings.heartbeat_interval_s)):
+            return
         while not self.stop.is_set():
             if self.state.snapshot().may_heartbeat:
                 self._beat()
@@ -254,7 +275,7 @@ class Service:
             host = self.host.read()
             return to_wire(
                 build_heartbeat(
-                    state=str(self.current_state()),
+                    state=self.current_state().wire,
                     uptime_s=with_uptime_fallback(snapshot, host.host_uptime_s),
                     config_version=snapshot.config_version,
                     host=host,

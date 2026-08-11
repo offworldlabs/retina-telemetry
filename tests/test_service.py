@@ -15,13 +15,9 @@ from retina_telemetry.__main__ import Service
 from retina_telemetry.comms.lifecycle import NodeState
 from retina_telemetry.settings import Settings
 from tests.collect.test_node_config import DEFAULTS
+from tests.conftest import CONSENT_FILE as CONSENT
 from tests.fakes.blah2_api import frame
 from tools.mock_server import MockServer
-
-CONSENT = {
-    "opted_in": True,
-    "agreement": {"version": "2026-07-01", "accepted_at": "2026-07-31T09:12:00Z"},
-}
 
 
 @pytest.fixture
@@ -157,7 +153,7 @@ def test_node_ref_reaches_the_status_document(node, server):
 
 
 def test_an_opted_out_node_sends_nothing(node, server):
-    (node / "consent.json").write_text(json.dumps({"opted_in": False}))
+    (node / "consent.json").write_text(json.dumps({}))
     service = Service(settings_for(node, server))
 
     run_briefly(service, seconds=0.8)
@@ -203,7 +199,7 @@ def test_a_node_without_beam_geometry_cannot_register(node, server):
 def test_fixing_consent_takes_effect_without_a_restart(node, server):
     """The facts are re-read rather than cached, so an operator opting in does
     not have to bounce the container."""
-    (node / "consent.json").write_text(json.dumps({"opted_in": False}))
+    (node / "consent.json").write_text(json.dumps({}))
     service = Service(settings_for(node, server))
 
     thread = threading.Thread(target=service.run, daemon=True)
@@ -286,14 +282,15 @@ def test_frames_are_sent_when_blah2_is_available(node, server, monkeypatch):
     assert sent["adsb_hex"] == [None, None]
 
 
-def test_no_detections_is_reported_rather_than_claiming_to_stream(node, server):
-    """blah2 is unreachable in this fixture, so the node is permitted to stream
-    and has nothing to send."""
+def test_a_node_whose_radar_never_started_says_starting(node, server):
+    """blah2 is unreachable in this fixture and has never produced a frame,
+    which is precisely what the spec's `starting` describes — not a claim to be
+    streaming while nothing arrives."""
     service = Service(settings_for(node, server))
 
-    run_briefly(service, until=lambda: status(node).get("state") == NodeState.NO_DETECTIONS)
+    run_briefly(service, until=lambda: status(node).get("state") == NodeState.STARTING)
 
-    assert status(node)["state"] == NodeState.NO_DETECTIONS
+    assert status(node)["state"] == NodeState.STARTING
 
 
 def _poll(payload):

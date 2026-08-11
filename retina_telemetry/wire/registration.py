@@ -1,8 +1,8 @@
 """``Consent`` + identity + config → ``RegisterRequest``.
 
-Sent once per node lifetime, plus reflash recovery. It is the payload with the
-most sources feeding it and the only one currently blocked on work outside this
-repo — both of the blocking open questions land here.
+Sent once per node lifetime, plus operator reactivation. It is the payload with
+the most sources feeding it and the only one currently blocked on work outside
+this repo — both of the blocking open questions land here.
 """
 
 from __future__ import annotations
@@ -10,7 +10,12 @@ from __future__ import annotations
 from retina_telemetry.collect.consent import Consent
 from retina_telemetry.collect.node_config import NodeConfigRaw
 from retina_telemetry.wire.config import IncompleteConfig, build_node_config
-from retina_telemetry.wire.models import Agreement, RegisterRequest
+from retina_telemetry.wire.models import (
+    AcceptanceRecord,
+    Agreements,
+    PublicationChoice,
+    RegisterRequest,
+)
 
 
 class IncompletePayload(Exception):
@@ -35,7 +40,9 @@ def build_registration(
     |---|---|
     | ``node_id`` | ``collect.identity.read_node_id()`` |
     | ``board_model`` | ``collect.identity.read_board_model()`` |
-    | ``agreement`` | ``consent.agreement`` |
+    | ``agreements.licence`` | ``consent.licence`` |
+    | ``agreements.remote_management`` | ``consent.remote_management`` |
+    | ``agreements.publication`` | ``consent.publication`` |
     | ``config`` | ``collect.node_config.read_config()``, via ``build_node_config`` |
 
     Args:
@@ -45,28 +52,24 @@ def build_registration(
             cannot reach the wire even if it somehow reached this call.
         board_model: the Mender device type, e.g. ``pi5-v3-arm64``. Required by
             the spec but diagnostic only, so an unreadable one is reported as
-            the empty-ish string ``"unknown"`` rather than blocking
-            registration — losing a diagnostic must not strand a node.
-        consent: from ``collect.consent.read_consent()``. Both halves matter:
-            an owner who has not opted in must not be registered, and the spec
-            requires the acceptance record itself.
+            ``"unknown"`` rather than blocking registration — losing a
+            diagnostic must not strand a node.
+        consent: from ``collect.consent.read_consent()``. All three records are
+            required by ``Agreements``, and none of them is ever synthesised:
+            a missing record means the owner was not shown that text.
         config: from ``collect.node_config.read_config()``.
 
     Raises:
-        IncompletePayload: if consent is absent, or the configuration cannot be
-            built. Both mean local work is outstanding, not that the server
-            said no.
+        IncompletePayload: if any consent record is absent, or the configuration
+            cannot be built. Both mean local work is outstanding, not that the
+            server said no.
     """
-    if not consent.opted_in:
+    if not consent.complete:
         raise IncompletePayload(
-            "telemetry is not opted in on this node — nothing may be sent to the server. "
-            "The record is written by retina-gui's setup wizard (open question Q2)."
-        )
-
-    if consent.agreement is None:
-        raise IncompletePayload(
-            "no agreement acceptance record: RegisterRequest.agreement requires "
-            "{version, accepted_at} and the consent record carries neither (open question Q2)."
+            f"missing consent records: {', '.join(consent.missing)}. Registration requires all "
+            "three, and none of them can be manufactured here — a missing record means the owner "
+            "was never shown that text. They are written by retina-gui's setup wizard "
+            "(open question Q2)."
         )
 
     try:
@@ -74,18 +77,32 @@ def build_registration(
     except IncompleteConfig as exc:
         raise IncompletePayload(str(exc)) from exc
 
+    # Narrowed by `consent.complete`, which mypy cannot see.
+    assert consent.licence and consent.remote_management and consent.publication
+
     return RegisterRequest(
         node_id=node_id,
         # Diagnostic only, so never worth failing over. The spec requires the
         # field but says nothing about its vocabulary — see Q15, which tells the
         # server author to expect "pi5-v3-arm64" rather than their example.
         board_model=board_model or "unknown",
-        agreement=Agreement(
-            version=consent.agreement.version,
-            # Stage 1 passes this through as stored; the generated model parses
-            # it as an aware datetime, so a naive or malformed timestamp fails
-            # here rather than being silently sent.
-            accepted_at=consent.agreement.accepted_at,
+        agreements=Agreements(
+            # Stage 1 passes the timestamps through as stored; the generated
+            # models parse them as aware datetimes, so a naive or malformed one
+            # fails here rather than being silently sent.
+            licence=AcceptanceRecord(
+                version=consent.licence.version,
+                accepted_at=consent.licence.accepted_at,
+            ),
+            remote_management=AcceptanceRecord(
+                version=consent.remote_management.version,
+                accepted_at=consent.remote_management.accepted_at,
+            ),
+            publication=PublicationChoice(
+                version=consent.publication.version,
+                accepted_at=consent.publication.accepted_at,
+                choice=consent.publication.choice,
+            ),
         ),
         config=wire_config,
     )

@@ -13,7 +13,15 @@ from tools.mock_server import MockServer
 REGISTRATION = {
     "node_id": "ret824685c9",
     "board_model": "pi5-v3-arm64",
-    "agreement": {"version": "2026-07-01", "accepted_at": "2026-07-31T09:12:00Z"},
+    "agreements": {
+        "licence": {"version": "2026-07-01", "accepted_at": "2026-07-31T09:12:00Z"},
+        "remote_management": {"version": "2026-07-01", "accepted_at": "2026-07-31T09:12:00Z"},
+        "publication": {
+            "version": "2026-07-01",
+            "accepted_at": "2026-07-31T09:12:00Z",
+            "choice": "public",
+        },
+    },
     "config": to_wire(build_node_config(OWL)),
 }
 

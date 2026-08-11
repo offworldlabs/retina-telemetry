@@ -13,12 +13,19 @@ not know" about a value the spec has no vocabulary for.
 from __future__ import annotations
 
 from retina_telemetry.collect.host import HostSnapshot
-from retina_telemetry.wire.models import HeartbeatRequest, NodeHealth, NodeVersions
+from retina_telemetry.wire.models import (
+    Adsb,
+    Blah2,
+    HeartbeatRequest,
+    NodeHealth,
+    NodeState,
+    NodeVersions,
+)
 
 
 def build_heartbeat(
     *,
-    state: str,
+    state: NodeState,
     uptime_s: int,
     config_version: int,
     host: HostSnapshot | None = None,
@@ -112,11 +119,12 @@ def _health(
         cpu_pct=host.cpu_pct if host else None,
         disk_free_mb=host.disk_free_mb if host else None,
         temp_c=host.temp_c if host else None,
-        blah2=None if blah2_up is None else ("up" if blah2_up else "down"),
+        blah2=None if blah2_up is None else (Blah2.up if blah2_up else Blah2.down),
         # "up" or omitted, never "down": an absent adsb key means association is
         # switched off, and calling that "down" would report a deliberate
-        # configuration as a fault.
-        adsb="up" if adsb_present else None,
+        # configuration as a fault. The enum's third value, "unknown", is not
+        # that either — it means we looked and could not tell.
+        adsb=Adsb.up if adsb_present else None,
         queue_depth=None,
     )
     return health if health.model_dump(exclude_none=True) else None

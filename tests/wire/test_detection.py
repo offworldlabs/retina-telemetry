@@ -3,6 +3,7 @@ import pytest
 
 from retina_telemetry.collect.blah2 import DetectionPoll
 from retina_telemetry.wire.detection import build_detection_frame
+from retina_telemetry.wire.serialise import to_wire
 from tests.fakes.blah2_api import ASSOCIATION
 
 
@@ -55,10 +56,16 @@ def test_absent_adsb_synthesises_nulls_of_the_right_length():
 
 
 def test_associations_reduced_to_hex():
-    """blah2-api sends objects; the spec wants the ICAO hex only."""
+    """blah2-api sends objects; the spec wants the ICAO hex only.
+
+    Asserted on the serialised payload rather than the model attribute: the
+    spec's ``^[0-9a-f]{6}$`` on the array items makes the generator wrap them in
+    a RootModel, which is transparent through ``to_wire`` and visible only to
+    direct attribute access.
+    """
     frame = build_detection_frame(poll(adsb=[ASSOCIATION, None]), seq=1, config_version=1)
 
-    assert frame.adsb_hex == ["4ca1f2", None]
+    assert to_wire(frame)["adsb_hex"] == ["4ca1f2", None]
 
 
 def test_malformed_association_costs_one_entry_not_the_frame():
@@ -67,7 +74,7 @@ def test_malformed_association_costs_one_entry_not_the_frame():
         poll(adsb=[{"lat": 51.5, "lon": -0.1}, ASSOCIATION]), seq=1, config_version=1
     )
 
-    assert frame.adsb_hex == [None, "4ca1f2"]
+    assert to_wire(frame)["adsb_hex"] == [None, "4ca1f2"]
 
 
 # ── empty frames ─────────────────────────────────────────────────────
@@ -133,3 +140,39 @@ def test_config_version_must_be_at_least_one():
     be sent even by accident."""
     with pytest.raises(pydantic.ValidationError):
         build_detection_frame(poll(), seq=1, config_version=0)
+
+
+# ── the spec's hex pattern ───────────────────────────────────────────
+
+
+def test_a_hex_that_is_not_icao_becomes_null():
+    """One malformed association would otherwise cost the whole frame, taking
+    every other detection with it."""
+    frame = build_detection_frame(
+        poll(adsb=[{"hex": "NOTHEX"}, ASSOCIATION]), seq=1, config_version=1
+    )
+
+    assert to_wire(frame)["adsb_hex"] == [None, "4ca1f2"]
+
+
+def test_uppercase_hex_becomes_null():
+    """The spec's pattern is lowercase only, and blah2-api emits lowercase — but
+    a frame is too expensive to lose over the difference."""
+    frame = build_detection_frame(poll(adsb=[{"hex": "4CA1F2"}]), seq=1, config_version=1)
+
+    assert to_wire(frame)["adsb_hex"] == [None]
+
+
+def test_arrays_are_capped_at_the_spec_bound():
+    """maxItems is 512. Single figures in practice, so this only fires on
+    something pathological — and a truncated frame beats no frame."""
+    n = 600
+    frame = build_detection_frame(
+        poll(delay_km=[1.0] * n, doppler_hz=[2.0] * n, snr_db=[3.0] * n, adsb=None),
+        seq=1,
+        config_version=1,
+    )
+
+    payload = to_wire(frame)
+    assert len(payload["delay"]) == 512
+    assert len({len(payload[k]) for k in ("delay", "doppler", "snr", "adsb_hex")}) == 1

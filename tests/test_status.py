@@ -15,7 +15,7 @@ def path(tmp_path):
 @pytest.fixture
 def state(tmp_path):
     state = State(tmp_path / "token")
-    state.store_token("tok_secret123", node_ref="nd4f2k9xq7m3b8vc", config_version=7)
+    state.store_token("tok_secret123", node_ref="nde4f2k9xq7m3b8", config_version=7)
     return state
 
 
@@ -64,7 +64,7 @@ def test_node_ref_reaches_the_owner(path, state):
     data on the map, and this document is the only path it takes."""
     StatusWriter(path).write(state="streaming", snapshot=state.snapshot())
 
-    assert written(path)["node_ref"] == "nd4f2k9xq7m3b8vc"
+    assert written(path)["node_ref"] == "nde4f2k9xq7m3b8"
 
 
 def test_a_missing_identity_is_the_headline(path, tmp_path):

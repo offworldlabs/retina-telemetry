@@ -33,6 +33,7 @@ from typing import Any
 
 from retina_telemetry.comms.client import Backoff, Client, Kind, Outcome
 from retina_telemetry.state import Snapshot, State
+from retina_telemetry.wire.models import NodeState as WireState
 
 log = logging.getLogger(__name__)
 
@@ -75,11 +76,13 @@ class NodeState(StrEnum):
 
     #: From here on the node can heartbeat, so these are what the server sees.
     STREAMING = "streaming"
-    #: Permitted to stream, but blah2-api is not answering so there is nothing
-    #: to send. Reported rather than "streaming" because the server flags a node
-    #: claiming to stream while no frames arrive — and it would be right to.
-    #: Saying so directly puts the answer beside health.blah2 rather than
-    #: leaving the server to infer it.
+    #: Registered and permitted, and blah2 has never produced a frame. Distinct
+    #: from NO_DETECTIONS because the spec's `starting` means exactly this — the
+    #: window before the radar has produced anything, "where a new owner most
+    #: often needs support".
+    STARTING = "starting"
+    #: blah2 produced frames and has stopped. A working node with a broken
+    #: radar, which is a fault rather than a beginning.
     NO_DETECTIONS = "no_detections"
     #: Told to stop by streaming_allowed, still beating.
     PAUSED = "paused"
@@ -91,20 +94,42 @@ class NodeState(StrEnum):
     def reaches_the_server(self) -> bool:
         return self in {
             NodeState.STREAMING,
+            NodeState.STARTING,
             NodeState.NO_DETECTIONS,
             NodeState.PAUSED,
             NodeState.REVOKED,
         }
+
+    @property
+    def wire(self) -> WireState:
+        """The spec's word for this, over its closed set of five.
+
+        Our vocabulary is richer because the status document can report things
+        the wire cannot — a node with no identity has no way to say so to the
+        server, since it cannot build a heartbeat at all. Everything that does
+        reach the server has an honest equivalent here; the rest map to
+        `starting`, which is true of them and never actually sent.
+        """
+        return {
+            NodeState.STREAMING: WireState.streaming,
+            NodeState.PAUSED: WireState.paused,
+            NodeState.STARTING: WireState.starting,
+            # A working node with a radar that has stopped, and a node whose
+            # token was refused, are both faults rather than beginnings.
+            NodeState.NO_DETECTIONS: WireState.error,
+            NodeState.REVOKED: WireState.error,
+        }.get(self, WireState.starting)
 
 
 def derive_state(
     snapshot: Snapshot,
     *,
     has_identity: bool,
-    opted_in: bool,
-    has_agreement: bool,
+    licence_accepted: bool,
+    all_records_present: bool,
     registering: bool = False,
     detections_flowing: bool | None = None,
+    ever_detected: bool = False,
 ) -> NodeState:
     """Work out what the node is doing, in order of precedence.
 
@@ -117,12 +142,16 @@ def derive_state(
             ``Blah2Client.last_poll_ok``. ``None`` means we have not polled yet,
             which does not downgrade the state — reporting no detections before
             looking would be a guess, and the first poll is a second away.
+        ever_detected: whether blah2 has produced a frame at any point, from
+            ``Blah2Client.has_produced``. Separates a radar that has not started
+            from one that has stopped, which the spec's vocabulary distinguishes
+            and ours would otherwise collapse.
     """
-    if not opted_in:
+    if not licence_accepted:
         return NodeState.OPTED_OUT
     if not has_identity:
         return NodeState.NO_IDENTITY
-    if not has_agreement:
+    if not all_records_present:
         return NodeState.NO_AGREEMENT
 
     if not snapshot.registered:
@@ -138,7 +167,7 @@ def derive_state(
     if not snapshot.streaming_allowed:
         return NodeState.PAUSED
     if detections_flowing is False:
-        return NodeState.NO_DETECTIONS
+        return NodeState.NO_DETECTIONS if ever_detected else NodeState.STARTING
     return NodeState.STREAMING
 
 
@@ -167,9 +196,13 @@ def explain(state: NodeState) -> str | None:
             "registered, but waiting to send its configuration before it can report. "
             "This is normal for a few seconds after a restart."
         ),
+        NodeState.STARTING: (
+            "registered and waiting for the radar to produce its first frame. Normal shortly "
+            "after a start; if it persists, blah2 is not running."
+        ),
         NodeState.NO_DETECTIONS: (
-            "registered and permitted to stream, but blah2-api is not answering, so there "
-            "is nothing to send. The heartbeat continues and reports it."
+            "registered and permitted to stream, but blah2-api has stopped answering after "
+            "having worked, so there is nothing to send. The heartbeat continues and reports it."
         ),
         NodeState.REVOKED: (
             "the server rejected this node's token. Detections have stopped; heartbeats "

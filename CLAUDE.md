@@ -4,7 +4,8 @@ The node-side telemetry uplink for the RETINA passive radar fleet. One container
 node, owning everything sent to the server: registration, detection streaming,
 heartbeat, config sync. Nothing else on the node talks to `api.retina.fm`.
 
-**Status: stages 1 and 2 built. Stage 3 not started.** Read `docs/` before writing
+**Status: all five stages built and running.** Verified end to end on the Owl node
+against a tunnelled mock, including the refusal paths. Read `docs/` before writing
 anything — the reasoning behind most of the code is there rather than in the code.
 
 ## Read these first
@@ -13,7 +14,7 @@ anything — the reasoning behind most of the code is there rather than in the c
 |---|---|
 | `docs/node-ingest-v1.yml` | The server contract. Read-only input — proposed changes go in open-questions, not here |
 | `docs/data-sources.md` | Verified facts about where node data comes from, its units, and its gotchas. Do not re-derive these |
-| `docs/open-questions.md` | Awaiting answers from the server author. Two are blocking |
+| `docs/open-questions.md` | Awaiting answers from the server author. Two are blocking; the 2026-08-10 spec revision answered Q9 and enlarged Q2 |
 | `docs/implementation-plan.md` | Architecture, module layout, the three build stages |
 
 ## The build is staged by layer, not by endpoint
@@ -31,8 +32,9 @@ in `comms/`, or an OpenAPI type in `collect/`, means the boundary has leaked.
 Package layout is `collect/` → `wire/` → `comms/`, with `state.py`, `status.py` and
 `errors.py` at the top level. Not `build/` — it is in `.gitignore`.
 
-**Status: stages 1 and 2 built** (177 tests), both verified against the Owl node via
-`tools/live-probe.sh`. Stage 3 is next and no part of it exists yet.
+Verified on a node by `tools/live-probe.sh` (stage 1 and 2), `tools/live-service.sh`
+(the whole service) and `tools/live-failures.sh` (the server's refusals, driven through
+the mock's control channel).
 
 Corollary: **all unit conversion happens in stage 2.** Stage 1 hands over source units
 under names that say so — `delay_km`, `timestamp_ms`, `rx_alt_m` — and stage 2 emits the
@@ -44,9 +46,11 @@ Registration cannot be populated until these land (`docs/open-questions.md` Q1, 
 
 1. `beam_width_deg` / `beam_azimuth_deg` are required by the spec and **do not exist
    anywhere** in the node stack.
-2. `RegisterRequest.agreement` needs a persisted acceptance record. The EULA is a
-   placeholder and the wizard checkbox persists nothing. Partly resolved: telemetry is
-   opt-in, and the opt-in and acceptance records are one artifact written by retina-gui.
+2. `RegisterRequest.agreements` needs **three** persisted records — `licence`,
+   `remote_management` and `publication`. The EULA is a placeholder and the wizard
+   checkbox persists nothing. `publication` is a privacy decision, not a form field:
+   it governs whether a dwelling's position reaches a public archive, and its
+   `version` records which disclosure wording the owner saw.
 
 Both land in stage 2's registration payload. Everything else is buildable against a mock
 generated from the OpenAPI spec — and stages 1 and 2 need no server at all, not even a
@@ -89,6 +93,12 @@ Full detail and citations in `docs/data-sources.md`. The short version:
   a poll or a file read, including "the user changed the config".
 - **`wire/models.py` is generated.** Regenerate with `tools/generate-models.sh`; never
   hand-edit it, and `--check` will catch you.
+- **`NodeState` on the wire is a closed set of five.** Our local vocabulary is richer
+  because the status document can report things a node with no token cannot say at all;
+  `NodeState.wire` maps between them. Never send a local value directly.
+- **No consent record is ever synthesised.** A missing one means the owner was not shown
+  that text. The server defaulting an absent publication choice to `public` is its
+  decision about its own archive, not permission for us to invent an acceptance.
 - **Never serialise a payload with `exclude_none=True`.** Use `wire.to_wire`.
   `beam_azimuth_deg` is required *and* nullable — `null` means omnidirectional — so
   dropping it produces a payload the server rejects, and it is nested inside
