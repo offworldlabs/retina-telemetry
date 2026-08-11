@@ -90,7 +90,6 @@ from retina_telemetry.wire.config import build_node_config
 from retina_telemetry.wire.detection import build_detection_frame
 from retina_telemetry.wire.heartbeat import build_heartbeat
 from retina_telemetry.wire.registration import IncompletePayload, build_registration
-from retina_telemetry.wire.serialise import to_wire, to_wire_json
 
 __all__ = [
     "IncompletePayload",
@@ -98,6 +97,4 @@ __all__ = [
     "build_heartbeat",
     "build_node_config",
     "build_registration",
-    "to_wire",
-    "to_wire_json",
 ]

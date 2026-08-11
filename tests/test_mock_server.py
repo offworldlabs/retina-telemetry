@@ -4,6 +4,7 @@ A mock that silently accepts a malformed payload would let a real bug through
 stage 3 unnoticed, which is worse than having no mock at all.
 """
 
+import dataclasses
 import json
 import urllib.error
 import urllib.request
@@ -11,7 +12,6 @@ import urllib.request
 import pytest
 
 from retina_telemetry.wire.config import build_node_config
-from retina_telemetry.wire.serialise import to_wire
 from tests.wire.test_config import OWL
 from tools.mock_server import MockServer
 
@@ -55,7 +55,7 @@ def register(server):
                     "choice": "public",
                 },
             },
-            "config": to_wire(build_node_config(OWL)),
+            "config": build_node_config(OWL).model_dump(mode="json", exclude_none=True),
         },
     )
     assert status == 200
@@ -165,7 +165,7 @@ def test_a_malformed_node_id_is_rejected(server):
                     "choice": "public",
                 },
             },
-            "config": to_wire(build_node_config(OWL)),
+            "config": build_node_config(OWL).model_dump(mode="json", exclude_none=True),
         },
     )
 
@@ -183,21 +183,33 @@ def test_a_frame_missing_a_required_array_is_rejected(server):
     assert status == 400
 
 
-def test_a_config_without_beam_azimuth_is_rejected(server):
-    """The field is required and nullable. This is the mock proving that
-    exclude_none=True would have produced a payload the server refuses."""
+def test_a_config_omitting_the_beam_fields_is_accepted(server):
+    """Both became optional on 2026-08-11, so omitting them is legal — the mock
+    confirms it against the same generated schema the server will use.
+
+    This asserted a 400 until that revision: beam_azimuth_deg was the spec's only
+    required-and-nullable field, and this was the test proving exclude_none=True
+    produced a payload the server refuses. With no such field left, the whole
+    hazard is gone and so is wire/serialise.py. See test_payload_encoding.py for
+    the canary that fires if a revision brings one back."""
     token, _ = register(server)
-    dropped = build_node_config(OWL).model_dump(exclude_none=True)
+    without = build_node_config(dataclasses.replace(OWL, beam_width_deg=None)).model_dump(
+        mode="json", exclude_none=True
+    )
+    assert "beam_width_deg" not in without
 
-    status, _, _ = post(f"{server.url}/nodes/config", dropped, token, method="PUT")
+    status, _, _ = post(f"{server.url}/nodes/config", without, token, method="PUT")
 
-    assert status == 400
+    assert status == 200
 
 
 def test_the_correctly_serialised_config_is_accepted(server):
     token, _ = register(server)
     status, body, _ = post(
-        f"{server.url}/nodes/config", to_wire(build_node_config(OWL)), token, method="PUT"
+        f"{server.url}/nodes/config",
+        build_node_config(OWL).model_dump(mode="json", exclude_none=True),
+        token,
+        method="PUT",
     )
 
     assert status == 200
@@ -268,7 +280,10 @@ def test_a_config_put_bumps_the_version_and_clears_stale(server):
         server.state.config_stale = True
 
     _, body, _ = post(
-        f"{server.url}/nodes/config", to_wire(build_node_config(OWL)), token, method="PUT"
+        f"{server.url}/nodes/config",
+        build_node_config(OWL).model_dump(mode="json", exclude_none=True),
+        token,
+        method="PUT",
     )
 
     assert body["config_version"] == version + 1
@@ -306,7 +321,7 @@ def test_an_unchanged_configuration_does_not_create_a_version(server):
     """The spec: a new version only if the configuration differs from the
     active one, and the active version returned either way."""
     token, _ = register(server)
-    payload = to_wire(build_node_config(OWL))
+    payload = build_node_config(OWL).model_dump(mode="json", exclude_none=True)
 
     _, first, _ = post(f"{server.url}/nodes/config", payload, token, method="PUT")
     _, second, _ = post(f"{server.url}/nodes/config", payload, token, method="PUT")
@@ -319,12 +334,18 @@ def test_a_changed_configuration_creates_a_version(server):
 
     token, _ = register(server)
     _, first, _ = post(
-        f"{server.url}/nodes/config", to_wire(build_node_config(OWL)), token, method="PUT"
+        f"{server.url}/nodes/config",
+        build_node_config(OWL).model_dump(mode="json", exclude_none=True),
+        token,
+        method="PUT",
     )
 
     moved = dataclasses.replace(OWL, rx_lat=51.5)
     _, second, _ = post(
-        f"{server.url}/nodes/config", to_wire(build_node_config(moved)), token, method="PUT"
+        f"{server.url}/nodes/config",
+        build_node_config(moved).model_dump(mode="json", exclude_none=True),
+        token,
+        method="PUT",
     )
 
     assert second["config_version"] == first["config_version"] + 1

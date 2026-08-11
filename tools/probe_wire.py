@@ -14,6 +14,7 @@ numbers are not.
 
 from __future__ import annotations
 
+import json
 import sys
 import time
 from pathlib import Path
@@ -22,11 +23,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from retina_telemetry.collect import consent, host, identity, node_config  # noqa: E402
 from retina_telemetry.collect.blah2 import Blah2Client  # noqa: E402
-from retina_telemetry.wire.config import IncompleteConfig, build_node_config  # noqa: E402
+from retina_telemetry.wire.config import build_node_config  # noqa: E402
 from retina_telemetry.wire.detection import build_detection_frame  # noqa: E402
 from retina_telemetry.wire.heartbeat import build_heartbeat  # noqa: E402
 from retina_telemetry.wire.registration import IncompletePayload, build_registration  # noqa: E402
-from retina_telemetry.wire.serialise import to_wire_json  # noqa: E402
 from retina_telemetry.wire.units import KM_TO_US, M_TO_FT  # noqa: E402
 from tools.probe_report import (  # noqa: E402
     BOLD,
@@ -46,10 +46,9 @@ PLACEHOLDER_CONFIG_VERSION = 1
 
 
 def _json(model) -> None:
-    # to_wire, not model_dump_json(exclude_none=True) — the latter drops
-    # beam_azimuth_deg, which is required and nullable. This probe printing a
-    # payload without it is how that was found.
-    detail(to_wire_json(model, indent=2))
+    # mode="json" is load-bearing: without it the acceptance timestamps stay as
+    # datetime objects and json.dumps refuses them.
+    detail(json.dumps(model.model_dump(mode="json", exclude_none=True), indent=2))
 
 
 # ── DetectionFrame ───────────────────────────────────────────────────
@@ -120,48 +119,46 @@ def probe_detection() -> None:
 def probe_config() -> None:
     raw = node_config.read_config()
 
-    try:
-        build_node_config(raw)
-        ok("built from live config", "Q1 has landed — beam geometry is configured")
-    except IncompleteConfig as exc:
-        note("refused, as expected", "Q1 — beam_width_deg is not configured on this node")
-        detail(str(exc))
+    # No longer refuses. Both beam fields are optional in the spec, and retina-gui
+    # is not collecting the geometry from owners for the foreseeable future, so
+    # every node in the fleet takes the "absent" path — this is the normal case
+    # rather than a gap being worked around.
+    wire = build_node_config(raw)
+    ok("built from live config", "every field real, nothing substituted")
 
-        # Everything except that one field is real. Substituting a placeholder
-        # shows the payload the server will actually get once retina-gui writes
-        # it, and proves nothing else is missing.
-        import dataclasses
+    if raw.beam_width_deg is None:
+        note("beam geometry absent", "expected — both keys omitted from the payload")
+    else:
+        ok(f"beam_width_deg {wire.beam_width_deg}", "configured on this node")
 
-        simulated = build_node_config(dataclasses.replace(raw, beam_width_deg=60.0))
-        print(f"\n  {BOLD}with a placeholder beam_width_deg=60, everything else real:{RESET}")
-        _json(simulated)
+    print(f"\n  {BOLD}what the server would receive:{RESET}")
+    _json(wire)
 
-        check(
-            "rx altitude converted metres → feet",
-            abs(simulated.rx_alt_ft - raw.rx_alt_m * M_TO_FT) < 0.1,
-            f"{raw.rx_alt_m} m → {simulated.rx_alt_ft} ft",
-        )
-        check(
-            "tx altitude converted metres → feet",
-            simulated.tx_alt_ft > raw.tx_alt_m,
-            f"{raw.tx_alt_m} m → {simulated.tx_alt_ft} ft",
-        )
-        check(
-            "coordinates carried unchanged",
-            (simulated.rx_lat, simulated.rx_lon) == (raw.rx_lat, raw.rx_lon),
-            "degrees on both sides",
-        )
-        check(
-            "max_range_km derived from bins and fs",
-            simulated.max_range_km > 0,
-            f"{raw.delay_max_bins} bins @ {raw.fs_hz:.0f} Hz → {simulated.max_range_km} km",
-        )
-        check(
-            "tx_callsign carries the display name",
-            simulated.tx_callsign == raw.tx_name,
-            f"{simulated.tx_callsign!r} — Q5 asks whether the server wants a real callsign",
-        )
-        note("beam_azimuth_deg", f"{simulated.beam_azimuth_deg} — null means omnidirectional")
+    check(
+        "rx altitude converted metres → feet",
+        abs(wire.rx_alt_ft - raw.rx_alt_m * M_TO_FT) < 0.1,
+        f"{raw.rx_alt_m} m → {wire.rx_alt_ft} ft",
+    )
+    check(
+        "tx altitude converted metres → feet",
+        wire.tx_alt_ft > raw.tx_alt_m,
+        f"{raw.tx_alt_m} m → {wire.tx_alt_ft} ft",
+    )
+    check(
+        "coordinates carried unchanged",
+        (wire.rx_lat, wire.rx_lon) == (raw.rx_lat, raw.rx_lon),
+        "degrees on both sides",
+    )
+    check(
+        "max_range_km derived from bins and fs",
+        wire.max_range_km > 0,
+        f"{raw.delay_max_bins} bins @ {raw.fs_hz:.0f} Hz → {wire.max_range_km} km",
+    )
+    check(
+        "tx_callsign carries the display name",
+        wire.tx_callsign == raw.tx_name,
+        f"{wire.tx_callsign!r} — Q5 asks whether the server wants a real callsign",
+    )
 
 
 # ── HeartbeatRequest ─────────────────────────────────────────────────
@@ -237,8 +234,6 @@ def probe_registration() -> None:
         note("refused, as expected", str(exc).split(".")[0])
         detail(str(exc))
 
-        import dataclasses
-
         from retina_telemetry.collect.consent import (
             AcceptanceRecord,
             Consent,
@@ -253,12 +248,9 @@ def probe_registration() -> None:
                 remote_management=AcceptanceRecord("2026-07-01", "2026-07-31T09:12:00Z"),
                 publication=PublicationChoice("2026-07-01", "2026-07-31T09:12:00Z", "public"),
             ),
-            config=dataclasses.replace(raw, beam_width_deg=60.0),
+            config=raw,
         )
-        print(
-            f"\n  {BOLD}with a simulated consent record and beam width, "
-            f"identity and config real:{RESET}"
-        )
+        print(f"\n  {BOLD}with a simulated consent record, everything else real:{RESET}")
         _json(simulated)
 
         check(

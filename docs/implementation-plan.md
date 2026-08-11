@@ -148,8 +148,7 @@ retina-telemetry/
 │   │   ├── detection.py     DetectionPoll → DetectionFrame: units, adsb_hex, seq
 │   │   ├── config.py        NodeConfigRaw → NodeConfig
 │   │   ├── heartbeat.py     health + state + versions + errors → HeartbeatRequest
-│   │   ├── registration.py  → RegisterRequest (two fields blocked: Q1, Q2)
-│   │   └── serialise.py     required nulls survive, optional ones are dropped
+│   │   └── registration.py  → RegisterRequest (one field blocked: Q2)
 │   │
 │   └── comms/               ── stage 3 ──
 │       ├── client.py   3a   session, auth, backoff, Retry-After, clock offset
@@ -276,7 +275,6 @@ container on the node that talks to the internet.
   (`DetectionPoll.adsb is None`), map association objects down to `.hex`, attach `seq`
   and `config_version`. Arrays arrive already checked for equal length by `collect/`.
 - `config.py`, `heartbeat.py`, `registration.py`.
-- `serialise.py` — `to_wire`, which is what payloads must go through. See below.
 
 **Deliverable:** given stage 1's output, valid wire payloads. Still no network.
 
@@ -288,34 +286,41 @@ field map in its docstring; and `wire/__init__.py` holds the complete provenance
 four payloads, including the rows marked "caller" that mark where `state.py` and stage 3
 plug in.
 
-**Blocked, and scoped around:** the registration payload needs `beam_width_deg` /
-`beam_azimuth_deg` (Q1) and the three acceptance records (Q2). The other eleven `NodeConfig`
-fields, the detection frame and the heartbeat body are all unblocked. Build the seam,
-leave the two fields open. `build_node_config` and `build_registration` therefore raise
-on a real node today — that is tested, but it means neither has executed end to end
-against live data.
+**Blocked, and scoped around:** the registration payload needs the three acceptance
+records (Q2). The antenna geometry stopped blocking on 2026-08-11, when the spec made
+both beam fields optional — `build_node_config` now succeeds on a real node and has
+executed against live data. `build_registration` still raises `IncompletePayload` until
+retina-gui persists consent, which is tested.
 
-#### Serialisation has one rule, and `exclude_none` breaks it
+#### Serialisation, and the module that used to be here
 
-Payloads go out through `wire.to_wire`, not `model_dump(exclude_none=True)`:
+Payloads go out as `model_dump(mode="json", exclude_none=True)`. Both arguments carry
+weight:
 
-> **Drop a `None` only if the field is optional. Keep it if the spec requires it, even
-> when its value is null.**
+- **`mode="json"`** encodes the acceptance timestamps. Without it they stay as `datetime`
+  objects and `json.dumps` refuses the registration payload outright — it would fail at
+  send time with nothing having validated it.
+- **`exclude_none=True`** drops what we do not know, which is the honest report for an
+  unreadable `cpu_pct` or an uncharacterised antenna.
 
-`exclude_none=True` is the obvious choice and is wrong exactly once.
-`NodeConfig.beam_azimuth_deg` is *required* and *nullable* — `type: [number, "null"]`
-and listed under `required` — because `null` is how the spec spells
-broadside/omnidirectional. Dropping it produces a payload the server rejects, and
-`NodeConfig` is nested inside `RegisterRequest`, so the mistake propagates to the one
-request a node cannot recover from failing.
+`wire/serialise.py` used to sit here enforcing a stricter rule: *drop a `None` only if
+the field is optional; keep it if the spec requires it, even when its value is null.*
+That mattered because `NodeConfig.beam_azimuth_deg` was **required and nullable** —
+`null` was how the spec spelled broadside/omnidirectional, so dropping the key produced a
+payload the server rejects, and `NodeConfig` is nested inside `RegisterRequest`, which
+made it propagate to the one request a node cannot recover from failing. Found by
+`tools/probe_wire.py` printing a real payload, not by any unit test.
 
-It is the only field in the spec with that combination; the other nullable declaration
-is `adsb_hex`'s *items*, which live inside a list and are untouched. One field is
-exactly the number that gets missed, which is why the rule is derived from
-`is_required()` on the generated models rather than written as a list of exceptions — a
-spec revision cannot silently invalidate it.
+**The 2026-08-11 revision made both beam fields optional, leaving the spec with no
+required-nullable field at all.** With no subject, `to_wire` and `exclude_none=True`
+became the same function, and the module was deleted rather than carried inert.
 
-Found by `tools/probe_wire.py` printing a real payload, not by unit tests.
+The trade is that a future revision adding such a field would break payloads silently.
+`tests/wire/test_payload_encoding.py` turns that into a loud failure — one canary
+asserting no payload field is both required and nullable, another asserting every payload
+survives `json.dumps`. Both were verified to fire against the exact regression they
+guard. Restoring the old behaviour means reinstating `wire/serialise.py` from git
+history.
 
 ### Stage 3a — the machinery
 
@@ -435,7 +440,7 @@ through 3c first — it is independent of the detection path and the more valuab
 | Assert array lengths in `collect/`, not `wire/` | blah2 guarantees it by construction but validates nothing; source coherence needs no server knowledge, and a malformed frame should never reach the slot |
 | Liveness derived in `collect/blah2.py` | it needs the poll and the CPI, both of which live in stage 1; the wedged case is invisible to anything watching container state |
 | Payload models generated from the spec | the spec is someone else's contract and drift is the failure mode; generation makes "the spec is the scope" mechanical, and brings the spec's own constraints along — `node_id="Unknown"` and `config_version=0` are rejected at construction without anyone remembering |
-| Payloads serialised via `wire.to_wire` | `exclude_none=True` drops `beam_azimuth_deg`, which is required *and* nullable, producing a payload the server rejects |
+| Payloads serialised with `model_dump(mode="json", exclude_none=True)` | `mode="json"` is load-bearing for the acceptance timestamps; `exclude_none` is safe only while no spec field is required-and-nullable, which `tests/wire/test_payload_encoding.py` guards |
 | A local state vocabulary, mapped to the wire's | the spec's `NodeState` is a closed set of five; ours has ten because the status document can report things a node with no token cannot say to the server at all |
 | No consent record is ever synthesised | a missing record means the owner was not shown that text. The server may default an absent publication choice to `public` — that is its decision about its own archive, not licence for us to invent an acceptance |
 | `uptime_s` is the device's | the heartbeat is the node's account of itself and "the node" is the board. blah2 reports its own at `/api/timing` and this process knows its own; neither is what the field means |

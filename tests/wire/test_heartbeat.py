@@ -3,7 +3,6 @@ import pytest
 
 from retina_telemetry.collect.host import HostSnapshot
 from retina_telemetry.wire.heartbeat import build_heartbeat
-from retina_telemetry.wire.serialise import to_wire
 
 OWL_HOST = HostSnapshot(cpu_pct=63.8, temp_c=70.5, disk_free_mb=15743, host_uptime_s=181569)
 
@@ -143,7 +142,7 @@ def test_partial_versions_send_what_is_readable():
 
 
 def test_errors_default_to_an_empty_list():
-    assert to_wire(build())["errors"] == []
+    assert build().model_dump(mode="json", exclude_none=True)["errors"] == []
 
 
 def test_errors_are_copied_not_aliased():
@@ -154,4 +153,6 @@ def test_errors_are_copied_not_aliased():
     beat = build(errors=accumulated)
     accumulated.clear()
 
-    assert to_wire(beat)["errors"] == ["detection poll failed: connection refused"]
+    assert beat.model_dump(mode="json", exclude_none=True)["errors"] == [
+        "detection poll failed: connection refused"
+    ]

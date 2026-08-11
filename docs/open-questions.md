@@ -11,17 +11,6 @@ decided during the build.
 
 ## BLOCKING
 
-### Q1 — `beam_width_deg` / `beam_azimuth_deg` do not exist anywhere
-
-Zero hits across owl-os, retina-node, retina-gui, blah2-arm. `NodeConfig` marks both
-required, so registration cannot be populated. This is new config fields + GUI form +
-wizard step, not a mapping.
-
-**Proposal:** are current nodes all effectively omnidirectional? If so, ship v1 with a
-sensible default `beam_width_deg` and `beam_azimuth_deg: null`, and add real UI once
-directional installs exist. Needs confirmation that a placeholder width is not worse
-than useless to the solver.
-
 ### Q2 — no agreement records exist to send
 
 **The 2026-08-10 revision made this larger, not smaller.** One `agreement` became three
@@ -227,6 +216,32 @@ connection? A 60 s heartbeat should keep it warm, but confirmation beats discove
 ---
 
 ## Answered
+
+### Q1 — the beam geometry fields do not exist anywhere — CLOSED 2026-08-11
+
+**Resolved by a spec change, agreed with the server author and relayed by Josh.** Both
+fields were removed from `NodeConfig.required` in `docs/node-ingest-v1.yml`, so an
+uncharacterised antenna omits both keys.
+
+**This is the one time the spec has been edited on our side**, a deliberate exception to
+the working agreement that it is read-only input. The edit lives in our copy, not theirs:
+if they send another revision it will not carry the change unless they made it upstream
+too. Check `NodeConfig.required` when adopting one.
+
+retina-gui is not collecting the geometry from owners for the foreseeable future, so
+absent is the fleet-wide steady state rather than a temporary gap. Nothing is substituted.
+
+**Two superseded positions, recorded so they are not re-derived.** The original was "a
+guessed beam width is worse than a node that will not register" — correct while the field
+was mandatory, and it made `build_node_config` raise `IncompleteConfig`. The intermediate
+defaulted an unset width to 360, on the grounds that refusing traded a silent misreport
+for a silent node. Both are moot now the field is optional, and the second was still a
+claim the node had not made.
+
+**Knock-on:** `beam_azimuth_deg` was the spec's only required-and-nullable field and the
+sole reason `wire/serialise.py` existed. With no subject left, that module was deleted
+and payloads now go out as `model_dump(mode="json", exclude_none=True)`. The assumptions
+that makes safe are guarded by `tests/wire/test_payload_encoding.py`.
 
 ### Q8 — detections only: where do track events go? — DECIDED 2026-08-11
 

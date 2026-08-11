@@ -3,7 +3,7 @@ import dataclasses
 import pytest
 
 from retina_telemetry.collect.node_config import NodeConfigRaw
-from retina_telemetry.wire.config import IncompleteConfig, build_node_config
+from retina_telemetry.wire.config import build_node_config
 
 # Owl's real values, from the live probe.
 OWL = NodeConfigRaw(
@@ -17,7 +17,7 @@ OWL = NodeConfigRaw(
     fc_hz=503000000.0,
     fs_hz=2000000.0,
     delay_max_bins=400,
-    beam_width_deg=60.0,  # Q1 — not on a real node yet
+    beam_width_deg=60.0,  # not written on a real node; see Q1
     beam_azimuth_deg=None,
 )
 
@@ -69,35 +69,60 @@ def test_tx_callsign_carries_a_display_name():
     assert build_node_config(OWL).tx_callsign == "Crystal Palace"
 
 
-# ── the Q1 blocker ───────────────────────────────────────────────────
+# ── an uncharacterised antenna: the normal case ──────────────────────
+#
+# retina-gui is not collecting beam geometry from owners for the foreseeable
+# future, so every node in the fleet takes these paths. They are the default
+# behaviour, not an edge case.
 
 
-def test_missing_beam_width_raises():
-    """The intended failure. Stage 1 reads it as optional because raising there
-    would make every node unreadable; this is the layer that knows the spec
-    requires it."""
+def test_an_unset_beam_width_is_omitted_not_defaulted():
+    """Nothing is substituted. A value the node did not give us must never reach
+    the server — the same discipline as the consent records."""
     unconfigured = dataclasses.replace(OWL, beam_width_deg=None)
 
-    with pytest.raises(IncompleteConfig, match="Q1"):
-        build_node_config(unconfigured)
+    payload = build_node_config(unconfigured).model_dump(mode="json", exclude_none=True)
+
+    assert "beam_width_deg" not in payload
 
 
-def test_the_error_says_what_to_do_about_it():
-    unconfigured = dataclasses.replace(OWL, beam_width_deg=None)
+def test_an_uncharacterised_antenna_omits_both_keys():
+    bare = dataclasses.replace(OWL, beam_width_deg=None, beam_azimuth_deg=None)
 
-    with pytest.raises(IncompleteConfig) as caught:
-        build_node_config(unconfigured)
+    payload = build_node_config(bare).model_dump(mode="json", exclude_none=True)
 
-    assert "not configured on this node" in str(caught.value)
+    assert "beam_width_deg" not in payload
+    assert "beam_azimuth_deg" not in payload
+    assert payload["rx_lat"] == 51.4769  # the rest of the config is intact
 
 
 def test_no_beam_width_is_ever_invented():
-    """A guessed beam width is worse than a node that will not register: the
-    first is wrong data the server cannot detect."""
-    unconfigured = dataclasses.replace(OWL, beam_width_deg=None)
+    """Two earlier designs are superseded: raising, and defaulting to 360. Both
+    are recorded in Q1. Neither should come back by accident."""
+    payload = build_node_config(dataclasses.replace(OWL, beam_width_deg=None)).model_dump(
+        mode="json", exclude_none=True
+    )
 
-    with pytest.raises(IncompleteConfig):
-        build_node_config(unconfigured)
+    assert payload.get("beam_width_deg") is None
+
+
+def test_a_configured_width_is_sent_verbatim():
+    for width in (60.0, 360.0):
+        payload = build_node_config(dataclasses.replace(OWL, beam_width_deg=width)).model_dump(
+            mode="json", exclude_none=True
+        )
+        assert payload["beam_width_deg"] == width
+
+
+def test_a_known_azimuth_survives_an_unknown_width():
+    """The two fields are independent. An operator who knows where the antenna
+    points but not how wide the beam is has told us something true."""
+    partial = dataclasses.replace(OWL, beam_width_deg=None, beam_azimuth_deg=90.0)
+
+    payload = build_node_config(partial).model_dump(mode="json", exclude_none=True)
+
+    assert "beam_width_deg" not in payload
+    assert payload["beam_azimuth_deg"] == 90.0
 
 
 def test_absent_azimuth_is_valid_and_means_omnidirectional():

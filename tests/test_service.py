@@ -185,15 +185,19 @@ def test_a_node_with_no_identity_says_so(node, server):
     assert "Mender" in document["detail"]
 
 
-def test_a_node_without_beam_geometry_cannot_register(node, server):
-    """Q1 — the real state of every node in the fleet."""
+def test_a_node_without_beam_geometry_registers_without_it(node, server):
+    """The real state of every node in the fleet, and it must not strand them.
+    retina-gui is not collecting the geometry, so this is the default path."""
     document = yaml.safe_load((node / "config.yml").read_text())
     del document["location"]["rx"]["beam_width"]
     (node / "config.yml").write_text(yaml.safe_dump(document))
 
-    run_briefly(Service(settings_for(node, server)), seconds=0.8)
+    service = Service(settings_for(node, server))
+    run_briefly(service, seconds=1.0, until=lambda: service.state.snapshot().registered)
 
-    assert server.received("register") == []
+    sent = server.received("register")
+    assert len(sent) == 1
+    assert "beam_width_deg" not in sent[0].body["config"]
 
 
 def test_fixing_consent_takes_effect_without_a_restart(node, server):
@@ -347,9 +351,10 @@ def test_a_missing_config_is_reported(node, server):
     assert "does not exist" in status(node)["detail"]
 
 
-def test_beam_geometry_removed_after_registration_blocks_the_resend(node, server):
-    """The Q1 field disappearing mid-run is the same fault as it never being
-    there, and must not be retried into silence."""
+def test_beam_geometry_removed_after_registration_still_resends(node, server):
+    """The key disappearing mid-run is the same as it never being there: the node
+    keeps talking and omits it, rather than going quiet over a field the spec no
+    longer demands."""
     service = Service(settings_for(node, server))
     run_briefly(service, until=lambda: service.state.snapshot().registered)
 
@@ -358,6 +363,8 @@ def test_beam_geometry_removed_after_registration_blocks_the_resend(node, server
     (node / "config.yml").write_text(yaml.safe_dump(document))
     service.state.request_config_resend()
 
-    run_briefly(service, seconds=1.0, until=lambda: "Q1" in (status(node).get("detail") or ""))
+    run_briefly(service, seconds=1.0, until=lambda: server.received("config"))
 
-    assert "Q1" in status(node)["detail"]
+    resent = server.received("config")
+    assert resent, "the resend must still happen"
+    assert "beam_width_deg" not in resent[-1].body

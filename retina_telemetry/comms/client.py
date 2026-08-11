@@ -179,7 +179,8 @@ class Client:
         """Send one request and classify the answer.
 
         Args:
-            payload: already serialised by ``wire.to_wire``. Passed as ``json=``
+            payload: already serialised with ``model_dump(mode="json",
+                exclude_none=True)``. Passed as ``json=``
                 so a required null survives — a payload built here would be a
                 layering violation anyway.
             token: omitted for registration, which is what mints it.

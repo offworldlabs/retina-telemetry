@@ -495,8 +495,6 @@ components:
         - tx_callsign
         - fc_hz
         - fs_hz
-        - beam_width_deg
-        - beam_azimuth_deg
         - max_range_km
       properties:
         rx_lat:

@@ -272,10 +272,10 @@ Source of truth on the node: `/data/retina-node/config/config.yml`, produced by
 | `fc_hz` | `capture.fc` | — |
 | `fs_hz` | `capture.fs` | — |
 | `max_range_km` | `process.ambiguity.delayMax` | `delayMax × c / fs / 1000` = 60 km at 400 bins / 2 MHz — Q6 |
-| `beam_width_deg` | `location.rx.beam_width` — **not written yet** | Q1 — blocking |
-| `beam_azimuth_deg` | `location.rx.beam_azimuth` — **not written yet** | Q1 — blocking |
+| `beam_width_deg` | `location.rx.beam_width` — **not written, and not planned** | optional; key omitted when unset |
+| `beam_azimuth_deg` | `location.rx.beam_azimuth` — **not written, and not planned** | optional; key omitted when unset |
 
-### Beam geometry: scaffolded, not sourced
+### Beam geometry: scaffolded, optional, and absent everywhere
 
 Both are required by the spec and neither exists on a node. Re-verified 2026-08-06:
 one hit across all four repos, `boresight: 0.0` in
@@ -294,12 +294,25 @@ no antenna section), both read as optional, and landing the retina-gui work shou
 config change rather than a code change. If retina-gui puts them elsewhere, those two
 constants are the only edit.
 
-**The two `None`s do not mean the same thing.** A missing `beam_width_deg` is
-unconfigured and blocks registration. A missing `beam_azimuth_deg` is
-broadside/omnidirectional and is a *valid* wire value — the spec asks for `null` rather
-than `0.0` for exactly that case. So an unconfigured azimuth and a deliberate
-omnidirectional one are indistinguishable, which is acceptable because Q1 proposes
-omnidirectional as the fleet default anyway.
+**Both are optional, and absent is the normal case.** The 2026-08-11 revision removed
+them from `NodeConfig.required` with the server author's agreement, and retina-gui is not
+collecting the geometry from owners for the foreseeable future. So every node in the
+fleet omits both keys, and that is the steady state rather than a gap awaiting cleanup.
+
+Nothing is substituted for a missing value — no value the node did not give us reaches
+the server, the same discipline as the consent records.
+
+Two superseded designs, recorded so they are not re-derived. The first raised, on the
+grounds that a guessed beam width is worse than a node that will not register; correct
+while the field was mandatory. The second defaulted an unset width to 360, on the grounds
+that refusing traded a silent misreport for a silent node; still a claim the node had not
+made. Both are moot now the field is optional. See Q1.
+
+**One distinction the spec draws that we cannot express.** An absent `beam_azimuth_deg`
+means "not characterised"; an explicit `null` means "characterised, and
+broadside/omnidirectional". An unset config key reads as `None`, so we can only ever
+produce the first. If retina-gui ever grows an explicit omnidirectional choice, the
+second becomes expressible with no change to `collect/` or `wire/`.
 
 `beam_width_deg` and `beam_azimuth_deg` returned zero hits across owl-os, retina-node,
 retina-gui and blah2-arm. These are new config fields plus GUI plumbing, not a mapping.

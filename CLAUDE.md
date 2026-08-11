@@ -14,7 +14,7 @@ anything — the reasoning behind most of the code is there rather than in the c
 |---|---|
 | `docs/node-ingest-v1.yml` | The server contract. Read-only input — proposed changes go in open-questions, not here |
 | `docs/data-sources.md` | Verified facts about where node data comes from, its units, and its gotchas. Do not re-derive these |
-| `docs/open-questions.md` | Awaiting answers from the server author. Two are blocking; the 2026-08-10 spec revision answered Q9 and enlarged Q2 |
+| `docs/open-questions.md` | Awaiting answers from the server author. One is blocking (Q2); the 2026-08-10 revision answered Q9 and enlarged Q2 |
 | `docs/implementation-plan.md` | Architecture, module layout, the three build stages |
 
 ## The build is staged by layer, not by endpoint
@@ -40,19 +40,17 @@ Corollary: **all unit conversion happens in stage 2.** Stage 1 hands over source
 under names that say so — `delay_km`, `timestamp_ms`, `rx_alt_m` — and stage 2 emits the
 spec's names and units. A missing conversion is then visible at the call site.
 
-## Two blocking questions
+## One blocking question
 
-Registration cannot be populated until these land (`docs/open-questions.md` Q1, Q2):
+Registration cannot be populated until this lands (`docs/open-questions.md` Q2):
 
-1. `beam_width_deg` / `beam_azimuth_deg` are required by the spec and **do not exist
-   anywhere** in the node stack.
-2. `RegisterRequest.agreements` needs **three** persisted records — `licence`,
+1. `RegisterRequest.agreements` needs **three** persisted records — `licence`,
    `remote_management` and `publication`. The EULA is a placeholder and the wizard
    checkbox persists nothing. `publication` is a privacy decision, not a form field:
    it governs whether a dwelling's position reaches a public archive, and its
    `version` records which disclosure wording the owner saw.
 
-Both land in stage 2's registration payload. Everything else is buildable against a mock
+It lands in stage 2's registration payload. Everything else is buildable against a mock
 generated from the OpenAPI spec — and stages 1 and 2 need no server at all, not even a
 mock.
 
@@ -99,11 +97,17 @@ Full detail and citations in `docs/data-sources.md`. The short version:
 - **No consent record is ever synthesised.** A missing one means the owner was not shown
   that text. The server defaulting an absent publication choice to `public` is its
   decision about its own archive, not permission for us to invent an acceptance.
-- **Never serialise a payload with `exclude_none=True`.** Use `wire.to_wire`.
-  `beam_azimuth_deg` is required *and* nullable — `null` means omnidirectional — so
-  dropping it produces a payload the server rejects, and it is nested inside
-  `RegisterRequest`. It is the only such field in the spec, which is exactly why it gets
-  missed.
+- **Serialise payloads with `model_dump(mode="json", exclude_none=True)`.** Both
+  arguments matter. `mode="json"` encodes the acceptance timestamps — without it
+  `json.dumps` refuses the registration payload outright. `exclude_none=True` is only
+  safe because no field in the spec is *required and nullable*; such a field's `null` is
+  a value the server expects, and dropping it produces a payload it rejects.
+  `beam_azimuth_deg` was the one, until the 2026-08-11 revision made it optional, and
+  `wire/serialise.py` existed solely to handle it. `tests/wire/test_payload_encoding.py`
+  guards both assumptions — read it before changing how anything is serialised.
+- **The antenna geometry is optional, and absent is the normal case.** retina-gui is not
+  collecting `beam_width_deg` / `beam_azimuth_deg` from owners for the foreseeable
+  future, so every node omits both keys. Nothing is ever substituted for them.
 
 ## Conventions
 
@@ -123,6 +127,10 @@ Full detail and citations in `docs/data-sources.md`. The short version:
 - Nothing gets deployed to a live node without Josh's express sign-off.
 - The OpenAPI spec is someone else's contract. Disagreements go to
   `docs/open-questions.md` for them to answer; do not edit the spec to match the code.
+  **One exception exists**: on 2026-08-11 the beam fields were made optional in
+  `docs/node-ingest-v1.yml` with the server author's agreement, relayed by Josh. The
+  change lives in our copy rather than theirs, so the next revision they send will not
+  carry it — check `NodeConfig.required` when adopting one. See Q1.
 - **The spec is the scope.** If a field is not in it, we do not collect it — however
   cheap or obviously useful it looks. Wanting something new means an open question to
   the server author, not a field we add unilaterally. This has already removed Pi
