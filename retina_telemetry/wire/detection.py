@@ -50,8 +50,9 @@ def build_detection_frame(
         poll: from ``collect.blah2.Blah2Client.poll_detection``.
         seq: restart-local monotonic counter, from ``state.py``. Not the same as
             capture continuity — ``seq`` gaps are transport loss, which is
-            constant and intended under latest-wins, while a gap in ``t`` larger
-            than one CPI is capture loss and is invisible any other way (Q3).
+            constant and intended under latest-wins, while ``t`` spacing beyond
+            one CPI is capture loss. The two are independent, and only the first
+            is visible to the server (Q3).
         config_version: server-issued, cached in ``state.py``. Never invented —
             the server returns it and the node adopts whatever comes back.
     """

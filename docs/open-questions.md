@@ -64,19 +64,33 @@ yes, deliberately. What remains for the server author:
 
 ## WIRE
 
-### Q3 — timestamp window edge, and `cpi_s`
+### Q3 — timestamp window edge, and the detection rate
 
 `t` is currently the **end** of the capture window (see `data-sources.md` §2). The spec
-says "the capture time of the CPI", which is ambiguous. Two asks:
+says "the capture time of the CPI", which is ambiguous. One ask, plus one disclosure:
 
-1. State which edge — start, centre, or end.
-2. Add **`cpi_s` to `NodeConfig`**. The offset scales with `cpi`, which is per-node
-   config the server never sees, so it currently cannot correct for it. The same field
-   also makes capture gaps detectable (`t[n+1] - t[n] > cpi_s`), which nothing else
-   reveals — `seq` stays contiguous through capture loss.
+1. **State which edge** — start, centre, or end.
+2. **The endpoint table's "2 Hz, fixed" cannot be honoured**, and not merely because
+   processing is slow today. The node has no send cadence: one POST per frame blah2
+   produces, no timer, no batching, at most one in flight. The arrival rate at the server
+   therefore *is* the radar's frame rate, which is processing-bound — ~886 ms on Owl
+   against a configured `cpi: 0.5`, and varying with load and hardware.
 
-Not asking for sub-CPI resolution. 0.5 s is the practical floor and ±0.25 s against a
-4 s association window is fine.
+**The `cpi_s` request was dropped on 2026-08-11, and the reasoning is worth keeping.**
+It was justified on two grounds and neither survived:
+
+- *Correcting the window-edge offset.* `cpi` is 0.5 across the whole fleet, so the offset
+  is a constant the server can be told once in prose. It is ±0.25 s inside a 4 s
+  association window. The "two nodes on different `cpi`" case that motivated it is
+  hypothetical — we have no such nodes.
+- *Detecting capture gaps.* See `data-sources.md` §2: the test fires on every frame,
+  because processing exceeds the CPI everywhere. It detects the permanent condition, not
+  an event.
+
+What remains is that `cpi_s` would let the server compute coverage fraction. That is a
+real signal, but it is a want of theirs to express rather than a field for us to lobby
+for — the same discipline as `CLAUDE.md`'s "the spec is the scope", applied in the
+outbound direction.
 
 ### Q4 — units: `delay` and altitudes
 

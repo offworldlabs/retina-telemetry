@@ -130,6 +130,8 @@ Full detail and citations in `docs/data-sources.md`. The short version:
   tolerances; `docs/data-sources.md` §5 keeps the list and the reasons, so nobody
   re-derives them.
 - Collecting something the spec does not send is justified **only** when a required
-  field depends on it — `cpi_s` seeds the staleness window behind `NodeHealth.blah2`,
-  `truth.adsb.enabled` distinguishes "ADS-B off" from "ADS-B broken". Say which required
-  field, in a comment, at the point of collection.
+  field depends on it. Today exactly one thing qualifies: `delay_max_bins` is collected
+  because `max_range_km` is derived from it. Say which required field, in a comment, at
+  the point of collection. Two earlier examples died — `cpi_s` seeded a staleness window
+  that no longer exists, and `truth.adsb.enabled` turned out to be redundant because the
+  presence of the `adsb` key *is* the flag.

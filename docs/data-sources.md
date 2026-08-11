@@ -150,10 +150,14 @@ Resolution is one CPI (0.5 s) and that is the practical floor — one timestamp 
 frame is all blah2 produces. Against the server's 4 s association window, ±0.25 s of
 quantisation is ~6% and not worth chasing.
 
-What *is* worth fixing is that the window edge is undocumented, and that the offset
-scales with `cpi`, which is per-node config the server does not currently receive.
-Two nodes on different `cpi` have different common-mode offsets and the server cannot
-correct for it. See open question Q3 — the fix is one field, `cpi_s`, in `NodeConfig`.
+What *is* worth fixing is that the window edge is undocumented. See open question Q3,
+which asks the server author to state it.
+
+The offset does scale with `cpi`, so two nodes on different `cpi` would carry different
+common-mode offsets the server could not correct. That argued for sending `cpi_s` and no
+longer does: `cpi` is 0.5 across the whole fleet, which makes the offset a constant the
+server can be told once in prose rather than a field it has to carry. Q3 records why the
+request was withdrawn.
 
 ### Capture gaps
 
@@ -168,15 +172,25 @@ holds the lock for the whole extraction), so measurements within a frame are val
 What is lost is temporal *coverage* between frames — a target crossing during the gap
 never appears.
 
-This is detectable without any new mechanism: `t[n+1] - t[n] > cpi_s` means capture
-was dropped in between. Another reason `cpi_s` earns its place in `NodeConfig`.
+`t[n+1] - t[n] > cpi_s` does mean capture was dropped in between, but **it is not a
+useful detector and an earlier version of this document was wrong to present it as one.**
+Processing exceeds the CPI on every node we have measured, so the condition holds for
+every frame — 27 of 27 gaps in a captured run, minimum 0.866 s against a 0.5 s CPI. It
+describes the permanent state of the fleet rather than an event. It would only
+discriminate once processing fits inside the CPI, at which point there would be nothing
+to detect.
+
+What the ratio does give is a magnitude: `cpi_s / (t[n+1] - t[n])` is the fraction of
+time actually covered — 56% mean over that run, ranging 46–58%. That is worth knowing
+locally. It is not worth asking the server to carry a field for, which is why the
+`cpi_s` request was dropped from Q3.
 
 Note the distinction, because the spec conflates them under `seq`:
 
 | Signal | Reveals |
 |---|---|
 | `seq` gaps | **transport** loss — deliberate and constant under latest-wins |
-| `t` spacing > `cpi_s` | **capture** loss — invisible any other way |
+| `t` spacing vs one CPI | **capture** loss. Currently always present, so the ratio is a magnitude rather than a flag |
 
 ---
 
@@ -482,7 +496,7 @@ with mounts and dependencies it cannot justify.
 | Pi throttle flags | No field. `vcgencmd get_throttled` works but needs `/dev/vcio` mounted plus the Pi userland binary in the image; `/sys/class/hwmon/*/name == rpi_volt` exposes `in0_lcrit_alarm` for free, but with nowhere to send it that is moot |
 | `truth.adsb.delay_tolerance`, `doppler_tolerance` | Q7 proposes sending them so the server knows what it is comparing. Until it does, nothing local needs them |
 | `truth.adsb.enabled` | Redundant. `api/server.js:328` gates the whole enrichment on it, so the `adsb` key is present on a polled frame if and only if the flag is set — key presence *is* the flag |
-| `process.data.cpi` | Its only consumer was a staleness window that no longer exists (see below). Q3 proposes sending it |
+| `process.data.cpi` | Its only consumer was a staleness window that no longer exists (see below). Q3 briefly proposed sending it as `cpi_s`; that request was withdrawn on 2026-08-11 |
 
 If any of these become genuinely necessary, the route is an open question to the server
 author, not a field we invent.
@@ -539,8 +553,11 @@ Two consequences for us:
 
 1. **A staleness window must derive from the observed frame period, not `cpi_s`.** The
    configured value is not what the node honours, and is out by 1.8× here.
-2. It makes Q3 sharper. The server sees 1.13 Hz and cannot tell a configured rate from a
-   node dropping half its capture coverage, because it never receives `cpi_s`.
+2. It makes Q3 sharper, though not in the direction first assumed. The server sees
+   1.13 Hz against a spec that promises "2 Hz, fixed", and since we POST once per frame
+   with no cadence of our own, the arrival rate *is* the radar's frame rate. That is
+   worth telling them plainly. It does not follow that they need `cpi_s` to make sense
+   of it — the coverage loss it would quantify is ours to fix, not theirs to weigh.
 
 Expanding the ring buffer is the fix and is separate work — there is RAM headroom. This
 is recorded as expected behaviour, not a defect.
