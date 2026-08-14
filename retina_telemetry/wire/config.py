@@ -29,13 +29,14 @@ def build_node_config(config: NodeConfigRaw) -> NodeConfig:
     | ``delay_tolerance_us`` | ``config.delay_tolerance_km`` | **× 3.335641** |
     | ``doppler_tolerance_hz`` | ``config.doppler_tolerance_hz`` | none, Hz both sides |
 
-    **Both beam fields are optional and nothing is substituted for them.** The
-    spec made them optional on 2026-08-11, so an uncharacterised antenna simply
-    omits both keys — no value the node did not give us reaches the server,
-    which is the same discipline as the consent records.
+    **Both beam fields are nullable and nothing is substituted for them.** They
+    are required *and* nullable in v1.1.1, so an uncharacterised antenna sends
+    two explicit nulls — ``null`` says "not characterised" where an absent key
+    would say nothing at all. No value the node did not give us reaches the
+    server, which is the same discipline as the consent records.
 
     That is not a temporary state. retina-gui is not collecting the geometry
-    from owners for the foreseeable future, so **absent is the normal case on
+    from owners for the foreseeable future, so **null is the normal case on
     every node in the fleet**, not an edge to be tidied up later. Treat a
     populated beam width as the exception when reading this.
 

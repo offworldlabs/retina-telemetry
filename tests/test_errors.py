@@ -1,6 +1,6 @@
 import threading
 
-from retina_telemetry.errors import Errors
+from retina_telemetry.errors import MAX_MESSAGE, Errors
 
 
 def test_a_fault_is_recorded():
@@ -166,3 +166,63 @@ def test_a_batch_knows_how_many_it_carries():
     errors.add("two")
 
     assert len(errors.take()) == 2
+
+
+# ── the rendered string, not the stored one, is what the spec bounds ──
+
+
+def test_a_long_repeated_fault_stays_inside_the_spec_bound():
+    """The bug this exists for. `add` truncated to exactly MAX_MESSAGE and
+    `_render` then appended " (x2)", giving 517 against the spec's maxLength of
+    512. HeartbeatRequest refused it, the payload factory is unguarded, and the
+    heartbeat thread died for the lifetime of the process."""
+    errors = Errors()
+    errors.add("x" * 600)
+    errors.add("x" * 600)
+
+    (rendered,) = errors.take().messages
+
+    assert len(rendered) <= MAX_MESSAGE
+    assert rendered.endswith("(x2)")
+
+
+def test_the_repeat_count_survives_truncation():
+    """The count is the half worth keeping: "seen 300 times" separates a wedged
+    node from a blip, and costs a handful of characters against a traceback
+    nobody reads to the end."""
+    errors = Errors()
+    for _ in range(300):
+        errors.add("y" * 600)
+
+    (rendered,) = errors.take().messages
+
+    assert len(rendered) <= MAX_MESSAGE
+    assert rendered.endswith("(x300)")
+
+
+def test_a_long_fault_seen_once_is_still_bounded():
+    errors = Errors()
+    errors.add("z" * 600)
+
+    (rendered,) = errors.take().messages
+
+    assert len(rendered) <= MAX_MESSAGE
+
+
+def test_every_rendered_fault_builds_a_valid_heartbeat():
+    """Asserted against the generated model rather than against 512, so the
+    bound comes from the spec rather than from a constant we might drift from."""
+    from retina_telemetry.wire.heartbeat import build_heartbeat
+
+    errors = Errors()
+    for n, text in ((1, "a" * 600), (2, "b" * 600), (99, "c" * 600)):
+        for _ in range(n):
+            errors.add(text)
+
+    build_heartbeat(
+        state="streaming",
+        uptime_s=1,
+        config_version=1,
+        boot_id="k3n8v2qp71ab",
+        errors=errors.take().messages,
+    )

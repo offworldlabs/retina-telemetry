@@ -25,8 +25,7 @@ SPEED_OF_LIGHT_M_S = 299_792_458.0
 
 #: blah2 quantises delay to 2 dp in km — 0.01 km ≈ 0.0334 µs — so anything finer
 #: than about 3 dp in microseconds is fabricated precision. Rounding here also
-#: keeps float noise (41.361948400000004) off the wire., which asks the
-#: server author whether they would rather receive kilometres for this reason.
+#: keeps float noise (41.361948400000004) off the wire.
 DELAY_DECIMALS = 3
 
 #: One CPI is 0.5 s and the timestamp is integer milliseconds, so three decimals
@@ -41,7 +40,8 @@ def ms_to_s(timestamp_ms: int) -> float:
     """Epoch milliseconds → epoch float seconds.
 
     blah2's ``timestamp``, which is the **end** of the capture window rather
-    than its start or middle (
+    than its start or middle. Spec v1.1.1 states that explicitly and pairs it
+    with ``cpi_s``, so the server knows the samples span ``[t - cpi_s, t]``.
     """
     return round(timestamp_ms / 1000.0, SECONDS_DECIMALS)
 

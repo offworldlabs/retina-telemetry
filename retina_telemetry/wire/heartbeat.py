@@ -76,7 +76,9 @@ def build_heartbeat(
             this path should never fire.
         config_version: server-issued, cached in ``state.py``, and ``None``
             until the first one arrives. Nullable on the wire since v1.1.1, so a
-            node that has never held a version still beats and says so — see It remains required and non-null on ``DetectionFrame``.
+            node that has never held a version still beats and says so. It
+            remains required and non-null on ``DetectionFrame``, where a frame
+            cannot be filed without the geometry it was measured against.
         host: from ``collect.host.HostReader.read``. ``None``, or any ``None``
             field within it, omits the corresponding health entry. Note
             ``cpu_pct`` is always ``None`` on the first read, since ``/proc/stat``

@@ -372,3 +372,57 @@ def test_beam_geometry_removed_after_registration_still_resends(node, server):
     resent = server.received("config")
     assert resent, "the resend must still happen"
     assert resent[-1].body["beam_width_deg"] is None
+
+
+# ── faults that used to kill a loop silently ─────────────────────────
+
+
+def test_an_out_of_range_config_does_not_kill_registration(node, server):
+    """A latitude past 90 parses as YAML and then fails the spec's bounds, so it
+    raised ValidationError out of the payload builder. registration_loop had no
+    guard, the thread died, and nothing was written anywhere saying why — the
+    status document showed `unregistered` with no detail."""
+    document = yaml.safe_load((node / "config.yml").read_text())
+    document["location"]["rx"]["latitude"] = 91.0
+    (node / "config.yml").write_text(yaml.safe_dump(document))
+
+    service = Service(settings_for(node, server))
+    run_briefly(service, seconds=1.2, until=lambda: status(node).get("detail"))
+
+    assert server.received("register") == []
+    detail = status(node)["detail"]
+    assert "rejected" in detail
+    assert any("registration" in e for e in status(node)["errors"])
+
+
+def test_a_dead_loop_is_reported_rather_than_silent(node, server):
+    """The guard that makes the two bugs above visible instead of fatal. A
+    daemon thread that raises writes nothing to errors[] and nothing to the
+    status document, so a node with a stopped loop looks like a node that has
+    lost power."""
+    service = Service(settings_for(node, server))
+
+    def explode() -> None:
+        raise RuntimeError("synthetic fault")
+
+    supervised = service._supervised("heartbeat", explode)
+    supervised()  # must not raise
+
+    assert "heartbeat" in service._dead_loops
+    assert any("heartbeat loop stopped" in m for m in service.errors.snapshot())
+
+    service.write_status()
+    assert "heartbeat" in status(node)["detail"]
+    assert "will not recover" in status(node)["detail"]
+
+
+def test_a_dead_loop_outranks_every_other_detail(node, server):
+    """The node is not doing what the rest of the document claims, so this has
+    to be the thing an operator reads first."""
+    service = Service(settings_for(node, server))
+    service._config_rejected = "configuration rejected: something else"
+
+    service._supervised("poll", lambda: (_ for _ in ()).throw(RuntimeError("boom")))()
+    service.write_status()
+
+    assert status(node)["detail"].startswith("internal fault")

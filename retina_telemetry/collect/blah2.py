@@ -35,6 +35,7 @@ and ``sdrconnect`` modes.
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from typing import Any
@@ -176,14 +177,33 @@ class Blah2Client:
         try:
             response = self._session.get(f"{self._base_url}/api/detection", timeout=self._timeout_s)
             response.raise_for_status()
-            payload = response.json()
+            body = response.text
         except Exception as exc:  # noqa: BLE001 - the poll loop must never die
             self._last_poll_ok = False
             self._last_error = f"detection poll failed: {exc}"
             log.debug("%s", self._last_error)
             return None
 
+        # Reached blah2-api, so it is up whatever the body turns out to be. Set
+        # before parsing on purpose: decoding used to happen inside the block
+        # above, so an unparseable body was reported as a transport failure and
+        # the heartbeat said blah2 "down" for a service answering 200.
         self._last_poll_ok = True
+
+        # The warmup case, and the reason this is handled separately. blah2-api
+        # initialises `var detection = ''` (api/server.js:69) and serves that
+        # until blah2 delivers its first CPI, so an empty 200 means "up, nothing
+        # yet" — which is a normal state on every stack start, not a fault.
+        if not body.strip():
+            self._last_error = None
+            return None
+
+        try:
+            payload = json.loads(body)
+        except ValueError as exc:
+            self._last_error = f"unparseable frame: {exc}"
+            log.warning("discarding an unparseable detection body: %s", exc)
+            return None
 
         try:
             frame = parse_frame(payload)

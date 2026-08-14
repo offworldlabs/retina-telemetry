@@ -10,7 +10,7 @@ rather than an absence. Dropping the key produces a payload it rejects.
 
 This module existed once before, for a single field, and was deleted on
 2026-08-11 when that field became optional and left the rule with no subject.
-The v1.1.1 revision brings it back with six, and makes the pattern explicit
+The v1.1.1 revision brings it back with seven, and makes the pattern explicit
 rather than incidental — from the spec's own "Saying I do not know":
 
     ``null`` on a field that is present means **known to be unknown**. Fields
@@ -30,7 +30,7 @@ So this is now load-bearing on every payload we send:
 
 The rule is derived from ``is_required()`` on the generated models rather than
 written as a list of exceptions, so a revision that adds or removes one of
-these needs no change here. ``tests/wire/test_payload_encoding.py`` asserts the
+these needs no change here. ``tests/wire/test_serialise.py`` asserts the
 set above matches what the spec actually declares, so the two cannot drift
 apart silently.
 

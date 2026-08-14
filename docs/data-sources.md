@@ -270,8 +270,8 @@ Source of truth on the node: `/data/retina-node/config/config.yml`, produced by
 | `fc_hz` | `capture.fc` | — |
 | `fs_hz` | `capture.fs` | — |
 | `max_range_km` | `process.ambiguity.delayMax` | `delayMax × c / fs / 1000` = 60 km at 400 bins / 2 MHz |
-| `beam_width_deg` | `location.rx.beam_width` — **not written, and not planned** | optional; key omitted when unset |
-| `beam_azimuth_deg` | `location.rx.beam_azimuth` — **not written, and not planned** | optional; key omitted when unset |
+| `beam_width_deg` | `location.rx.beam_width` — **not written, and not planned** | required and nullable; explicit `null` when unset |
+| `beam_azimuth_deg` | `location.rx.beam_azimuth` — **not written, and not planned** | required and nullable; explicit `null` when unset |
 
 ### Beam geometry: scaffolded, optional, and absent everywhere
 
@@ -295,7 +295,8 @@ constants are the only edit.
 **Both are optional, and absent is the normal case.** The 2026-08-11 revision removed
 them from `NodeConfig.required` with the server author's agreement, and retina-gui is not
 collecting the geometry from owners for the foreseeable future. So every node in the
-fleet omits both keys, and that is the steady state rather than a gap awaiting cleanup.
+fleet sends two explicit nulls, and that is the steady state rather than a gap awaiting
+cleanup.
 
 Nothing is substituted for a missing value — no value the node did not give us reaches
 the server, the same discipline as the consent records.

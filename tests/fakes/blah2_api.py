@@ -7,13 +7,40 @@ and a frame with no ``adsb`` key at all (ADS-B association disabled).
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 
 class FakeResponse:
-    def __init__(self, payload: Any = None, status_code: int = 200) -> None:
+    """A response with a real body, not just a decoded object.
+
+    ``text`` is the primary attribute rather than ``json()`` because the client
+    reads the body and decodes it itself. That distinction is not academic: an
+    earlier fake could only express "here is a decoded payload", so it could not
+    represent blah2-api's warmup — a ``200`` whose body is the empty string —
+    and the bug where that was reported as a transport failure was invisible to
+    every test.
+
+    Pass ``text=`` for a raw body, or a payload to have it encoded for you.
+    """
+
+    def __init__(
+        self,
+        payload: Any = None,
+        status_code: int = 200,
+        text: str | None = None,
+    ) -> None:
         self.payload = payload
         self.status_code = status_code
+        self._text = text
+
+    @property
+    def text(self) -> str:
+        if self._text is not None:
+            return self._text
+        if isinstance(self.payload, Exception):
+            raise self.payload
+        return "" if self.payload is None else json.dumps(self.payload)
 
     def raise_for_status(self) -> None:
         if self.status_code >= 400:

@@ -31,10 +31,12 @@ back, which is what keeps the disciplines in one place.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import random
 import signal
 import threading
+from collections.abc import Callable
 from typing import Any
 
 import pydantic
@@ -73,6 +75,10 @@ class Service:
 
         self.state = State(self.settings.token_path)
         self.errors = Errors()
+        #: Loops that raised and will not come back. Reported in the status
+        #: document, because a stopped loop is otherwise indistinguishable
+        #: from a node that is simply quiet.
+        self._dead_loops: set[str] = set()
         self.status = StatusWriter(self.settings.status_path)
         self.slot = Slot()
 
@@ -265,6 +271,17 @@ class Service:
         except IncompletePayload as exc:
             log.info("cannot register yet: %s", exc)
             return None
+        except ValueError as exc:
+            # The same widening as _send_config, and it should have been done at
+            # both call sites at once. pydantic's ValidationError is a
+            # ValueError, so a config that parses but violates the spec's bounds
+            # — a latitude past 90, an fc_hz below the minimum — used to escape
+            # here and kill the registration loop for the lifetime of the
+            # process, with nothing written anywhere to say why.
+            self._config_rejected = f"configuration rejected: {exc}"
+            self.errors.add(f"registration: {exc}")
+            log.warning("cannot build a registration payload: %s", exc)
+            return None
 
     def _beat(self) -> None:
         batch = self.errors.take()
@@ -356,18 +373,68 @@ class Service:
             state=str(state),
             snapshot=self.state.snapshot(),
             node_id=self.node_id(),
-            detail=self._config_rejected or self._config_unreadable or explain(state),
+            detail=self._dead_loop_detail()
+            or self._config_rejected
+            or self._config_unreadable
+            or explain(state),
             errors=self.errors.snapshot(),
         )
 
+    def _dead_loop_detail(self) -> str | None:
+        """Takes precedence over every other detail. A stopped loop means the
+        node is not doing what the rest of the document claims it is."""
+        if not self._dead_loops:
+            return None
+        return (
+            f"internal fault: the {', '.join(sorted(self._dead_loops))} "
+            f"loop{'s have' if len(self._dead_loops) > 1 else ' has'} stopped. "
+            "Restart the container; this will not recover on its own."
+        )
+
     # ── lifecycle ────────────────────────────────────────────────────
+
+    def _supervised(self, name: str, loop: Callable[[], None]) -> Callable[[], None]:
+        """Wrap a loop so an unexpected exception is loud rather than fatal.
+
+        Every loop already guards the failures it expects. This is for the ones
+        nobody thought of, and it exists because the alternative is silence: a
+        daemon thread that raises writes nothing to ``errors[]``, nothing to the
+        status document, and leaves the process alive with one fewer loop. A
+        node that has stopped heartbeating looks exactly like a node that has
+        lost power.
+
+        Two real cases got here. A ``rx_lat`` outside the spec's bounds raised
+        ``ValidationError`` out of the registration payload builder, and one
+        fault longer than 508 characters seen twice rendered to 517 and failed
+        ``HeartbeatRequest``'s ``maxLength``. Both killed their loop for the
+        lifetime of the process; both are fixed at source, and this is what
+        makes the next one visible instead.
+
+        Restarting the loop is deliberately not attempted. A thread that died on
+        a deterministic input would spin, and the useful outcome is that a human
+        sees which loop stopped and why.
+        """
+
+        def supervised() -> None:
+            try:
+                loop()
+            except BaseException as exc:  # noqa: BLE001 - the point is to catch everything
+                self._dead_loops.add(name)
+                self.errors.add(f"{name} loop stopped: {type(exc).__name__}: {exc}")
+                log.exception("%s loop stopped and will not restart", name)
+                # Written immediately rather than waiting for the status loop,
+                # which may itself be the loop that died.
+                with contextlib.suppress(Exception):
+                    self.write_status()
+
+        return supervised
 
     def run(self) -> int:
         log.info("starting; api=%s blah2=%s", self.settings.api_url, self.settings.blah2_url)
         self.write_status()
 
         threads = [
-            threading.Thread(target=loop, name=name, daemon=True)
+            threading.Thread(target=self._supervised(name, loop), name=name, daemon=True)
             for name, loop in (
                 ("poll", self.poll_loop),
                 ("send", self.send_loop),

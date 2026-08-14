@@ -278,3 +278,35 @@ def test_presence_survives_a_failed_poll():
 
     assert blah2.last_poll_ok is False
     assert blah2.last_adsb_present is True
+
+
+# ── blah2-api's warmup body ──────────────────────────────────────────
+
+
+def test_an_empty_body_is_not_a_transport_failure():
+    """blah2-api serves `var detection = ''` (api/server.js:69) until blah2
+    delivers its first CPI. That is a 200 on every stack start, and reporting it
+    as unreachable told the server blah2 was "down" while it was answering."""
+    blah2, _ = client(FakeResponse(text=""))
+
+    assert blah2.poll_detection() is None
+    assert blah2.last_poll_ok is True
+    assert blah2.last_error is None
+
+
+def test_an_unparseable_body_is_not_a_transport_failure_either():
+    """Reached the service, so it is up; the data is the problem. Same
+    distinction the MalformedFrame path already drew for a well-formed JSON
+    object with mismatched arrays."""
+    blah2, _ = client(FakeResponse(text="{not json"))
+
+    assert blah2.poll_detection() is None
+    assert blah2.last_poll_ok is True
+    assert "unparseable" in (blah2.last_error or "")
+
+
+def test_a_real_transport_failure_still_reports_down():
+    blah2, _ = client(ConnectionError("refused"))
+    blah2.poll_detection()
+
+    assert blah2.last_poll_ok is False

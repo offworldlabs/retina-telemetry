@@ -101,6 +101,12 @@ Full detail and citations in `docs/data-sources.md`. The short version:
   a poll or a file read, including "the user changed the config".
 - **`wire/models.py` is generated.** Regenerate with `tools/generate-models.sh`; never
   hand-edit it, and `--check` will catch you.
+- **`stalled` is shipped ahead of the server confirming it.** Spec v1.1.1 marks it
+  "Proposed, confirm before implementing"; we send it for a radar that produced and then
+  stopped, because the alternative — `error` — raises against the node when the fault is
+  the radar's. **The risk, if the server still validates five values:** a heartbeat `400`
+  is `Kind.INVALID`, which is not retryable, so it is dropped — silencing a node whose
+  radar has just died. Worth confirming, and worth reverting in one line if they say no.
 - **`NodeState` on the wire is a closed set of six.** Our local vocabulary is richer
   because the status document can report things a node with no token cannot say at all;
   `NodeState.wire` maps between them. Never send a local value directly.
