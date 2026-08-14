@@ -4,18 +4,22 @@ The node-side telemetry uplink for the RETINA passive radar fleet. One container
 node, owning everything sent to the server: registration, detection streaming,
 heartbeat, config sync. Nothing else on the node talks to `api.retina.fm`.
 
-**Status: all five stages built and running.** Verified end to end on the Owl node
-against a tunnelled mock, including the refusal paths. Read `docs/` before writing
-anything — the reasoning behind most of the code is there rather than in the code.
+**Status: built, and implementing spec v1.1.1.** Verified end to end on the Owl node
+against a tunnelled mock — every endpoint, every reachable state including `stalled`,
+and the refusal paths.
 
 ## Read these first
 
 | Doc | What it holds |
 |---|---|
-| `docs/node-ingest-v1.yml` | The server contract. Read-only input — proposed changes go in open-questions, not here |
+| `docs/node-ingest-v1.yml` | The server contract. Read-only input — never edited to match the code |
 | `docs/data-sources.md` | Verified facts about where node data comes from, its units, and its gotchas. Do not re-derive these |
-| `docs/open-questions.md` | Awaiting answers from the server author. One is blocking (Q2); the 2026-08-10 revision answered Q9 and enlarged Q2 |
-| `docs/implementation-plan.md` | Architecture, module layout, the three build stages |
+
+Two docs, deliberately. An earlier plan and a running list of open questions were
+deleted once the service was built: the plan described stages that no longer exist, and
+the questions had all been answered or withdrawn. Correspondence with the server author
+lives outside version control (see `.gitignore`), because a draft that gets rewritten
+between sends reads as a second, competing spec.
 
 ## The build is staged by layer, not by endpoint
 
@@ -23,7 +27,7 @@ anything — the reasoning behind most of the code is there rather than in the c
 |---|---|---|
 | **1 — Collection** | the four interfaces to the rest of the node stack | the node only |
 | **2 — Construction** | turning what we collected into wire payloads | both sides |
-| **3 — Communication** | `3a` machinery, `3b` lifecycle, `3c` the two disciplines | the server only |
+| **3 — Communication** | request machinery, lifecycle, the two traffic disciplines | the server only |
 
 The rule that keeps it honest: **stage 3 knows nothing about radar, stage 1 knows
 nothing about the server, stage 2 is the only place that knows both.** A bistatic delay
@@ -32,27 +36,33 @@ in `comms/`, or an OpenAPI type in `collect/`, means the boundary has leaked.
 Package layout is `collect/` → `wire/` → `comms/`, with `state.py`, `status.py` and
 `errors.py` at the top level. Not `build/` — it is in `.gitignore`.
 
-Verified on a node by `tools/live-probe.sh` (stage 1 and 2), `tools/live-service.sh`
-(the whole service) and `tools/live-failures.sh` (the server's refusals, driven through
-the mock's control channel).
+Verified on a node by five scripts in `tools/`: `live-probe.sh` (stages 1 and 2),
+`live-service.sh` (the whole service), `live-failures.sh` (the server's refusals),
+`live-stress.sh` (restarts and a broken config) and `live-stalled.sh` (stops blah2 to
+reach `stalled` — the only one that writes to the node). Watch any of them live at
+`http://127.0.0.1:18080/`, served by the mock itself.
+
+Run every CI gate locally with `tools/check.sh`, or `tools/check.sh --tracked` to run
+against a clean copy of tracked files — which is what CI actually sees, and has caught
+two false passes the working tree hid.
 
 Corollary: **all unit conversion happens in stage 2.** Stage 1 hands over source units
 under names that say so — `delay_km`, `timestamp_ms`, `rx_alt_m` — and stage 2 emits the
 spec's names and units. A missing conversion is then visible at the call site.
 
-## One blocking question
+## The one thing that blocks a real deployment
 
-Registration cannot be populated until this lands (`docs/open-questions.md` Q2):
+**Nothing on a node persists the three consent records**, so no node can register.
+`RegisterRequest.agreements` needs `licence`, `remote_management` and `publication`;
+the retina-gui EULA is a placeholder and its wizard checkbox persists nothing.
 
-1. `RegisterRequest.agreements` needs **three** persisted records — `licence`,
-   `remote_management` and `publication`. The EULA is a placeholder and the wizard
-   checkbox persists nothing. `publication` is a privacy decision, not a form field:
-   it governs whether a dwelling's position reaches a public archive, and its
-   `version` records which disclosure wording the owner saw.
+`publication` is a privacy decision rather than a form field: it governs whether a
+dwelling's position reaches a public archive, and its `version` records which disclosure
+wording the owner saw. **No record is ever synthesised** — a missing one means the owner
+was not shown that text, so a node without them refuses to register and says which are
+missing in its status document.
 
-It lands in stage 2's registration payload. Everything else is buildable against a mock
-generated from the OpenAPI spec — and stages 1 and 2 need no server at all, not even a
-mock.
+That work is retina-gui's. Everything else here is built and verified.
 
 ## Sibling repos
 
@@ -91,23 +101,27 @@ Full detail and citations in `docs/data-sources.md`. The short version:
   a poll or a file read, including "the user changed the config".
 - **`wire/models.py` is generated.** Regenerate with `tools/generate-models.sh`; never
   hand-edit it, and `--check` will catch you.
-- **`NodeState` on the wire is a closed set of five.** Our local vocabulary is richer
+- **`NodeState` on the wire is a closed set of six.** Our local vocabulary is richer
   because the status document can report things a node with no token cannot say at all;
   `NodeState.wire` maps between them. Never send a local value directly.
 - **No consent record is ever synthesised.** A missing one means the owner was not shown
   that text. The server defaulting an absent publication choice to `public` is its
   decision about its own archive, not permission for us to invent an acceptance.
-- **Serialise payloads with `model_dump(mode="json", exclude_none=True)`.** Both
-  arguments matter. `mode="json"` encodes the acceptance timestamps — without it
-  `json.dumps` refuses the registration payload outright. `exclude_none=True` is only
-  safe because no field in the spec is *required and nullable*; such a field's `null` is
-  a value the server expects, and dropping it produces a payload it rejects.
-  `beam_azimuth_deg` was the one, until the 2026-08-11 revision made it optional, and
-  `wire/serialise.py` existed solely to handle it. `tests/wire/test_payload_encoding.py`
-  guards both assumptions — read it before changing how anything is serialised.
-- **The antenna geometry is optional, and absent is the normal case.** retina-gui is not
+- **Serialise payloads with `wire.to_wire`, never `exclude_none=True`.** A
+  *required and nullable* field's `null` is a value the server expects rather than an
+  absence, so dropping the key produces a payload it rejects. `to_wire` also applies
+  `mode="json"`, which is load-bearing: without it the acceptance timestamps stay as
+  `datetime` objects and `json.dumps` refuses the registration payload outright.
+  **Seven fields are required-and-nullable in v1.1.1**, so payloads go out through
+  `wire.to_wire`, never `model_dump(exclude_none=True)` directly.
+  `tests/wire/test_serialise.py` pins the inventory by name and fails if the spec grows
+  or loses one.
+- **The antenna geometry is nullable, and null is the normal case.** retina-gui is not
   collecting `beam_width_deg` / `beam_azimuth_deg` from owners for the foreseeable
-  future, so every node omits both keys. Nothing is ever substituted for them.
+  future, so every node sends two explicit nulls. Nothing is ever substituted.
+- **Owl runs `dopplerMin/Max: ±1000`, not the standard ±200.** Five times the Doppler
+  bins per CPI, so its frame rate (0.6–0.9 Hz measured) is slower than a standard node's
+  and is **not** a fleet figure. Do not quote it as one.
 
 ## Conventions
 
@@ -122,21 +136,49 @@ Full detail and citations in `docs/data-sources.md`. The short version:
 - Binding no ports means a **status document under `/data`** is the only way a failure
   reaches the operator. Three need to: no identity, a revoked token, a rejected config.
 
+## Decisions, and why
+
+Folded in from the implementation plan when that was retired. These are the ones
+that get re-litigated if the reasoning is not written down.
+
+| Decision | Why |
+|---|---|
+| Python 3, threads | matches retina-gui; five loops and one shared slot |
+| Staged by layer, not endpoint | the shared retry/auth/level machinery needs one home, not four |
+| Units convert in stage 2 only | keeps `data-sources.md` an accurate description of stage 1's output |
+| Units in boundary field names | `delay_km` → `delay` makes a missing conversion visible at the call site |
+| Poll `/api/detection` rather than tap TCP | latest-wins transport matches a latest-value API exactly, and needs zero changes to blah2 or blah2-api |
+| No spool for detections | the spec's transport model forbids it |
+| Own `node_id` reader | retina-gui's returns `'Unknown'` on failure; that must never reach a payload |
+| Assert array lengths in `collect/`, not `wire/` | blah2 guarantees it by construction but validates nothing, and a malformed frame should never reach the slot |
+| Liveness derived from the detection poll | the wedged case is invisible to anything watching container state |
+| Payload models generated from the spec | drift is the failure mode; generation brings the spec's own constraints along, so `node_id="Unknown"` is rejected at construction without anyone remembering |
+| A written mock, not a generated one | a generated mock always cooperates, and every behaviour worth testing in stage 3 is the server refusing |
+| A local state vocabulary, mapped to the wire's | the status document can report things a node with no token cannot say to the server at all |
+| `uptime_s` is the device's | the heartbeat is the node's account of itself, and "the node" is the board |
+| No docker socket | liveness falls out of the detection poll; versions come from compose env vars |
+| Outward status document | three failure modes must reach the operator, and we bind no ports |
+| One `tools/check.sh` | CI, release and a terminal disagreeing about "green" is how the release gate silently lost two checks |
+
 ## Working agreements
 
 - Nothing gets deployed to a live node without Josh's express sign-off.
-- The OpenAPI spec is someone else's contract. Disagreements go to
-  `docs/open-questions.md` for them to answer; do not edit the spec to match the code.
-  **One exception exists**: on 2026-08-11 the beam fields were made optional in
-  `docs/node-ingest-v1.yml` with the server author's agreement, relayed by Josh. The
-  change lives in our copy rather than theirs, so the next revision they send will not
-  carry it — check `NodeConfig.required` when adopting one. See Q1.
+- The OpenAPI spec is someone else's contract. Disagreements go to them; do not edit the
+  spec to match the code. **One exception exists**, and it has already bitten once: the
+  beam fields were changed with the server author's agreement, relayed by Josh, and their
+  next revision did not carry it — our edit was silently reverted on adoption. The
+  current `1.1.1` again carries a change of ours. **Check `NodeConfig.beam_width_deg`
+  when adopting any revision**, and expect to reapply it.
 - **The spec is the scope.** If a field is not in it, we do not collect it — however
-  cheap or obviously useful it looks. Wanting something new means an open question to
-  the server author, not a field we add unilaterally. This has already removed Pi
-  throttle flags, `/api/timing`, the capture status endpoints and the ADS-B association
-  tolerances; `docs/data-sources.md` §5 keeps the list and the reasons, so nobody
-  re-derives them.
+  cheap or obviously useful it looks. Wanting something new means asking the server
+  author, not a field we add unilaterally. This has already removed Pi
+  throttle flags, `/api/timing` and the capture status endpoints;
+  `docs/data-sources.md` §5 keeps the list and the reasons, so nobody re-derives them.
+
+  It works in both directions, which is the point. `cpi_s` and the two ADS-B association
+  tolerances were removed under this rule and came back as **required** fields in v1.1.1
+  — through the spec, because we asked, rather than because we decided they looked
+  useful.
 - Collecting something the spec does not send is justified **only** when a required
   field depends on it. Today exactly one thing qualifies: `delay_max_bins` is collected
   because `max_range_km` is derived from it. Say which required field, in a comment, at

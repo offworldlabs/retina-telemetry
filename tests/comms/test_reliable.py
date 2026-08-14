@@ -85,7 +85,7 @@ def test_a_400_is_not_retried(server, state, stop):
 
 def test_a_400_on_config_is_fatal_for_the_operator(server, state, stop):
     """The node cannot stream at all until somebody edits the configuration,
-    so it has to reach the status document. See Q12."""
+    so it has to reach the status document."""
     server.enqueue("config", 400, body={"error": "invalid_request"})
 
     assert is_fatal_for_config(send(server, state, stop))

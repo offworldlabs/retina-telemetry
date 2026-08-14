@@ -25,7 +25,7 @@ SPEED_OF_LIGHT_M_S = 299_792_458.0
 
 #: blah2 quantises delay to 2 dp in km — 0.01 km ≈ 0.0334 µs — so anything finer
 #: than about 3 dp in microseconds is fabricated precision. Rounding here also
-#: keeps float noise (41.361948400000004) off the wire. See Q4, which asks the
+#: keeps float noise (41.361948400000004) off the wire., which asks the
 #: server author whether they would rather receive kilometres for this reason.
 DELAY_DECIMALS = 3
 
@@ -41,8 +41,7 @@ def ms_to_s(timestamp_ms: int) -> float:
     """Epoch milliseconds → epoch float seconds.
 
     blah2's ``timestamp``, which is the **end** of the capture window rather
-    than its start or middle (Q3 asks the server author to state which edge the
-    spec means).
+    than its start or middle (
     """
     return round(timestamp_ms / 1000.0, SECONDS_DECIMALS)
 
@@ -69,7 +68,7 @@ def m_to_ft(altitude_m: float) -> float:
     """Metres → feet.
 
     Everything else in the spec is SI, so this one conversion is the odd one
-    out and the easiest to forget. Q4 asks why.
+    out and the easiest to forget.
     """
     return round(altitude_m * M_TO_FT, ALTITUDE_DECIMALS)
 
@@ -80,7 +79,7 @@ def max_range_km(delay_max_bins: int, fs_hz: float) -> float:
     ``delayMax`` is a bin count, and one bin is one sample period of bistatic
     range, so the range is ``bins × c / fs``. Derived rather than stored so it
     can never disagree with what blah2 actually computes — 400 bins at 2 MHz
-    gives ~60 km. See Q6.
+    gives ~60 km.
 
     Raises:
         ValueError: if ``fs_hz`` is zero or negative, which would otherwise

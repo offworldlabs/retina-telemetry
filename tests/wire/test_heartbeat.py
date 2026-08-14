@@ -140,7 +140,7 @@ def test_health_is_all_nulls_rather_than_omitted_when_nothing_is_known():
 
 
 def test_queue_depth_no_longer_exists():
-    """Q11 argued it was meaningless under a transport with one request in
+    """It was meaningless under a transport with one request in
     flight and no queue, and v1.1.1 removed it. Asserted rather than deleted so
     a revision reinstating it is noticed."""
     assert "queue_depth" not in NodeHealth.model_fields

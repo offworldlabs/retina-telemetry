@@ -19,7 +19,7 @@ OWL = NodeConfigRaw(
     fs_hz=2000000.0,
     delay_max_bins=400,
     cpi_s=0.5,
-    beam_width_deg=60.0,  # not written on a real node; see Q1
+    beam_width_deg=60.0,  # not written on a real node — null is the normal case
     beam_azimuth_deg=None,
 )
 
@@ -67,7 +67,7 @@ def test_max_range_is_derived_not_read():
 
 def test_tx_callsign_carries_a_display_name():
     """location.tx.name is free text the operator typed, not a regulatory
-    callsign. Q5 asks which the server wants."""
+    callsign."""
     assert build_node_config(OWL).tx_callsign == "Crystal Palace"
 
 
@@ -104,7 +104,7 @@ def test_an_uncharacterised_antenna_sends_two_nulls():
 
 def test_no_beam_width_is_ever_invented():
     """Two earlier designs are superseded: raising, and defaulting to 360. Both
-    are recorded in Q1. Neither should come back by accident."""
+    are recorded in Neither should come back by accident."""
     payload = build_node_config(dataclasses.replace(OWL, beam_width_deg=None)).model_dump(
         mode="json", exclude_none=True
     )

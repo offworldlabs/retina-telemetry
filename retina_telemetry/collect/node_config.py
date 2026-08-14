@@ -141,12 +141,12 @@ def read_config(path: Path | str = DEFAULT_CONFIG_PATH) -> NodeConfigRaw:
         tx_lon=_require(document, "location.tx.longitude", float),
         tx_alt_m=_require(document, "location.tx.altitude", float),
         # A free-text display name the operator typed in the tower step, not a
-        # regulatory callsign. See open question Q5.
+        # regulatory callsign.
         tx_name=_require(document, "location.tx.name", str),
         fc_hz=_require(document, "capture.fc", float),
         fs_hz=_require(document, "capture.fs", float),
         # Bins, not kilometres. Stage 2 derives max_range_km as
-        # delay_max_bins * c / fs / 1000. See Q6.
+        # delay_max_bins * c / fs / 1000.
         delay_max_bins=_require(document, "process.ambiguity.delayMax", int),
         # Seconds. Required by the spec since v1.1.1 as cpi_s: it is the width
         # of the window every DetectionFrame.t closes, so the server cannot know

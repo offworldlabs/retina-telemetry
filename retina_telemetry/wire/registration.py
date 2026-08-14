@@ -67,8 +67,8 @@ def build_registration(
         raise IncompletePayload(
             f"missing consent records: {', '.join(consent.missing)}. Registration requires all "
             "three, and none of them can be manufactured here — a missing record means the owner "
-            "was never shown that text. They are written by retina-gui's setup wizard "
-            "(open question Q2)."
+            "was never shown that text. retina-gui's setup wizard is meant to write them "
+            "and does not yet."
         )
 
     wire_config = build_node_config(config)
@@ -79,8 +79,9 @@ def build_registration(
     return RegisterRequest(
         node_id=node_id,
         # Diagnostic only, so never worth failing over. The spec requires the
-        # field but says nothing about its vocabulary — see Q15, which tells the
-        # server author to expect "pi5-v3-arm64" rather than their example.
+        # field but constrains only its length, and v1.1.1's own description
+        # endorses the Mender device type — so "pi5-v3-arm64", not their old
+        # "raspberrypi5-4gb" example.
         board_model=board_model or "unknown",
         agreements=Agreements(
             # Stage 1 passes the timestamps through as stored; the generated

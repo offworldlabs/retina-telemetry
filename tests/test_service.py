@@ -34,7 +34,7 @@ def node(tmp_path):
     (tmp_path / "consent.json").write_text(json.dumps(CONSENT))
 
     document = json.loads(json.dumps(DEFAULTS))  # deep copy
-    document["location"]["rx"]["beam_width"] = 60  # Q1 has not landed on a real node
+    document["location"]["rx"]["beam_width"] = 60  # no real node has this set
     (tmp_path / "config.yml").write_text(yaml.safe_dump(document))
     return tmp_path
 

@@ -19,12 +19,12 @@ we bind no ports, and there is no event bus. Every one of these is us pulling.
 | 1 | blah2-api on `127.0.0.1:3000` | HTTP poll, keep-alive | detections, blah2 + ADS-B liveness, CPI overrun, RF status | §1, §5 |
 | 2 | `/data/retina-node/config/config.yml` | read-only mount, hashed | all of `NodeConfig`, plus `cpi`, `delayMax`, `fs`, `truth.adsb.enabled` | §4 |
 | 3 | `/data/mender/node_id` | read once at boot | identity | §3 |
-| 4 | `/data/retina-gui/telemetry-consent.json` | read-only — **not written yet** | whether we may talk to the server at all | §4, Q2 |
+| 4 | `/data/retina-gui/telemetry-consent.json` | read-only — **not written yet** | whether we may talk to the server at all | §4 |
 
 One HTTP client, two file reads, one file still to be defined.
 
 Outbound, in the same category: a status document this service writes for retina-gui
-to read (`docs/implementation-plan.md`, stage 1). We bind no ports, so a file is the
+to read. We bind no ports, so a file is the
 only way three separate failure modes — no identity, a revoked token, a rejected
 config — ever reach the operator.
 
@@ -109,11 +109,14 @@ Three consequences for us:
 2. Entries are objects, not hex strings. The spec's `adsb_hex` wants `.hex`.
 3. It is a **tolerance-gated single-best match**, not truth. Both tolerances are
    per-node config (`truth.adsb.delay_tolerance: 2.0`, `doppler_tolerance: 5.0`), so
-   association strictness varies node to node. See open question Q7.
+   association strictness varies node to node, which is why v1.1.1 requires both
+   tolerances on the wire.
 
 ### Rate
 
-`process.data.cpi: 0.5` → **2 Hz**, matching the spec's "2 Hz today".
+`process.data.cpi: 0.5` sets the **ceiling** at 2 Hz — one frame per CPI is the most a
+node can ever emit. It is not the expectation: processing takes longer than a CPI, so
+measured rates are roughly half that. See §5b.
 
 ### Recommended tap: poll `GET /api/detection`
 
@@ -124,7 +127,8 @@ is explicitly *latest-wins with at most one request in flight*. The API's semant
 the transport's semantics match exactly, so polling is correct here and costs **zero
 changes to blah2 or blah2-api**.
 
-- Poll at ~4–5 Hz against a 2 Hz producer to reduce aliasing misses.
+- Poll at ~4 Hz against a producer running at 1 Hz or less, to notice a new frame
+  promptly. The poll interval is not a send cadence — we POST once per new frame.
 - Dedupe on `timestamp` — a repeat means we polled twice within one CPI.
 - Missed frames are acceptable and expected. That is the design.
 
@@ -150,14 +154,9 @@ Resolution is one CPI (0.5 s) and that is the practical floor — one timestamp 
 frame is all blah2 produces. Against the server's 4 s association window, ±0.25 s of
 quantisation is ~6% and not worth chasing.
 
-What *is* worth fixing is that the window edge is undocumented. See open question Q3,
-which asks the server author to state it.
-
-The offset does scale with `cpi`, so two nodes on different `cpi` would carry different
-common-mode offsets the server could not correct. That argued for sending `cpi_s` and no
-longer does: `cpi` is 0.5 across the whole fleet, which makes the offset a constant the
-server can be told once in prose rather than a field it has to carry. Q3 records why the
-request was withdrawn.
+Spec v1.1.1 states the edge explicitly — `t` is the end, and the samples span
+`[t - cpi_s, t]` — and requires `cpi_s` in `NodeConfig` so the server knows the width of
+the window each `t` closes.
 
 ### Capture gaps
 
@@ -181,9 +180,8 @@ discriminate once processing fits inside the CPI, at which point there would be 
 to detect.
 
 What the ratio does give is a magnitude: `cpi_s / (t[n+1] - t[n])` is the fraction of
-time actually covered — 56% mean over that run, ranging 46–58%. That is worth knowing
-locally. It is not worth asking the server to carry a field for, which is why the
-`cpi_s` request was dropped from Q3.
+time actually covered — 56% mean over that run, ranging 46–58%. The server can compute
+it now that `cpi_s` is on the wire.
 
 Note the distinction, because the spec conflates them under `seq`:
 
@@ -233,7 +231,7 @@ Why this rather than `/proc/device-tree/model`, which gives
   someone will actually ask; "what board revision is it" is not.
 - The spec's own example, `"raspberrypi5-4gb"`, is a device-type slug rather than a
   hardware description — so this matches the shape the author had in mind, even though
-  the value differs. See Q15.
+  the value differs.
 - It is stable. The device-tree string carries a board revision that changes without
   meaning anything to us.
 
@@ -268,10 +266,10 @@ Source of truth on the node: `/data/retina-node/config/config.yml`, produced by
 | `tx_lat` | `location.tx.latitude` | — |
 | `tx_lon` | `location.tx.longitude` | — |
 | `tx_alt_ft` | `location.tx.altitude` | **metres → feet**, × 3.28084 |
-| `tx_callsign` | `location.tx.name` | free-text display name, not a regulatory callsign — Q5 |
+| `tx_callsign` | `location.tx.name` | free-text display name, not a regulatory callsign |
 | `fc_hz` | `capture.fc` | — |
 | `fs_hz` | `capture.fs` | — |
-| `max_range_km` | `process.ambiguity.delayMax` | `delayMax × c / fs / 1000` = 60 km at 400 bins / 2 MHz — Q6 |
+| `max_range_km` | `process.ambiguity.delayMax` | `delayMax × c / fs / 1000` = 60 km at 400 bins / 2 MHz |
 | `beam_width_deg` | `location.rx.beam_width` — **not written, and not planned** | optional; key omitted when unset |
 | `beam_azimuth_deg` | `location.rx.beam_azimuth` — **not written, and not planned** | optional; key omitted when unset |
 
@@ -306,7 +304,7 @@ Two superseded designs, recorded so they are not re-derived. The first raised, o
 grounds that a guessed beam width is worse than a node that will not register; correct
 while the field was mandatory. The second defaulted an unset width to 360, on the grounds
 that refusing traded a silent misreport for a silent node; still a claim the node had not
-made. Both are moot now the field is optional. See Q1.
+made. Both are moot now the fields are nullable.
 
 **One distinction the spec draws that we cannot express.** An absent `beam_azimuth_deg`
 means "not characterised"; an explicit `null` means "characterised, and
@@ -326,7 +324,8 @@ retina-gui and blah2-arm. These are new config fields plus GUI plumbing, not a m
 - `templates/setup/_agreements.html` has a checkbox that only enables the Continue
   button. **Nothing persists an acceptance record anywhere.**
 
-So registration cannot be populated today. Blocking — Q2.
+So registration cannot be populated today. This is the one thing blocking a real
+deployment, and it is retina-gui's work.
 
 **Three records, not one.** The 2026-08-10 spec revision replaced the single
 `agreement` with an `agreements` object carrying three separately versioned entries,
@@ -422,7 +421,7 @@ the node that talks to the internet.
 | `cpu_pct`, `temp_c`, `disk_free_mb` | host `/proc`, `/sys/class/thermal`, `statvfs` |
 | `blah2` | derived from the detection poll we already run — see below |
 | `adsb` | `truth.adsb.enabled` from config, plus whether the `adsb` key appears on polled frames |
-| `queue_depth` | meaningless under latest-wins — Q11 |
+| `queue_depth` | removed from the spec in v1.1.1: meaningless under latest-wins |
 | `versions.*` | compose env vars, injected into our container |
 | `state` | ours to define — see below |
 
@@ -494,7 +493,7 @@ retina-gui's `device_state.get_state()` (`retina-gui/src/device_state.py:57-64`)
 Those are two different axes — one is "am I sending data", the other is "is an update in
 progress" — so this is not a mapping. The `updating_*` values are worth folding in, since
 a node that goes quiet mid-update is explained by them, but the vocabulary should be
-ours. See `docs/implementation-plan.md`, "Still to settle".
+ours. Not done, and not currently needed: the spec has no field for it.
 
 ### Available and deliberately not collected
 
@@ -507,9 +506,9 @@ with mounts and dependencies it cannot justify.
 | `GET /api/timing` | The `cpi` total over `cpi × 1000` ms is the only view of ring-buffer loss (§2, §5b), but there is no field for it. Would be a spec proposal, not a collection change |
 | `/capture/overload-status`, `/capture/rf-status` | Not in the spec. Relevant to the RF overload incident on Owl, but that is a local diagnosis problem |
 | Pi throttle flags | No field. `vcgencmd get_throttled` works but needs `/dev/vcio` mounted plus the Pi userland binary in the image; `/sys/class/hwmon/*/name == rpi_volt` exposes `in0_lcrit_alarm` for free, but with nowhere to send it that is moot |
-| `truth.adsb.delay_tolerance`, `doppler_tolerance` | Q7 proposes sending them so the server knows what it is comparing. Until it does, nothing local needs them |
+| ~~`truth.adsb.delay_tolerance`, `doppler_tolerance`~~ | **No longer excluded.** Required by v1.1.1 as `delay_tolerance_us` / `doppler_tolerance_hz`, so the server knows what thresholds two nodes' associations were formed under |
 | `truth.adsb.enabled` | Redundant. `api/server.js:328` gates the whole enrichment on it, so the `adsb` key is present on a polled frame if and only if the flag is set — key presence *is* the flag |
-| `process.data.cpi` | Its only consumer was a staleness window that no longer exists (see below). Q3 briefly proposed sending it as `cpi_s`; that request was withdrawn on 2026-08-11 |
+| ~~`process.data.cpi`~~ | **No longer excluded.** Required by v1.1.1 as `cpi_s`: it is the width of the window every `DetectionFrame.t` closes |
 
 If any of these become genuinely necessary, the route is an open question to the server
 author, not a field we invent.
@@ -566,7 +565,7 @@ Two consequences for us:
 
 1. **A staleness window must derive from the observed frame period, not `cpi_s`.** The
    configured value is not what the node honours, and is out by 1.8× here.
-2. It makes Q3 sharper, though not in the direction first assumed. The server sees
+2. The server sees
    1.13 Hz against a spec that promises "2 Hz, fixed", and since we POST once per frame
    with no cadence of our own, the arrival rate *is* the radar's frame rate. That is
    worth telling them plainly. It does not follow that they need `cpi_s` to make sense
@@ -600,7 +599,7 @@ From `retina-node/docker-compose.yml`, which this service must slot into:
 
 - `retina-gui/src/retina_tracker_client.py` — JSONL tailer that already handles the
   truncate-on-restart case, and a best-effort TCP sender with lazy reconnect. Track
-  events are out of scope by decision rather than oversight (Q8), so this is a pointer
+  events are out of scope by decision rather than oversight, so this is a pointer
   for whoever reopens it, not a plan.
 - `retina-gui/src/config_manager.py` — how the GUI reads and writes node config.
 - `retina-gui/src/device_state.py` — install locks and Mender status, for the

@@ -272,7 +272,7 @@ class Service:
         def payload() -> dict[str, Any] | None:
             # No config_version guard. It was here because the field was
             # required and non-null; v1.1.1 made it nullable precisely so a node
-            # that has never held one still beats (Q16). Removing the guard is
+            # that has never held one still beats. Removing the guard is
             # the whole of that fix.
             snapshot = self.state.snapshot()
             host = self.host.read()
@@ -344,7 +344,7 @@ class Service:
         if is_fatal_for_config(outcome):
             # The node cannot stream at all until somebody edits the
             # configuration, so this has to reach the status document rather
-            # than be retried into silence. See Q12.
+            # than be retried into silence.
             self._config_rejected = f"the server rejected this configuration: {outcome.describe()}"
             self.errors.add(self._config_rejected)
             self.state.config_resend.clear()

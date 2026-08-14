@@ -105,7 +105,7 @@ def main() -> int:
         print(f"\n  {BOLD}heartbeats{RESET}")
         print(f"    {DIM}states seen   {states}{RESET}")
         print(
-            f"    {DIM}null cfg_ver  {null_cv} of {len(beats)}  (Q16: a beat before one is issued){RESET}"
+            f"    {DIM}null cfg_ver  {null_cv} of {len(beats)}  (a beat sent before one was issued){RESET}"
         )
         if missing:
             print(f"    {RED}required-nullable keys DROPPED: {missing}{RESET}")

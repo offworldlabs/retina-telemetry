@@ -105,6 +105,6 @@ def is_fatal_for_config(outcome: Outcome) -> bool:
 
     A 400 on `PUT /nodes/config` means the node cannot stream at all until
     somebody edits the configuration, so it has to reach the status document
-    rather than being retried into silence. See Q12.
+    rather than being retried into silence.
     """
     return outcome.kind is Kind.INVALID

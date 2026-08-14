@@ -14,7 +14,7 @@
 #
 # What each phase is actually for:
 #
-#   boot_id (Q10)   restart-local `seq` is only interpretable alongside it.
+#   boot_id   restart-local `seq` is only interpretable alongside it.
 #                   Phase 2 must show a *different* boot_id and a `seq` that
 #                   starts over, and the server must be able to tell that from
 #                   dropped frames. Nothing before v1.1.1 could express this.
@@ -23,7 +23,7 @@
 #                   registration here would mean we had turned every restart
 #                   into a registration, which the rate limits punish.
 #
-#   Q16             phase 3 is the case the spec changed the shape for: a node
+#   broken config  phase 3 is the case v1.1.1 changed the shape for: a node
 #                   that cannot build a NodeConfig can never PUT one, so it can
 #                   never be issued a config_version. It must still heartbeat,
 #                   carrying `config_version: null` and saying what is wrong in
@@ -151,7 +151,7 @@ for b in boots:
         print(f"    boot {b[:8]}…  seq {min(seqs)} → {max(seqs)}, {len(seqs)} frames, {lost} dropped")
 
 null_cv = [b for b in beats if b["config_version"] is None]
-print(f"  beats with config_version null   {len(null_cv)} of {len(beats)}   (Q16)")
+print(f"  beats with config_version null   {len(null_cv)} of {len(beats)}")
 if null_cv:
     errs = next((b["errors"] for b in null_cv if b["errors"]), [])
     print(f"    and errors[] carried             {errs[:1]}")

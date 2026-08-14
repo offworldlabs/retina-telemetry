@@ -266,7 +266,7 @@ class Registrar:
         if outcome.kind is Kind.INVALID:
             # 400 means the configuration failed validation. Retrying unchanged
             # will not help, so the loop should stop and the operator should
-            # see it. See Q12.
+            # see it.
             log.error("registration rejected: %s", outcome.describe())
 
         return outcome

@@ -165,7 +165,7 @@ def probe_config() -> None:
     check(
         "tx_callsign carries the display name",
         wire.tx_callsign == raw.tx_name,
-        f"{wire.tx_callsign!r} — Q5 asks whether the server wants a real callsign",
+        f"{wire.tx_callsign!r} asks whether the server wants a real callsign",
     )
 
 
@@ -223,7 +223,7 @@ def probe_heartbeat() -> None:
     check(
         "queue_depth is gone from the schema",
         "queue_depth" not in type(beat.health).model_fields,
-        "removed in v1.1.1 — Q11 accepted",
+        "removed in v1.1.1 accepted",
     )
     note("versions omitted", "no readable source yet; needs the owl-os provides snapshot")
 
@@ -274,7 +274,7 @@ def probe_registration() -> None:
         check(
             "board_model is the Mender device type",
             simulated.board_model == board_model,
-            f"{board_model} — Q15, not the spec's 'raspberrypi5-4gb' example",
+            f"{board_model}, not the spec's 'raspberrypi5-4gb' example",
         )
 
 

@@ -78,11 +78,11 @@ def probe_node_config() -> None:
         f"{config.delay_max_bins} → max_range_km derived in stage 2",
     )
 
-    # Q1: expected to be absent until retina-gui writes them.
+    # Expected to be absent until retina-gui writes them, and valid either way.
     if config.beam_width_deg is None:
-        note("beam_width_deg absent", "expected — Q1, blocks registration")
+        note("beam_width_deg absent", "expected, blocks registration")
     else:
-        ok(f"beam_width_deg {config.beam_width_deg}", "Q1 has landed")
+        ok(f"beam_width_deg {config.beam_width_deg}", "configured on this node")
     note(
         f"beam_azimuth_deg {config.beam_azimuth_deg}",
         "None is valid — means omnidirectional",
@@ -100,7 +100,7 @@ def probe_consent() -> None:
     ok(f"read without raising  {BOLD}complete={record.complete}{RESET}")
 
     if record == consent.NONE_GIVEN:
-        note(f"missing: {record.missing}", "expected — nothing writes them yet (Q2)")
+        note(f"missing: {record.missing}", "expected — nothing writes them yet")
     check(
         "may_stream agrees with the licence record",
         record.may_stream == (record.licence is not None),

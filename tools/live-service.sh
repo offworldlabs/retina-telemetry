@@ -19,7 +19,7 @@
 #
 # Everything is real except the records that do not exist on any node yet:
 #
-#   consent records  Q2 — three of them, and the wizard persists none
+#   consent records  three of them, and the retina-gui wizard persists none
 #
 # The antenna geometry is deliberately NOT synthesised. Since spec v1.1.1 both
 # beam fields are nullable, so a node without them sends explicit nulls — that
@@ -83,7 +83,7 @@ import json, sys, pathlib, yaml
 scratch = pathlib.Path(sys.argv[1])
 config = yaml.safe_load(pathlib.Path("/data/retina-node/config/config.yml").read_text())
 (scratch / "config.yml").write_text(yaml.safe_dump(config))
-# Q2: synthetic. Three separately versioned records since the 2026-08-10
+# Synthetic. Three separately versioned records since the 2026-08-10
 # revision; `publication` is a privacy decision the wizard must actually put
 # to the owner, and nothing on a node may manufacture one.
 ACCEPTED = {"version": "2026-07-01", "accepted_at": "2026-07-31T09:12:00Z"}

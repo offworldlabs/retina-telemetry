@@ -64,7 +64,7 @@ def test_delay_max_stays_in_bins(tmp_path):
     assert read_config(write(tmp_path, DEFAULTS)).delay_max_bins == 400
 
 
-# ── beam geometry scaffolding (Q1) ───────────────────────────────────
+# ── beam geometry scaffolding ───────────────────────────────────
 
 
 def test_beam_fields_are_absent_on_a_node_today(tmp_path):
@@ -90,7 +90,7 @@ def test_beam_fields_are_read_when_present(tmp_path):
 
 def test_omnidirectional_azimuth_is_indistinguishable_from_unset(tmp_path):
     """Both are None, and that is fine — the spec asks for null rather than 0.0
-    for broadside, and Q1 proposes omnidirectional as the fleet default."""
+    for broadside, and every node in the fleet leaves it unset."""
     document = copy.deepcopy(DEFAULTS)
     document["location"]["rx"]["beam_width"] = 60
 

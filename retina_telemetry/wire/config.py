@@ -41,7 +41,7 @@ def build_node_config(config: NodeConfigRaw) -> NodeConfig:
 
     ``tx_callsign`` carries ``location.tx.name``, which is free text the
     operator typed in the tower step (e.g. "Crystal Palace") rather than a
-    regulatory callsign. Q5 asks which the server wants.
+    regulatory callsign.
 
     Raises:
         ValueError: if ``fs_hz`` is not positive, via :func:`max_range_km`.

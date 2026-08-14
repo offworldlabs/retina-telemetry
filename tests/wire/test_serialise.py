@@ -90,7 +90,7 @@ def test_adsb_hex_is_not_a_false_positive():
 
 
 def test_a_heartbeat_without_a_config_version_keeps_the_null():
-    """The Q16 case. A node that has never been issued a version must still
+    """A node that has never been issued a version must still
     beat, and the key carries `null` rather than vanishing."""
     payload = to_wire(
         build_heartbeat(state="starting", uptime_s=1, config_version=None, boot_id="k3n8v2qp71ab")

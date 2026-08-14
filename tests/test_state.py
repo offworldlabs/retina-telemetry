@@ -88,7 +88,7 @@ def test_a_restored_token_asks_for_a_config_resend(state, path):
 
 
 def test_a_restored_node_heartbeats_before_config_lands(state, path):
-    """A token alone is enough to beat, and that is the Q16 fix.
+    """A token alone is enough to beat, and that is what v1.1.1 changed.
 
     ``HeartbeatRequest.config_version`` became nullable in v1.1.1 precisely so
     the beat is unconditional: a node that can never build a configuration —
@@ -156,7 +156,7 @@ def test_seq_increments_once_per_call(state):
 
 def test_seq_is_not_persisted(state, path):
     """Restart-local by design — persisting would cost an fsync per frame at
-    2 Hz on an SD card. Q10 proposes a boot_id to make it explicit."""
+    2 Hz on an SD card. boot_id makes the discontinuity explicit instead."""
     registered(state)
     state.next_seq()
     state.next_seq()

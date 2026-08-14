@@ -39,12 +39,12 @@ has no ``config_version`` and sets :attr:`config_resend`; the first
 It can heartbeat immediately, and that is new. Under the previous spec a node
 with an unreadable ``config.yml`` could not build a ``NodeConfig``, so could not
 PUT, so never obtained a ``config_version``, so could not heartbeat — **it went
-silent exactly when it most needed to be heard.** We raised it as Q16 and v1.1.1
+silent exactly when it most needed to be heard.** Spec v1.1.1
 made ``HeartbeatRequest.config_version`` nullable, so the beat now carries
 ``null`` and says what is wrong in ``errors[]`` instead of disappearing.
 
 ``seq`` is restart-local too, and for a different reason: persisting it would
-cost an fsync per frame on an SD card. Spec v1.1.1 accepted Q10's proposal, so
+cost an fsync per frame on an SD card. Spec v1.1.1 added ``boot_id``, so
 ``boot_id`` now travels alongside it and makes the discontinuity explicit —
 a new ``boot_id`` is a restart, a jump within one is lost frames. One value
 generated per process start, at no storage cost at all.
@@ -107,7 +107,7 @@ class Snapshot:
         That closes the gap the old rule left: a node whose ``config.yml`` is
         unreadable can never ``PUT /nodes/config``, so it could never obtain a
         version, so it never beat — silent precisely when it most needed to be
-        heard. See Q16.
+        heard.
         """
         return self.registered
 

@@ -65,7 +65,7 @@ def build_heartbeat(
             itself and "the node" is the board, so a board that reboots
             repeatedly is the signal worth carrying. This process's uptime is a
             self-diagnostic and belongs in the status document, beside the
-            ``seq`` discontinuity it explains (Q10).
+            ``seq`` discontinuity it explains.
 
             It is required, while ``host_uptime_s`` is best-effort like every
             other host read, so **the caller must resolve** a ``None``. Falling
@@ -76,8 +76,7 @@ def build_heartbeat(
             this path should never fire.
         config_version: server-issued, cached in ``state.py``, and ``None``
             until the first one arrives. Nullable on the wire since v1.1.1, so a
-            node that has never held a version still beats and says so — see
-            Q16. It remains required and non-null on ``DetectionFrame``.
+            node that has never held a version still beats and says so — see It remains required and non-null on ``DetectionFrame``.
         host: from ``collect.host.HostReader.read``. ``None``, or any ``None``
             field within it, omits the corresponding health entry. Note
             ``cpu_pct`` is always ``None`` on the first read, since ``/proc/stat``
@@ -94,7 +93,7 @@ def build_heartbeat(
         errors: bounded list accumulated since the last beat, cleared once a
             beat is acknowledged.
 
-    ``queue_depth`` no longer exists. Q11 argued it was meaningless under a
+    ``queue_depth`` no longer exists. It was meaningless under a
     transport with at most one request in flight and no queue — 0 and 1 the only
     reachable values, neither saying anything — and v1.1.1 removed it.
     """

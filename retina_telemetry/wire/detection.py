@@ -54,7 +54,7 @@ def build_detection_frame(
             capture continuity — ``seq`` gaps are transport loss, which is
             constant and intended under latest-wins, while ``t`` spacing beyond
             one CPI is capture loss. The two are independent, and only the first
-            is visible to the server (Q3).
+            is visible to the server.
         boot_id: from ``state.py``, distinct per process start. Required on
             every frame rather than the heartbeat alone: a restart between two
             beats would otherwise corrupt the server's gap accounting for up to

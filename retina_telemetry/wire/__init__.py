@@ -46,7 +46,7 @@ bad value must not cost the other detections in the frame.
 | ``rx_alt_ft`` | ``NodeConfigRaw.rx_alt_m`` | × 3.28084 |
 | ``tx_lat`` / ``tx_lon`` | ``NodeConfigRaw.tx_lat`` / ``tx_lon`` | none |
 | ``tx_alt_ft`` | ``NodeConfigRaw.tx_alt_m`` | × 3.28084 |
-| ``tx_callsign`` | ``NodeConfigRaw.tx_name`` | none — a display name, Q5 |
+| ``tx_callsign`` | ``NodeConfigRaw.tx_name`` | none — a display name, not a callsign |
 | ``fc_hz`` / ``fs_hz`` | ``NodeConfigRaw.fc_hz`` / ``fs_hz`` | none |
 | ``max_range_km`` | ``delay_max_bins`` and ``fs_hz`` | × c ÷ fs ÷ 1000 |
 | ``beam_width_deg`` | ``NodeConfigRaw.beam_width_deg`` | none — ``null`` if unset |
@@ -61,9 +61,9 @@ bad value must not cost the other detections in the frame.
 |---|---|
 | ``node_id`` | ``identity.read_node_id()`` |
 | ``board_model`` | ``identity.read_board_model()`` |
-| ``agreements.licence`` | ``Consent.licence`` — **Q2, absent today** |
-| ``agreements.remote_management`` | ``Consent.remote_management`` — **Q2** |
-| ``agreements.publication`` | ``Consent.publication`` — **Q2** |
+| ``agreements.licence`` | ``Consent.licence`` — **absent on every node today** |
+| ``agreements.remote_management`` | ``Consent.remote_management`` — **absent** |
+| ``agreements.publication`` | ``Consent.publication`` — **absent** |
 | ``config`` | ``build_node_config`` |
 
 None of the three is ever synthesised. A missing record means the owner was not

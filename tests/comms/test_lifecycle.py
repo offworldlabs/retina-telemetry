@@ -292,8 +292,7 @@ def test_repeated_refusals_do_not_hot_loop(registrar, server):
 
 
 def test_a_400_is_surfaced_rather_than_retried(registrar, server, caplog):
-    """Retrying unchanged will not help — the configuration failed validation.
-    See Q12."""
+    """Retrying unchanged will not help — the configuration failed validation."""
     server.enqueue("register", 400, body={"error": "invalid_request", "detail": "rx_lat"})
 
     with caplog.at_level("ERROR"):
