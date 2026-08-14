@@ -34,18 +34,20 @@ already has. Rate limits there are generous by design.
 
 So the token is persisted and nothing else is. On start, a node holding a token
 has no ``config_version`` and sets :attr:`config_resend`; the first
-``PUT /nodes/config`` supplies one, and only then can it heartbeat or stream.
+``PUT /nodes/config`` supplies one, and only then can it *stream*.
 
-The accepted consequence: if ``config.yml`` is unreadable we cannot build a
-``NodeConfig``, so we cannot PUT, so we never get a ``config_version``, so we
-cannot heartbeat — ``HeartbeatRequest`` requires it. **A node with broken
-configuration goes silent on the wire.** That is deliberate. It still says why
-in the status document, which is the local half of the contract.
+It can heartbeat immediately, and that is new. Under the previous spec a node
+with an unreadable ``config.yml`` could not build a ``NodeConfig``, so could not
+PUT, so never obtained a ``config_version``, so could not heartbeat — **it went
+silent exactly when it most needed to be heard.** Spec v1.1.1
+made ``HeartbeatRequest.config_version`` nullable, so the beat now carries
+``null`` and says what is wrong in ``errors[]`` instead of disappearing.
 
 ``seq`` is restart-local too, and for a different reason: persisting it would
-cost an fsync per frame at 2 Hz on an SD card. Q10 proposes a ``boot_id`` to
-make the discontinuity explicit; until the spec has a field for it we do not
-invent one, and the node behaves identically either way.
+cost an fsync per frame on an SD card. Spec v1.1.1 added ``boot_id``, so
+``boot_id`` now travels alongside it and makes the discontinuity explicit —
+a new ``boot_id`` is a restart, a jump within one is lost frames. One value
+generated per process start, at no storage cost at all.
 
 ## The token never appears in a log line or the status document
 
@@ -57,6 +59,7 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -82,6 +85,7 @@ class Snapshot:
     node_ref: str | None
     config_version: int | None
     seq: int
+    boot_id: str
     config_stale: bool
     streaming_allowed: bool
     token_rejected: bool
@@ -94,22 +98,33 @@ class Snapshot:
 
     @property
     def may_heartbeat(self) -> bool:
-        """Whether a heartbeat can be built at all.
+        """Whether a heartbeat can be built at all — a token, and nothing else.
 
-        Needs a token to authenticate and a ``config_version`` because the
-        payload requires one. False on a fresh start until the first
-        ``PUT /nodes/config`` lands.
+        It used to also need a ``config_version``, because the payload required
+        one. Spec v1.1.1 made that field nullable for exactly this reason, so a
+        node with no version yet sends ``null`` and beats from process start.
+
+        That closes the gap the old rule left: a node whose ``config.yml`` is
+        unreadable can never ``PUT /nodes/config``, so it could never obtain a
+        version, so it never beat — silent precisely when it most needed to be
+        heard.
         """
-        return self.registered and self.config_version is not None
+        return self.registered
 
     @property
     def may_stream(self) -> bool:
         """Whether a detection frame may be posted right now.
 
-        Everything the heartbeat needs, plus a token the server has not
-        rejected and permission to stream.
+        Stricter than the heartbeat, and deliberately: ``config_version`` stays
+        required and non-null on ``DetectionFrame``, since a frame cannot be
+        filed without the geometry it was measured against.
         """
-        return self.may_heartbeat and not self.token_rejected and self.streaming_allowed
+        return (
+            self.registered
+            and self.config_version is not None
+            and not self.token_rejected
+            and self.streaming_allowed
+        )
 
     def redacted(self) -> dict[str, Any]:
         """Everything except the token, for logs and the status document."""
@@ -144,6 +159,14 @@ class State:
         self._config_version: int | None = None
 
         self._seq = 0
+        #: Distinct per process start, in memory, never persisted. It is what
+        #: makes the restart-local ``seq`` interpretable: the server reads the
+        #: pair, so a new ``boot_id`` means a restart while a jump within one
+        #: means frames were lost. Persisting a monotonic counter instead would
+        #: cost an fsync per frame on an SD card. 16 hex characters sits inside
+        #: the spec's ``^[0-9a-z]{8,32}$`` with 64 bits of distinctness, which is
+        #: far more than "not equal to this node's previous boot" needs.
+        self._boot_id = secrets.token_hex(8)
         self._config_stale = False
         self._streaming_allowed = True
         self._token_rejected = False
@@ -166,6 +189,7 @@ class State:
                 node_ref=self._node_ref,
                 config_version=self._config_version,
                 seq=self._seq,
+                boot_id=self._boot_id,
                 config_stale=self._config_stale,
                 streaming_allowed=self._streaming_allowed,
                 token_rejected=self._token_rejected,

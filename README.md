@@ -19,49 +19,69 @@ Nothing in the stack pushes to it — there is no event bus and it binds no port
 input is a poll or a file read, and the status document is how a failure reaches the
 operator.
 
-**Status:** stages 1 and 2 built — collection and construction, 177 tests, both verified
-against a live node with `tools/live-probe.sh`. Stage 3 (communication) is next and does
-not exist yet. Two questions with the server team still block registration; everything
-else is unblocked.
+**Status:** built, implementing spec `1.1.1`. Verified end to end on a live node against
+a tunnelled mock — every endpoint, every reachable state, and the refusal paths.
+
+One thing blocks a real deployment, and it is not in this repo: **nothing on a node
+persists the three consent records**, so no node can register. That is retina-gui's
+work. See `CLAUDE.md`.
 
 ## Documents
 
 - [`docs/node-ingest-v1.yml`](docs/node-ingest-v1.yml) — the server contract (read-only input)
 - [`docs/data-sources.md`](docs/data-sources.md) — where node data comes from, in what units, with what gotchas
-- [`docs/open-questions.md`](docs/open-questions.md) — outstanding asks for the server team
-- [`docs/implementation-plan.md`](docs/implementation-plan.md) — architecture, module layout, build stages
+- [`CLAUDE.md`](CLAUDE.md) — architecture, conventions, and the decisions worth not re-litigating
 
 ## How it's built
 
 Staged by layer rather than by endpoint, so that the retry, auth and response-handling
 machinery shared by all four endpoints gets written once instead of four times.
 
-| Stage | Owns | Knows about | |
-|---|---|---|---|
-| **1 — Collection** | the interfaces to the rest of the node stack | the node only | built |
-| **2 — Construction** | turning what we collected into wire payloads | both sides | built |
-| **3 — Communication** | `3a` machinery, `3b` lifecycle, `3c` the two disciplines | the server only | — |
+| Stage | Owns | Knows about |
+|---|---|---|
+| **1 — Collection** | the interfaces to the rest of the node stack | the node only |
+| **2 — Construction** | turning what we collected into wire payloads | both sides |
+| **3 — Communication** | request machinery, lifecycle, the two traffic disciplines | the server only |
 
 Stage 3 knows nothing about radar; stage 1 knows nothing about the server. Stages 1 and
-2 are testable with no server and no mock — which is how they were built, since the two
-blocking questions are upstream of us.
+2 need no server and no mock, which is how they were built while registration was still
+blocked upstream.
 
 The payload models in `wire/models.py` are **generated** from the spec
 (`tools/generate-models.sh`), so the server's own constraints do the validating and a
 revision upstream shows exactly which fields moved.
 
+## Checks
+
+```
+tools/check.sh                 # every gate CI runs
+tools/check.sh --tracked       # the same, against a clean copy of tracked files
+```
+
+`--tracked` matters: gitignored scratch files are invisible to CI but present locally,
+so the working tree can pass a gate CI will fail. It has caught that twice.
+
 ## Testing against a real node
 
 ```
-tools/live-probe.sh owl        # both stages
-tools/live-probe.sh owl 2      # wire only
+tools/live-probe.sh owl        # stages 1 and 2, read-only
+tools/live-service.sh owl      # the whole service against a tunnelled mock
+tools/live-failures.sh owl     # the server's refusals: 409, 429, pause, 401
+tools/live-stress.sh owl       # restarts, and a node with an unreadable config
+tools/live-stalled.sh owl      # stops blah2 to reach `stalled` — writes to the node
 ```
 
-Ships the package over ssh and runs it in a stock container with the node's paths
-mounted read-only. Nothing is built, nothing is pushed to a registry, nothing persists.
-Both stages have found bugs this way that unit tests structurally could not — stage 1's
-probe revealed that Docker's data-root sits on `/data`, and stage 2's revealed a
-required-but-nullable field being dropped during serialisation.
+Each ships the package over ssh and runs it in a stock container with the node's paths
+mounted read-only. Nothing is built and nothing persists. Watch any of them live at
+`http://127.0.0.1:18080/`, served by the mock itself.
+
+`live-stalled.sh` is the only one that writes to the node: it stops the four blah2
+containers and restarts them from an EXIT trap over a separate ssh connection, so a dead
+tunnel cannot strand the radar.
+
+These have found bugs unit tests structurally could not — Docker's data-root sitting on
+`/data`, a required-but-nullable field dropped during serialisation, and a heartbeat that
+silently never sent because a payload builder returned a model instead of a dict.
 
 ## Design in one paragraph
 

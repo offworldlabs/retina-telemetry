@@ -25,8 +25,7 @@ SPEED_OF_LIGHT_M_S = 299_792_458.0
 
 #: blah2 quantises delay to 2 dp in km — 0.01 km ≈ 0.0334 µs — so anything finer
 #: than about 3 dp in microseconds is fabricated precision. Rounding here also
-#: keeps float noise (41.361948400000004) off the wire. See Q4, which asks the
-#: server author whether they would rather receive kilometres for this reason.
+#: keeps float noise (41.361948400000004) off the wire.
 DELAY_DECIMALS = 3
 
 #: One CPI is 0.5 s and the timestamp is integer milliseconds, so three decimals
@@ -41,8 +40,8 @@ def ms_to_s(timestamp_ms: int) -> float:
     """Epoch milliseconds → epoch float seconds.
 
     blah2's ``timestamp``, which is the **end** of the capture window rather
-    than its start or middle (Q3 asks the server author to state which edge the
-    spec means).
+    than its start or middle. Spec v1.1.1 states that explicitly and pairs it
+    with ``cpi_s``, so the server knows the samples span ``[t - cpi_s, t]``.
     """
     return round(timestamp_ms / 1000.0, SECONDS_DECIMALS)
 
@@ -52,11 +51,24 @@ def km_to_us(delay_km: list[float]) -> list[float]:
     return [round(value * KM_TO_US, DELAY_DECIMALS) for value in delay_km]
 
 
+def tolerance_km_to_us(tolerance_km: float) -> float:
+    """The ADS-B association gate, kilometres → microseconds.
+
+    Same constant as :func:`km_to_us` and for the same reason: blah2-api
+    compares the gate against a bistatic range in kilometres
+    (``api/bistatic.js:67``), while the spec wants it in the unit
+    ``DetectionFrame.delay`` travels in. A separate function because it takes a
+    scalar, and because a call site reading ``tolerance_km_to_us`` says what is
+    being converted where ``km_to_us`` would not.
+    """
+    return round(tolerance_km * KM_TO_US, DELAY_DECIMALS)
+
+
 def m_to_ft(altitude_m: float) -> float:
     """Metres → feet.
 
     Everything else in the spec is SI, so this one conversion is the odd one
-    out and the easiest to forget. Q4 asks why.
+    out and the easiest to forget.
     """
     return round(altitude_m * M_TO_FT, ALTITUDE_DECIMALS)
 
@@ -67,7 +79,7 @@ def max_range_km(delay_max_bins: int, fs_hz: float) -> float:
     ``delayMax`` is a bin count, and one bin is one sample period of bistatic
     range, so the range is ``bins × c / fs``. Derived rather than stored so it
     can never disagree with what blah2 actually computes — 400 bins at 2 MHz
-    gives ~60 km. See Q6.
+    gives ~60 km.
 
     Raises:
         ValueError: if ``fs_hz`` is zero or negative, which would otherwise

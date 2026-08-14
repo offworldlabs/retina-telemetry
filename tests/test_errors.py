@@ -1,6 +1,6 @@
 import threading
 
-from retina_telemetry.errors import Errors
+from retina_telemetry.errors import DEFAULT_LIMIT, MAX_MESSAGE, Errors
 
 
 def test_a_fault_is_recorded():
@@ -166,3 +166,107 @@ def test_a_batch_knows_how_many_it_carries():
     errors.add("two")
 
     assert len(errors.take()) == 2
+
+
+# ── the rendered string, not the stored one, is what the spec bounds ──
+
+
+def test_a_long_repeated_fault_stays_inside_the_spec_bound():
+    """The bug this exists for. `add` truncated to exactly MAX_MESSAGE and
+    `_render` then appended " (x2)", giving 517 against the spec's maxLength of
+    512. HeartbeatRequest refused it, the payload factory is unguarded, and the
+    heartbeat thread died for the lifetime of the process."""
+    errors = Errors()
+    errors.add("x" * 600)
+    errors.add("x" * 600)
+
+    (rendered,) = errors.take().messages
+
+    assert len(rendered) <= MAX_MESSAGE
+    assert rendered.endswith("(x2)")
+
+
+def test_the_repeat_count_survives_truncation():
+    """The count is the half worth keeping: "seen 300 times" separates a wedged
+    node from a blip, and costs a handful of characters against a traceback
+    nobody reads to the end."""
+    errors = Errors()
+    for _ in range(300):
+        errors.add("y" * 600)
+
+    (rendered,) = errors.take().messages
+
+    assert len(rendered) <= MAX_MESSAGE
+    assert rendered.endswith("(x300)")
+
+
+def test_a_long_fault_seen_once_is_still_bounded():
+    errors = Errors()
+    errors.add("z" * 600)
+
+    (rendered,) = errors.take().messages
+
+    assert len(rendered) <= MAX_MESSAGE
+
+
+def test_every_rendered_fault_builds_a_valid_heartbeat():
+    """Asserted against the generated model rather than against 512, so the
+    bound comes from the spec rather than from a constant we might drift from."""
+    from retina_telemetry.wire.heartbeat import build_heartbeat
+
+    errors = Errors()
+    for n, text in ((1, "a" * 600), (2, "b" * 600), (99, "c" * 600)):
+        for _ in range(n):
+            errors.add(text)
+
+    build_heartbeat(
+        state="streaming",
+        uptime_s=1,
+        config_version=1,
+        boot_id="k3n8v2qp71ab",
+        errors=errors.take().messages,
+    )
+
+
+def test_the_whole_errors_array_fits_the_specs_body_cap():
+    """The count bound and the per-message bound compose past a third one: 20
+    items of 512 characters is 10 KiB of errors alone, against an 8 KiB cap the
+    spec applies at the origin *ahead of parsing*. A node carrying twenty
+    distinct long faults is exactly the node whose heartbeat matters."""
+    import json
+
+    from retina_telemetry.wire.heartbeat import build_heartbeat
+    from retina_telemetry.wire.serialise import to_wire
+
+    errors = Errors()
+    for i in range(DEFAULT_LIMIT):
+        errors.add(f"distinct fault {i} " + "x" * 600)
+
+    body = json.dumps(
+        to_wire(
+            build_heartbeat(
+                state="streaming",
+                uptime_s=1,
+                config_version=1,
+                boot_id="k3n8v2qp71ab",
+                errors=errors.take().messages,
+            )
+        )
+    )
+
+    assert len(body.encode()) <= 8192
+
+
+def test_the_persistent_fault_survives_the_byte_bound():
+    """Dropped least-frequent-first, so what is left is the problem rather than
+    the noise around it."""
+    errors = Errors()
+    for i in range(DEFAULT_LIMIT):
+        errors.add(f"noise {i} " + "x" * 600)
+    for _ in range(50):
+        errors.add("the persistent one")
+
+    messages = errors.take().messages
+
+    assert messages[0] == "the persistent one (x50)"
+    assert len(messages) < DEFAULT_LIMIT

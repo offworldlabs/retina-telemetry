@@ -20,6 +20,7 @@ def frame(seq=1, config_version=1, n=1):
     return {
         "t": 1786014064.679,
         "seq": seq,
+        "boot_id": "28a156bd3f8652f4",
         "config_version": config_version,
         "delay": [41.362] * n,
         "doppler": [-118.0] * n,

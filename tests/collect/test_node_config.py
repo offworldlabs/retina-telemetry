@@ -64,7 +64,7 @@ def test_delay_max_stays_in_bins(tmp_path):
     assert read_config(write(tmp_path, DEFAULTS)).delay_max_bins == 400
 
 
-# ── beam geometry scaffolding (Q1) ───────────────────────────────────
+# ── beam geometry scaffolding ───────────────────────────────────
 
 
 def test_beam_fields_are_absent_on_a_node_today(tmp_path):
@@ -90,7 +90,7 @@ def test_beam_fields_are_read_when_present(tmp_path):
 
 def test_omnidirectional_azimuth_is_indistinguishable_from_unset(tmp_path):
     """Both are None, and that is fine — the spec asks for null rather than 0.0
-    for broadside, and Q1 proposes omnidirectional as the fleet default."""
+    for broadside, and every node in the fleet leaves it unset."""
     document = copy.deepcopy(DEFAULTS)
     document["location"]["rx"]["beam_width"] = 60
 
@@ -118,9 +118,18 @@ def test_non_numeric_beam_width_raises(tmp_path):
 
 
 def test_collects_only_what_is_sent(tmp_path):
-    """Ten fields, every one of them feeding NodeConfig. cpi, the ADS-B flag and
-    the association tolerances were all collected at some point and are not any
-    more — nothing local needs them and the spec has no field for them."""
+    """Every field here feeds NodeConfig, and nothing else is read.
+
+    Three of them came back in spec v1.1.1 after being deliberately removed:
+    cpi, and the two ADS-B association tolerances. That is the discipline
+    working rather than failing — they went because the spec had no field for
+    them, and returned through the spec rather than by us deciding they looked
+    useful. `truth.adsb.enabled` stayed gone, because the presence of the
+    `adsb` key on a polled frame *is* the flag.
+
+    `delay_max_bins` is still the one thing collected that is never sent: it
+    exists only because `max_range_km` is derived from it.
+    """
     config = read_config(write(tmp_path, DEFAULTS))
 
     assert set(vars(config)) == {
@@ -134,6 +143,9 @@ def test_collects_only_what_is_sent(tmp_path):
         "fc_hz",
         "fs_hz",
         "delay_max_bins",
+        "cpi_s",
+        "delay_tolerance_km",
+        "doppler_tolerance_hz",
         "beam_width_deg",
         "beam_azimuth_deg",
     }
@@ -163,9 +175,20 @@ def test_unmapped_keys_do_not_count_as_a_change(tmp_path):
     document = copy.deepcopy(DEFAULTS)
     document["save"] = {"iq": True}
     document["process"]["detection"] = {"pfa": 0.001}
-    document["truth"]["adsb"]["delay_tolerance"] = 9.9
 
     assert read_config(write(tmp_path / "a", DEFAULTS)) == read_config(
+        write(tmp_path / "b", document)
+    )
+
+
+def test_an_edited_association_tolerance_counts_as_a_change(tmp_path):
+    """It used to be unmapped, so editing it changed nothing. v1.1.1 requires
+    it on the wire, so it now belongs to the config the server holds and an
+    edit has to trigger a resend."""
+    document = copy.deepcopy(DEFAULTS)
+    document["truth"]["adsb"]["delay_tolerance"] = 9.9
+
+    assert read_config(write(tmp_path / "a", DEFAULTS)) != read_config(
         write(tmp_path / "b", document)
     )
 

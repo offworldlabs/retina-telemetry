@@ -52,7 +52,7 @@ class Settings:
     #: emits roughly once a second on current hardware — slower than its
     #: configured CPI, because it is processing-bound.
     poll_interval_s: float = field(default_factory=lambda: _float("POLL_INTERVAL_S", 0.25))
-    #: Server-issued in principle; nothing carries it yet (Q9).
+    #: Server-issued in principle; nothing carries it yet.
     heartbeat_interval_s: float = field(
         default_factory=lambda: _float("HEARTBEAT_INTERVAL_S", 60.0)
     )

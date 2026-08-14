@@ -26,7 +26,8 @@ of ``0`` are both rejected at construction without anyone remembering to check.
 | Wire field | Source | Conversion |
 |---|---|---|
 | ``t`` | ``DetectionPoll.timestamp_ms`` | ÷ 1000 → float seconds |
-| ``seq`` | caller (``state.py``) | — |
+| ``seq`` | caller (``state.py``) |
+| ``boot_id`` | caller (``state.py``) — distinct per process start | — |
 | ``config_version`` | caller (``state.py``, server-issued) | — |
 | ``delay`` | ``DetectionPoll.delay_km`` | × 3.335641 → µs |
 | ``doppler`` | ``DetectionPoll.doppler_hz`` | none |
@@ -45,11 +46,14 @@ bad value must not cost the other detections in the frame.
 | ``rx_alt_ft`` | ``NodeConfigRaw.rx_alt_m`` | × 3.28084 |
 | ``tx_lat`` / ``tx_lon`` | ``NodeConfigRaw.tx_lat`` / ``tx_lon`` | none |
 | ``tx_alt_ft`` | ``NodeConfigRaw.tx_alt_m`` | × 3.28084 |
-| ``tx_callsign`` | ``NodeConfigRaw.tx_name`` | none — a display name, Q5 |
+| ``tx_callsign`` | ``NodeConfigRaw.tx_name`` | none — a display name, not a callsign |
 | ``fc_hz`` / ``fs_hz`` | ``NodeConfigRaw.fc_hz`` / ``fs_hz`` | none |
 | ``max_range_km`` | ``delay_max_bins`` and ``fs_hz`` | × c ÷ fs ÷ 1000 |
-| ``beam_width_deg`` | ``NodeConfigRaw.beam_width_deg`` | none — **Q1, absent today** |
-| ``beam_azimuth_deg`` | ``NodeConfigRaw.beam_azimuth_deg`` | none — ``None`` is valid |
+| ``beam_width_deg`` | ``NodeConfigRaw.beam_width_deg`` | none — ``null`` if unset |
+| ``beam_azimuth_deg`` | ``NodeConfigRaw.beam_azimuth_deg`` | none — ``null`` if unset |
+| ``cpi_s`` | ``NodeConfigRaw.cpi_s`` | none, seconds both sides |
+| ``delay_tolerance_us`` | ``NodeConfigRaw.delay_tolerance_km`` | × 3.335641 |
+| ``doppler_tolerance_hz`` | ``NodeConfigRaw.doppler_tolerance_hz`` | none |
 
 ### RegisterRequest — ``registration.build_registration``
 
@@ -57,9 +61,9 @@ bad value must not cost the other detections in the frame.
 |---|---|
 | ``node_id`` | ``identity.read_node_id()`` |
 | ``board_model`` | ``identity.read_board_model()`` |
-| ``agreements.licence`` | ``Consent.licence`` — **Q2, absent today** |
-| ``agreements.remote_management`` | ``Consent.remote_management`` — **Q2** |
-| ``agreements.publication`` | ``Consent.publication`` — **Q2** |
+| ``agreements.licence`` | ``Consent.licence`` — **absent on every node today** |
+| ``agreements.remote_management`` | ``Consent.remote_management`` — **absent** |
+| ``agreements.publication`` | ``Consent.publication`` — **absent** |
 | ``config`` | ``build_node_config`` |
 
 None of the three is ever synthesised. A missing record means the owner was not
@@ -72,24 +76,32 @@ absent rather than producing a payload that would misrepresent them.
 |---|---|
 | ``state`` | caller (``comms/lifecycle.py``, stage 3b — already a wire value) |
 | ``uptime_s`` | ``HostSnapshot.host_uptime_s`` — the **device's**, not ours |
-| ``config_version`` | caller (``state.py``) |
+| ``config_version`` | caller (``state.py``) — ``null`` until one is issued |
 | ``health.cpu_pct`` | ``HostSnapshot.cpu_pct`` |
 | ``health.disk_free_mb`` | ``HostSnapshot.disk_free_mb`` |
 | ``health.temp_c`` | ``HostSnapshot.temp_c`` |
-| ``health.blah2`` | ``Blah2Client.last_poll_ok`` → ``"up"`` / ``"down"`` / omitted |
+| ``health.blah2`` | ``Blah2Client.last_poll_ok`` → ``"up"`` / ``"down"`` / ``null`` |
 | ``health.adsb`` | ``DetectionPoll.adsb is not None`` → ``"up"`` / omitted |
-| ``health.queue_depth`` | **nothing** — meaningless under latest-wins, Q11 |
 | ``versions.*`` | caller (compose env vars) |
 | ``errors`` | caller (``errors.py``) |
 
 Anything marked "caller" is not collected by stage 1 and cannot be. Those are
 the seams where stage 3 and the state store plug in.
+
+## Required nulls
+
+Seven fields are *required and nullable* since spec v1.1.1 — both beam fields,
+``HeartbeatRequest.config_version``, and ``NodeHealth``'s four core values. For
+those, ``null`` is a value the server expects rather than an absence, so
+payloads must go out through ``to_wire`` and never ``model_dump(exclude_none=
+True)``, which would drop the key and produce something the server rejects.
 """
 
 from retina_telemetry.wire.config import build_node_config
 from retina_telemetry.wire.detection import build_detection_frame
 from retina_telemetry.wire.heartbeat import build_heartbeat
 from retina_telemetry.wire.registration import IncompletePayload, build_registration
+from retina_telemetry.wire.serialise import to_wire, to_wire_json
 
 __all__ = [
     "IncompletePayload",
@@ -97,4 +109,6 @@ __all__ = [
     "build_heartbeat",
     "build_node_config",
     "build_registration",
+    "to_wire",
+    "to_wire_json",
 ]

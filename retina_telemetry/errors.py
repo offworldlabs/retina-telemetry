@@ -35,10 +35,27 @@ from dataclasses import dataclass, field
 #: dropped.
 DEFAULT_LIMIT = 20
 
+#: Total bytes ``errors`` may occupy once rendered.
+#:
+#: The spec caps a heartbeat body at 8 KiB **at the origin, ahead of parsing**,
+#: and the other two bounds compose straight past it: 20 items of 512
+#: characters is 10 KiB of errors alone. A node carrying twenty distinct long
+#: faults is exactly the node whose heartbeat matters, and it would have been
+#: rejected before anything read it.
+#:
+#: 6 KiB leaves generous room for the rest of a beat, which is a few hundred
+#: bytes. Faults are dropped least-frequent-first to fit, same as the count
+#: bound, so the persistent problem survives and the noise goes.
+MAX_ERRORS_BYTES = 6 * 1024
+
 #: The spec bounds ``errors`` items at 512 characters, and says anything beyond
 #: the list bound is dropped node-side rather than truncating the request. A
 #: message long enough to hit this is a traceback that lost its way, and the
 #: first 512 characters of one are the useful part anyway.
+#:
+#: Enforced in :func:`_render`, on the finished string. Enforcing it only on the
+#: way in is not enough: the " (xN)" repeat suffix is appended afterwards and
+#: pushed the result over the bound.
 MAX_MESSAGE = 512
 
 
@@ -121,7 +138,47 @@ class Errors:
 
 
 def _render(counts: Counter[str]) -> list[str]:
-    return [
-        message if count == 1 else f"{message} (x{count})"
-        for message, count in counts.most_common()
-    ]
+    """Render each fault, truncating the *result* rather than the input.
+
+    The bound has to be applied here and not only in :meth:`Errors.add`,
+    because the repeat suffix is added after storage. Truncating on the way in
+    to exactly ``MAX_MESSAGE`` and then appending " (x2)" produced 517
+    characters against the spec's ``maxLength: 512``, which failed
+    ``HeartbeatRequest`` validation — and since the payload is built inside an
+    unguarded factory, it stopped the heartbeat for the lifetime of the process.
+    A node going permanently silent over a long log line is the exact outcome
+    the rest of the heartbeat design exists to avoid.
+    """
+    rendered: list[str] = []
+    budget = MAX_ERRORS_BYTES
+    for message, count in counts.most_common():
+        one = _render_one(message, count)
+        # +3 for the JSON quotes and separator this entry costs in the array.
+        cost = len(one.encode()) + 3
+        if cost > budget:
+            # most_common() is descending, so everything left is rarer than
+            # what is already in. Stopping keeps the persistent fault and
+            # drops the noise, which is the same trade the count bound makes.
+            break
+        budget -= cost
+        rendered.append(one)
+    return rendered
+
+
+def _render_one(message: str, count: int) -> str:
+    """One fault, within the bound, keeping the repeat count.
+
+    The count is the half worth protecting: "seen 300 times" is what separates a
+    wedged node from a blip, and it is a handful of characters against a
+    truncated traceback nobody reads to the end. So the suffix is reserved and
+    the *message* gives way, rather than clamping the finished string and losing
+    the count off the end.
+    """
+    if count == 1:
+        return message if len(message) <= MAX_MESSAGE else message[: MAX_MESSAGE - 1] + "…"
+
+    suffix = f" (x{count})"
+    room = MAX_MESSAGE - len(suffix)
+    if len(message) <= room:
+        return message + suffix
+    return message[: room - 1] + "…" + suffix

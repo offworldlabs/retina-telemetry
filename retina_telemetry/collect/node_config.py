@@ -26,12 +26,21 @@ import yaml
 DEFAULT_CONFIG_PATH = Path("/data/retina-node/config/config.yml")
 
 #: Where the beam geometry will live once retina-gui can write it. Nothing sets
-#: these today (Q1) — they are named here so the mapping is one edit when it
-#: does. Under ``location.rx`` because the antenna is a receiver property and
-#: there is no antenna section; if retina-gui puts them elsewhere, change these
-#: two constants and nothing else.
+#: these today — they are named here so the mapping is one edit when it does.
+#: Under ``location.rx`` because the antenna is a receiver property and there is
+#: no antenna section; if retina-gui puts them elsewhere, change these two
+#: constants and nothing else.
 BEAM_WIDTH_KEY = "location.rx.beam_width"
 BEAM_AZIMUTH_KEY = "location.rx.beam_azimuth"
+
+#: blah2-api's own fallbacks when the association tolerances are unset, from
+#: `api/server.js:380-381`. Reading them here rather than in stage 2 because
+#: they are a fact about the node stack, not about the wire.
+DELAY_TOLERANCE_KEY = "truth.adsb.delay_tolerance"
+DOPPLER_TOLERANCE_KEY = "truth.adsb.doppler_tolerance"
+
+BLAH2_API_DELAY_TOLERANCE_KM = 2.0
+BLAH2_API_DOPPLER_TOLERANCE_HZ = 5.0
 
 
 class ConfigUnavailable(Exception):
@@ -64,22 +73,38 @@ class NodeConfigRaw:
     fs_hz: float
     delay_max_bins: int
 
-    # ── scaffolding: see Q1 ──────────────────────────────────────
-    # Both are required by the spec's NodeConfig and neither exists on a node
-    # today, so these read as None and stage 2 cannot build a registration
-    # payload. The seam is here so that landing the retina-gui work is a config
-    # change rather than a code change.
+    #: Coherent processing interval, seconds, straight from ``process.data.cpi``.
+    #: The spec's ``cpi_s`` in the same unit, so no conversion — it is here
+    #: because the server needs the width of the window every ``t`` closes.
+    #:
+    #: Note this is the *configured* CPI, not the observed frame period. They
+    #: differ by roughly 2x on current hardware because processing overruns; see
+    #: ``docs/data-sources.md`` §2. Nothing should derive a cadence from it.
+    cpi_s: float
+
+    #: ADS-B association gate, in blah2's own units. `delay_tolerance` is
+    #: compared against a bistatic range in **kilometres** — `computeBistaticDelay`
+    #: returns `bistatic_range / 1000` from metric ECEF (`api/bistatic.js:67`) and
+    #: is compared to `det.delay` at `api/server.js:382`. Stage 2 converts to the
+    #: microseconds the spec asks for, which is why the spec's 6.67 example is our
+    #: 2.0 km.
+    #:
+    #: Defaulted rather than required because `api/server.js:380-381` falls back to
+    #: exactly these values when the keys are absent. Substituting them is
+    #: therefore reporting the tolerance blah2-api actually applies, not guessing
+    #: one — the opposite of the beam fields below.
+    delay_tolerance_km: float = BLAH2_API_DELAY_TOLERANCE_KM
+    doppler_tolerance_hz: float = BLAH2_API_DOPPLER_TOLERANCE_HZ
+
+    # ── antenna geometry: optional, and absent on every node ─────
+    # Required by the spec but **nullable** since v1.1.1, so an uncharacterised
+    # antenna sends explicit nulls rather than being unable to build a config at
+    # all. retina-gui does not collect the geometry from owners and is not
+    # scheduled to, so absent is the fleet-wide steady state.
     #
-    # The two Nones do not mean the same thing, which is the subtle part:
-    #
-    #   beam_width_deg is None    -> not configured. Blocks registration.
-    #   beam_azimuth_deg is None  -> broadside/omnidirectional, and a *valid*
-    #                                wire value; the spec asks for null rather
-    #                                than 0.0 for exactly this case.
-    #
-    # So an unconfigured azimuth and a deliberately omnidirectional one are
-    # indistinguishable here, and that is fine — Q1 proposes omnidirectional as
-    # the default for the current fleet anyway.
+    # Nothing is substituted. Unlike the tolerances above there is no value the
+    # node stack actually applies — a beam width would be invented, and the
+    # server could not tell.
     beam_width_deg: float | None = None
     beam_azimuth_deg: float | None = None
 
@@ -116,17 +141,24 @@ def read_config(path: Path | str = DEFAULT_CONFIG_PATH) -> NodeConfigRaw:
         tx_lon=_require(document, "location.tx.longitude", float),
         tx_alt_m=_require(document, "location.tx.altitude", float),
         # A free-text display name the operator typed in the tower step, not a
-        # regulatory callsign. See open question Q5.
+        # regulatory callsign.
         tx_name=_require(document, "location.tx.name", str),
         fc_hz=_require(document, "capture.fc", float),
         fs_hz=_require(document, "capture.fs", float),
         # Bins, not kilometres. Stage 2 derives max_range_km as
-        # delay_max_bins * c / fs / 1000. See Q6.
+        # delay_max_bins * c / fs / 1000.
         delay_max_bins=_require(document, "process.ambiguity.delayMax", int),
-        # Optional here despite being required by the spec: nothing writes them
-        # yet, and raising would make every node unreadable. Stage 2 is where a
-        # missing beam_width_deg has to become an error, because that is the
-        # layer that knows the field is required.
+        # Seconds. Required by the spec since v1.1.1 as cpi_s: it is the width
+        # of the window every DetectionFrame.t closes, so the server cannot know
+        # what a frame's samples span without it. blah2 cannot run without this
+        # key, so a missing one is a malformed configuration rather than a gap.
+        cpi_s=_require(document, "process.data.cpi", float),
+        delay_tolerance_km=_optional(document, DELAY_TOLERANCE_KEY, float)
+        or BLAH2_API_DELAY_TOLERANCE_KM,
+        doppler_tolerance_hz=_optional(document, DOPPLER_TOLERANCE_KEY, float)
+        or BLAH2_API_DOPPLER_TOLERANCE_HZ,
+        # Optional here and nullable on the wire, so an unset key travels as an
+        # explicit null rather than blocking anything.
         beam_width_deg=_optional(document, BEAM_WIDTH_KEY, float),
         beam_azimuth_deg=_optional(document, BEAM_AZIMUTH_KEY, float),
     )

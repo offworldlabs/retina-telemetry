@@ -32,7 +32,7 @@ position ends up in a public archive, and the disclosure version records which
 wording the owner actually saw.
 
 Nothing writes this file yet — the wizard's agreements step persists nothing and
-the EULA is a placeholder (open question Q2). A missing file is therefore the
+the EULA is a placeholder. A missing file is therefore the
 state of every node in the fleet today, and is treated as "not accepted" rather
 than as an error.
 """

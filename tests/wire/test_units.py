@@ -80,7 +80,7 @@ def test_transmitter_altitude_from_owl():
 
 def test_feet_are_larger_than_metres():
     """The silent failure: metres read as feet puts a transmitter ~500 ft low
-    with no error anywhere. See Q4."""
+    with no error anywhere."""
     assert m_to_ft(100.0) > 100.0
     assert m_to_ft(100.0) == pytest.approx(100 * M_TO_FT, abs=0.05)
 

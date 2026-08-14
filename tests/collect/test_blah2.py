@@ -241,3 +241,72 @@ def test_an_adsb_entry_that_is_not_an_object_is_rejected():
     enrichment changed shape underneath us."""
     with pytest.raises(MalformedFrame, match="objects or null"):
         parse_frame(frame(delay=[1.0], doppler=[1.0], snr=[1.0], adsb=["4ca1f2"]))
+
+
+# ── ADS-B presence, for NodeHealth.adsb ──────────────────────────────
+
+
+def test_adsb_presence_is_unknown_before_any_frame():
+    blah2, _ = client()
+
+    assert blah2.last_adsb_present is None
+
+
+def test_adsb_presence_tracks_the_key_on_the_last_frame():
+    """blah2-api gates the whole `adsb` key on `truth.adsb.enabled`, so its
+    presence *is* the configuration flag — and the only way the heartbeat can
+    report NodeHealth.adsb at all."""
+    blah2, _ = client(frame(1000, adsb=[ASSOCIATION, None]))
+    blah2.poll_detection()
+
+    assert blah2.last_adsb_present is True
+
+
+def test_a_frame_without_the_key_means_association_is_off():
+    blah2, _ = client(frame(1000))
+    blah2.poll_detection()
+
+    assert blah2.last_adsb_present is False
+
+
+def test_presence_survives_a_failed_poll():
+    """Sticky on purpose. blah2 going away does not un-configure ADS-B, and
+    NodeHealth.blah2 already tells the server not to trust the rest."""
+    blah2, _ = client(frame(1000, adsb=[ASSOCIATION, None]), ConnectionError("refused"))
+    blah2.poll_detection()
+    blah2.poll_detection()
+
+    assert blah2.last_poll_ok is False
+    assert blah2.last_adsb_present is True
+
+
+# ── blah2-api's warmup body ──────────────────────────────────────────
+
+
+def test_an_empty_body_is_not_a_transport_failure():
+    """blah2-api serves `var detection = ''` (api/server.js:69) until blah2
+    delivers its first CPI. That is a 200 on every stack start, and reporting it
+    as unreachable told the server blah2 was "down" while it was answering."""
+    blah2, _ = client(FakeResponse(text=""))
+
+    assert blah2.poll_detection() is None
+    assert blah2.last_poll_ok is True
+    assert blah2.last_error is None
+
+
+def test_an_unparseable_body_is_not_a_transport_failure_either():
+    """Reached the service, so it is up; the data is the problem. Same
+    distinction the MalformedFrame path already drew for a well-formed JSON
+    object with mismatched arrays."""
+    blah2, _ = client(FakeResponse(text="{not json"))
+
+    assert blah2.poll_detection() is None
+    assert blah2.last_poll_ok is True
+    assert "unparseable" in (blah2.last_error or "")
+
+
+def test_a_real_transport_failure_still_reports_down():
+    blah2, _ = client(ConnectionError("refused"))
+    blah2.poll_detection()
+
+    assert blah2.last_poll_ok is False

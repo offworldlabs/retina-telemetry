@@ -112,9 +112,11 @@ def test_a_radar_that_has_never_produced_is_starting(state):
     assert derived.wire.value == "starting"
 
 
-def test_a_radar_that_has_stopped_is_a_fault(state):
-    """A working node with a broken radar is not a beginning, so it maps to
-    `error` rather than `starting`."""
+def test_a_radar_that_has_stopped_is_stalled_not_an_error(state):
+    """A working node with a stopped radar. v1.1.1 added `stalled` for exactly
+    this, because `error` made the server raise against the node when the fault
+    is the radar's — and `starting` is not true of something that has already
+    run."""
     state.store_token("tok_abc", node_ref="nd1", config_version=7)
 
     derived = derive_state(
@@ -122,7 +124,7 @@ def test_a_radar_that_has_stopped_is_a_fault(state):
     )
 
     assert derived is NodeState.NO_DETECTIONS
-    assert derived.wire.value == "error"
+    assert derived.wire.value == "stalled"
     assert derived.reaches_the_server
 
 
@@ -290,8 +292,7 @@ def test_repeated_refusals_do_not_hot_loop(registrar, server):
 
 
 def test_a_400_is_surfaced_rather_than_retried(registrar, server, caplog):
-    """Retrying unchanged will not help — the configuration failed validation.
-    See Q12."""
+    """Retrying unchanged will not help — the configuration failed validation."""
     server.enqueue("register", 400, body={"error": "invalid_request", "detail": "rx_lat"})
 
     with caplog.at_level("ERROR"):

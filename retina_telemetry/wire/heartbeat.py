@@ -27,7 +27,8 @@ def build_heartbeat(
     *,
     state: NodeState,
     uptime_s: int,
-    config_version: int,
+    config_version: int | None,
+    boot_id: str,
     host: HostSnapshot | None = None,
     blah2_up: bool | None = None,
     adsb_present: bool | None = None,
@@ -42,14 +43,14 @@ def build_heartbeat(
     |---|---|
     | ``state`` | ``comms/lifecycle.py`` (stage 3b) |
     | ``uptime_s`` | see below |
-    | ``config_version`` | ``state.py``, server-issued |
+    | ``config_version`` | ``state.py``, server-issued, ``null`` until issued |
+    | ``boot_id`` | ``state.py``, distinct per process start |
     | ``health.cpu_pct`` | ``host.cpu_pct`` |
     | ``health.disk_free_mb`` | ``host.disk_free_mb`` |
     | ``health.temp_c`` | ``host.temp_c`` |
     | ``health.blah2`` | ``blah2_up`` |
     | ``health.adsb`` | ``adsb_present`` |
-    | ``health.queue_depth`` | **nothing** — see below |
-    | ``versions.*`` | compose env vars, read by ``__main__`` |
+        | ``versions.*`` | compose env vars, read by ``__main__`` |
     | ``errors`` | ``errors.py`` |
 
     Args:
@@ -64,7 +65,7 @@ def build_heartbeat(
             itself and "the node" is the board, so a board that reboots
             repeatedly is the signal worth carrying. This process's uptime is a
             self-diagnostic and belongs in the status document, beside the
-            ``seq`` discontinuity it explains (Q10).
+            ``seq`` discontinuity it explains.
 
             It is required, while ``host_uptime_s`` is best-effort like every
             other host read, so **the caller must resolve** a ``None``. Falling
@@ -73,7 +74,11 @@ def build_heartbeat(
             a true lower bound. In practice ``/proc/uptime`` exists on every
             Linux and ``/proc`` is mounted in every container by default, so
             this path should never fire.
-        config_version: server-issued, cached in ``state.py``.
+        config_version: server-issued, cached in ``state.py``, and ``None``
+            until the first one arrives. Nullable on the wire since v1.1.1, so a
+            node that has never held a version still beats and says so. It
+            remains required and non-null on ``DetectionFrame``, where a frame
+            cannot be filed without the geometry it was measured against.
         host: from ``collect.host.HostReader.read``. ``None``, or any ``None``
             field within it, omits the corresponding health entry. Note
             ``cpu_pct`` is always ``None`` on the first read, since ``/proc/stat``
@@ -90,15 +95,15 @@ def build_heartbeat(
         errors: bounded list accumulated since the last beat, cleared once a
             beat is acknowledged.
 
-    ``queue_depth`` is never populated. It is meaningless under a transport with
-    at most one request in flight and no queue — 0 and 1 are the only possible
-    values and neither tells the server anything. Q11 asks whether it should be
-    dropped from the schema.
+    ``queue_depth`` no longer exists. It was meaningless under a
+    transport with at most one request in flight and no queue — 0 and 1 the only
+    reachable values, neither saying anything — and v1.1.1 removed it.
     """
     return HeartbeatRequest(
         state=state,
         uptime_s=uptime_s,
         config_version=config_version,
+        boot_id=boot_id,
         health=_health(host, blah2_up, adsb_present),
         versions=_versions(owl_os, retina_node, blah2_image),
         errors=list(errors) if errors else [],
@@ -109,25 +114,30 @@ def _health(
     host: HostSnapshot | None,
     blah2_up: bool | None,
     adsb_present: bool | None,
-) -> NodeHealth | None:
-    """Build the health block, or ``None`` if we know nothing at all.
+) -> NodeHealth:
+    """Build the health block. Always present since v1.1.1.
 
-    Every field is independently optional, so a node that can read its
-    temperature but not its disk still reports the temperature.
+    The four core fields are now **required and nullable**, so a value the node
+    tried to read and could not arrives as an explicit ``null`` rather than as a
+    missing key. That is the spec's own rule — ``null`` means *known to be
+    unknown*, and absence is not left carrying meaning — and it is why this
+    returns a block rather than ``None``: an all-null health block is a real
+    report, not an empty one.
+
+    ``adsb`` is the exception and stays optional, because its absence carries a
+    third meaning the enum has no word for. blah2-api gates the key entirely on
+    ``truth.adsb.enabled``, so a missing key means association is switched off.
+    Reporting that as ``"down"`` would present a deliberate configuration as a
+    fault; ``"unknown"`` would claim we looked and could not tell. The spec
+    agrees a ``disabled`` value would say it better and holds that open.
     """
-    health = NodeHealth(
+    return NodeHealth(
         cpu_pct=host.cpu_pct if host else None,
         disk_free_mb=host.disk_free_mb if host else None,
         temp_c=host.temp_c if host else None,
         blah2=None if blah2_up is None else (Blah2.up if blah2_up else Blah2.down),
-        # "up" or omitted, never "down": an absent adsb key means association is
-        # switched off, and calling that "down" would report a deliberate
-        # configuration as a fault. The enum's third value, "unknown", is not
-        # that either — it means we looked and could not tell.
         adsb=Adsb.up if adsb_present else None,
-        queue_depth=None,
     )
-    return health if health.model_dump(exclude_none=True) else None
 
 
 def _versions(

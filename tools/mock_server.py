@@ -61,12 +61,105 @@ BASE_PATH = "/v1"
 
 #: Endpoint name → (method, path, request model). The name is what the control
 #: channel uses to queue a scripted response.
+#: The spec's origin-side body caps, in bytes: "Request bodies are size-capped
+#: at the origin, ahead of parsing: 8 KiB for registration, heartbeat and
+#: configuration, 64 KiB for a detection frame."
+#:
+#: Enforced here because schema validation alone let a 10 KiB heartbeat through
+#: that production would have refused unread — and the node carrying twenty
+#: distinct long faults is precisely the one whose beat matters most.
+BODY_CAPS = {
+    "register": 8 * 1024,
+    "heartbeat": 8 * 1024,
+    "config": 8 * 1024,
+    "detection": 64 * 1024,
+}
+MAX_BODY_BYTES = 64 * 1024
+
 ENDPOINTS = {
     "register": ("POST", f"{BASE_PATH}/nodes/register", RegisterRequest),
     "detection": ("POST", f"{BASE_PATH}/nodes/detection", DetectionFrame),
     "heartbeat": ("POST", f"{BASE_PATH}/nodes/heartbeat", HeartbeatRequest),
     "config": ("PUT", f"{BASE_PATH}/nodes/config", NodeConfig),
 }
+
+
+#: A live view of what the node is posting, at http://127.0.0.1:<port>/.
+#:
+#: Exists because a request log printed after a run answers "what happened"
+#: while a node under test raises "what is happening" — a paused stream, a
+#: revoked token, a radar that has stopped are all things you want to watch
+#: arrive rather than reconstruct afterwards. Polls its own control channel, so
+#: it works against a run already in progress and needs nothing served from
+#: anywhere else.
+LIVE_PAGE = """<!doctype html><meta charset="utf-8"><title>retina ingest mock</title>
+<style>
+ :root{--bg:#0d1117;--fg:#e6edf3;--dim:#7d8590;--line:#21262d;--ok:#3fb950;
+       --warn:#d29922;--bad:#f85149;--acc:#58a6ff}
+ body{background:var(--bg);color:var(--fg);font:13px ui-monospace,SFMono-Regular,Menlo,monospace;
+      margin:0;padding:1rem 1.25rem}
+ h1{font-size:.8rem;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);
+    margin:0 0 .75rem;font-weight:600}
+ .counts{display:flex;gap:1.5rem;margin-bottom:1rem;flex-wrap:wrap}
+ .c b{color:var(--acc);font-size:1.5rem;font-weight:600}
+ .c span{color:var(--dim);margin-left:.35rem}
+ table{border-collapse:collapse;width:100%}
+ th{text-align:left;color:var(--dim);font-weight:600;font-size:.7rem;letter-spacing:.1em;
+    text-transform:uppercase;padding:.3rem .6rem;border-bottom:1px solid var(--line)}
+ td{padding:.28rem .6rem;border-bottom:1px solid var(--line);vertical-align:top;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ td.body{white-space:pre;color:var(--dim);max-width:none}
+ .detection{color:var(--acc)} .heartbeat{color:var(--ok)}
+ .config{color:var(--warn)} .register{color:var(--bad)}
+ .state{font-weight:600}
+ .paused,.stalled{color:var(--warn)} .error{color:var(--bad)} .streaming{color:var(--ok)}
+ #status{color:var(--dim);margin-bottom:.75rem}
+</style>
+<h1>retina ingest mock &mdash; live</h1>
+<div id="status">connecting…</div>
+<div class="counts" id="counts"></div>
+<table><thead><tr><th>at</th><th>endpoint</th><th>summary</th></tr></thead>
+<tbody id="rows"></tbody></table>
+<script>
+const EP = ["register","config","heartbeat","detection"];
+function summarise(r){
+  const b = r.body || {};
+  if (r.endpoint === "detection")
+    return `seq ${b.seq} boot ${String(b.boot_id||"").slice(0,8)} cv ${b.config_version} `
+         + `n=${(b.delay||[]).length}`;
+  if (r.endpoint === "heartbeat"){
+    const h = b.health || {};
+    const errs = (b.errors||[]).length;
+    return `<span class="state ${b.state}">${b.state}</span> cv ${b.config_version===null?"null":b.config_version}`
+         + ` cpu ${h.cpu_pct===null?"null":h.cpu_pct} temp ${h.temp_c===null?"null":h.temp_c}`
+         + ` blah2 ${h.blah2===null?"null":h.blah2}${h.adsb?" adsb "+h.adsb:""}`
+         + (errs?` <span class="error">errors ${errs}</span>`:"");
+  }
+  if (r.endpoint === "config")
+    return `beam ${b.beam_width_deg===null?"null":b.beam_width_deg}/`
+         + `${b.beam_azimuth_deg===null?"null":b.beam_azimuth_deg} cpi ${b.cpi_s}`;
+  if (r.endpoint === "register") return `${b.node_id} ${b.board_model}`;
+  return "";
+}
+async function tick(){
+  try{
+    const r = await fetch("/_control/requests");
+    const all = (await r.json()).requests;
+    const counts = {}; EP.forEach(e => counts[e] = 0);
+    all.forEach(x => { if (x.endpoint in counts) counts[x.endpoint]++; });
+    document.getElementById("counts").innerHTML = EP.map(e =>
+      `<div class="c"><b class="${e}">${counts[e]}</b><span>${e}</span></div>`).join("");
+    document.getElementById("rows").innerHTML = all.slice(-200).reverse().map(x =>
+      `<tr><td>${(x.at||"").slice(11,23)}</td>`
+      + `<td class="${x.endpoint}">${x.endpoint||x.path}</td>`
+      + `<td class="body">${summarise(x)}</td></tr>`).join("");
+    document.getElementById("status").textContent =
+      `${all.length} requests · updated ${new Date().toLocaleTimeString()}`;
+  }catch(e){ document.getElementById("status").textContent = "mock unreachable"; }
+}
+tick(); setInterval(tick, 1000);
+</script>
+"""
 
 
 @dataclass
@@ -228,6 +321,14 @@ class _Handler(BaseHTTPRequestHandler):
                     },
                 )
             return
+        if self.path in ("/", "/_control/live"):
+            page = LIVE_PAGE.encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(page)))
+            self.end_headers()
+            self.wfile.write(page)
+            return
         self._error(404, "not_found")
 
     def do_PUT(self) -> None:  # noqa: N802
@@ -284,6 +385,19 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _handle(self, method: str) -> None:
         endpoint = self._endpoint_for(method, self.path)
+
+        # Enforced before parsing, the way the spec says the origin does it:
+        # "Request bodies are size-capped at the origin, ahead of parsing: 8 KiB
+        # for registration, heartbeat and configuration, 64 KiB for a detection
+        # frame." Without this the mock accepted a 10 KiB heartbeat that
+        # production would have refused unread — and the node carrying twenty
+        # distinct long faults is precisely the one whose beat matters.
+        declared = int(self.headers.get("Content-Length") or 0)
+        cap = BODY_CAPS.get(endpoint or "", MAX_BODY_BYTES)
+        if declared > cap:
+            self._error(413, "payload_too_large", f"{declared} bytes exceeds the {cap} cap")
+            return
+
         body = self._read_body()
 
         with self.state.lock:

@@ -2,18 +2,87 @@ openapi: 3.1.0
 
 info:
   title: RETINA node ingest
-  version: "1.0.0"
+  version: "1.1.1"
   summary: Initial node API
   description: |
     The node registers once, then streams detections and heartbeats, and resends its
     configuration when it changes or it is asked.
 
+    ## Changes in 1.1.1
+
+    One schema change, agreed with the node side, plus one typo.
+
+    | Change | Was | Now |
+    |---|---|---|
+    | `NodeConfig.beam_width_deg` | required number | required, nullable |
+    | `NodeConfig.max_range_km` description | `delayMax Ã c / fs` | `delayMax × c / fs`. Encoding artefact, no semantic change |
+
+    Antenna geometry does not exist on any node: retina-gui does not collect beam width or boresight
+    from owners and is not scheduled to, so under 1.1.0 no node in the fleet could build a
+    `NodeConfig` at all. Nullable rather than optional, so it follows the rule already applied to
+    `cpu_pct` and `config_version` below — the value is known to be unknown, and there is exactly one
+    way to say so. `beam_azimuth_deg` was already this shape and is unchanged; only its description
+    gains a note that the node cannot distinguish "omnidirectional" from "not characterised", because
+    an unset configuration key reads the same as a deliberate choice.
+
+    ## Changes in 1.1.0
+
+    Answers the 2026-08-11 questions from the node side. Three of these break a generated client, so
+    they are listed first.
+
+    | Change | Was | Now |
+    |---|---|---|
+    | `HeartbeatRequest.config_version` | required integer | required, nullable. A node with no version yet sends `null` |
+    | `DetectionFrame.boot_id`, `HeartbeatRequest.boot_id` | absent | required. Makes the restart-local `seq` interpretable |
+    | `NodeConfig.cpi_s`, `.delay_tolerance_us`, `.doppler_tolerance_hz` | absent | required |
+    | `NodeHealth.queue_depth` | present | removed. Only 0 and 1 were reachable under latest-wins, and neither said anything |
+    | `NodeHealth` four core fields | optional | required and nullable, so "I do not know" is a value rather than an absence |
+    | `NodeState` | five values | six: `stalled` added for a healthy node whose radar has stopped. **Proposed, confirm before implementing** |
+    | Detection cadence | "2 Hz, fixed" | one frame per CPI, no timer. 2 Hz is a ceiling |
+    | `DetectionFrame.t` | "the capture time of the CPI" | the end of the window, spanning `[t - cpi_s, t]` |
+    | `board_model`, `tx_callsign` | misleading examples | corrected to what nodes actually send |
+
+    Still open, and none of them blocks a node: whether `delay` moves to kilometres and altitudes to
+    metres; whether `tx_callsign` should carry the regulatory callsign instead of the operator's text;
+    the three agreement texts and versions; the Cloudflare WAF and idle-timeout specifics; and what a
+    `400` on configuration should leave a node able to do.
+
     | Endpoint | Auth | When | Cadence |
     |---|---|---|---|
     | `POST /nodes/register` | none | once per node lifetime, plus operator reactivation | one-off |
-    | `POST /nodes/detection` | bearer | while detecting | 2 Hz, fixed |
+    | `POST /nodes/detection` | bearer | while detecting | one frame per CPI, no timer |
     | `POST /nodes/heartbeat` | bearer | process start to shutdown, always | 60 s, fixed |
     | `PUT /nodes/config` | bearer | on configuration change, and when told to | event-driven |
+
+    ## Detection cadence is an observation, not a setting
+
+    Earlier revisions said "2 Hz, fixed". That was wrong, and the correction matters enough to state
+    up front. The node has no send cadence: it POSTs once per frame blah2 produces and never
+    otherwise, so the arrival rate at the server is the radar's frame rate, which is set by how long
+    processing takes rather than by the configured CPI. A node configured `cpi: 0.5` was measured
+    emitting every ~886 ms (~1.13 Hz) on one board and ~951 ms on another. It moves with load and
+    clutter, and it differs between boards.
+
+    Three numbers, with three jobs, and they should not be conflated:
+
+    - **2 Hz is the ceiling.** One frame per CPI is the most a node can ever send, and it only moves
+      if `cpi` moves. Size capacity, rate limits and connection budgets against this.
+    - **~1.1 Hz is what is measured today.** Set alerting thresholds from this, so that a node
+      halving its rate is visible rather than absorbed by headroom sized for the ceiling.
+    - **The per-node observed rate is the only thing true at runtime.** The server derives it from
+      arrival times and `seq`, and everything per-node keys off that rather than off a fleet constant.
+
+    A consequence the server cannot see from its side: because the timestamp is taken before
+    processing, **a frame reaches the server roughly one CPI-processing-time after its own `t`**,
+    about 900 ms today. Anything comparing `t` against arrival time should expect that lag and not
+    read it as clock skew.
+
+    ## Saying "I do not know"
+
+    `null` on a field that is present means **known to be unknown**. Fields where that is a real
+    state are required and nullable rather than optional, so there is exactly one way to express it
+    and absence is not left carrying meaning: `cpu_pct` before `/proc/stat` has been sampled twice,
+    and `config_version` on a heartbeat sent before the server has issued one.
 
     ## For the node to persist
 
@@ -165,16 +234,25 @@ paths:
 
         ## Sending behaviour
 
-        **Latest wins.** The shape we're after is at most one request in flight and no queue: while a
-        POST is slow, a newer frame replaces the pending one rather than joining a queue behind it, and
-        a request that exceeds its timeout (a few seconds) gets abandoned so the next frame goes in a
-        fresh request. The live tracker cannot use stale detections anyway: the multi-node association
-        window in `retina-analytics` is 4 s, so a frame arriving after it has closed will be associated
-        wrongly rather than simply ignored.
+        **One POST per frame blah2 produces, and never otherwise.** No timer and no batching, so the
+        cadence at the server is the radar's frame rate. See the note on cadence at the top.
 
-        **Connection reuse.** One kept-alive TLS connection per node. At 50 nodes and 2 Hz this is about
-        100 small requests per second against one droplet, which is comfortable, but cheaper if we are not
-        paying a TLS handshake per frame.
+        **Latest wins.** At most one request in flight and no queue: while a POST is slow, a newer
+        frame replaces the pending one rather than joining a queue behind it, and a request that
+        exceeds its timeout (a few seconds) gets abandoned so the next frame goes in a fresh request.
+        Gaps are therefore permanent by design, which is the right trade for live tracking and is why
+        `seq` and `boot_id` exist: the server counts what was lost rather than pretending nothing was.
+
+        Backfilling on reconnect would buy nothing. `retina-analytics` gates multi-node association on
+        the difference between two frames' capture timestamps, not on arrival, so a frame delivered
+        late carries an old `t` and is rejected by that gate rather than paired against whatever is
+        current. It would also reach the tracker with a `dt` derived from its own timestamps, which is
+        the other reason a backlog is worth less than the newest frame.
+
+        **Connection reuse.** One kept-alive TLS connection per node. Sized against the 2 Hz ceiling,
+        50 nodes is about 100 small requests per second against one droplet, which is comfortable;
+        measured cadence puts the expected load at roughly half that. Either way it is cheaper if we
+        are not paying a TLS handshake per frame.
 
         ## The response, and acting on it
 
@@ -237,8 +315,10 @@ paths:
       operationId: postHeartbeat
       description: |
         Sent every 60 s from process start until shutdown, unconditionally: whether or not detections
-        are flowing, whether or not the last frame was empty, and whether or not `streaming_allowed`
-        is false.
+        are flowing, whether or not the last frame was empty, whether or not `streaming_allowed` is
+        false, and whether or not the node yet holds a `config_version`. The last of those is why that
+        field is nullable here; a node that cannot build a configuration is the one most worth hearing
+        from, and it would otherwise be the one that goes silent.
 
         Apply a uniform random phase offset within the interval, so that a fleet restarting together
         does not settle into one bucket and post simultaneously every minute.
@@ -396,6 +476,21 @@ components:
         version afterwards will not be 1.
       examples: [7]
 
+    BootId:
+      type: string
+      description: |
+        Distinct per process start, generated in memory and never persisted. It exists to make `seq`
+        interpretable: `seq` is restart-local and resets to 0, so without this the server cannot tell a
+        reset from a gap. Persisting a monotonic counter instead would cost an fsync per frame on an SD
+        card, or be checkpointed coarsely enough to lie after a hard stop, and one write per boot is
+        neither.
+
+        The pair `(boot_id, seq)` is what the server counts loss and staleness against, so it is
+        required on every frame rather than on the heartbeat alone: a restart between two beats would
+        otherwise corrupt gap accounting for up to a minute. It need only be distinct, not ordered.
+      pattern: '^[0-9a-z]{8,32}$'
+      examples: ["k3n8v2qp71ab"]
+
     ServerTime:
       type: string
       format: date-time
@@ -495,7 +590,12 @@ components:
         - tx_callsign
         - fc_hz
         - fs_hz
+        - beam_width_deg
+        - beam_azimuth_deg
         - max_range_km
+        - cpi_s
+        - delay_tolerance_us
+        - doppler_tolerance_hz
       properties:
         rx_lat:
           type: number
@@ -537,8 +637,12 @@ components:
           type: string
           minLength: 1
           maxLength: 32
-          description: Illuminator callsign.
-          examples: ["CRYSTAL_PALACE"]
+          description: |
+            The illuminator's name as the operator typed it in the tower step, free text and with
+            spaces. Not a regulatory callsign, despite the field name: Tower-Finder holds those and
+            could be plumbed through instead, which is open. Any underscored form in an earlier
+            example was an example rather than a convention, so nothing normalises it.
+          examples: ["Crystal Palace"]
         fc_hz:
           type: number
           minimum: 1000000
@@ -552,25 +656,66 @@ components:
           description: Sample rate, Hz.
           examples: [2000000]
         beam_width_deg:
-          type: number
+          type: [number, "null"]
           exclusiveMinimum: 0
           maximum: 360
-          description: Antenna beam width, degrees.
+          description: |
+            Antenna beam width, degrees. `null` means the antenna has not been characterised, which is
+            the state of every node in the fleet: retina-gui does not collect the geometry from owners
+            and is not scheduled to. Nullable rather than optional, on the same reasoning as `cpu_pct`
+            — it is known to be unknown, and there should be exactly one way to say so.
+
+            Nothing is substituted for a missing value. A placeholder width would be wrong data the
+            server cannot detect, whereas `null` is a fact it can act on.
           examples: [60]
         beam_azimuth_deg:
           type: [number, "null"]
           minimum: 0
           exclusiveMaximum: 360
           description: |
-            Antenna boresight, degrees. `null` means broadside/omnidirectional; send `null` rather than
-            `0.0` if you can.
+            Antenna boresight, degrees. `null` means either broadside/omnidirectional or not
+            characterised; the node cannot currently distinguish the two, since an unset configuration
+            key reads the same as a deliberate choice. Send `null` rather than `0.0` if you can.
           examples: [null]
         max_range_km:
           type: number
           exclusiveMinimum: 0
           maximum: 1000
-          description: Maximum range of interest, km.
+          description: |
+            Maximum range of interest, km. Derived on the node as
+            `process.ambiguity.delayMax × c / fs / 1000` rather than read from a stored field, so it
+            can never disagree with what blah2 actually computes. Sending it rather than having the
+            server recompute it is deliberate: the derivation needs `delayMax`, which is not otherwise
+            on the wire, and the server is the compute-constrained end.
           examples: [150]
+        cpi_s:
+          type: number
+          exclusiveMinimum: 0
+          maximum: 10
+          description: |
+            Coherent processing interval, seconds, from `process.data.cpi`. It is the width of the
+            capture window every `DetectionFrame.t` closes, so the server needs it to know what a
+            frame's samples span, and it bounds how tightly two nodes' frames can be treated as
+            simultaneous.
+
+            It is not a send cadence. Processing takes longer than a CPI today, so frames arrive at
+            roughly half this rate; `1 / cpi_s` is the ceiling on frame rate, never the expectation.
+          examples: [0.5]
+        delay_tolerance_us:
+          type: number
+          exclusiveMinimum: 0
+          description: |
+            The gate blah2-api applies when matching a detection to an ADS-B track, in the same unit
+            as `DetectionFrame.delay`. It is node configuration, so strictness varies board to board,
+            and without it `adsb_hex` values from two nodes are hypotheses formed under thresholds the
+            server cannot see and should not be compared as though they were alike.
+          examples: [6.67]
+        doppler_tolerance_hz:
+          type: number
+          exclusiveMinimum: 0
+          description: |
+            The Doppler half of the same gate, in Hz. See `delay_tolerance_us`.
+          examples: [5.0]
 
     RegisterRequest:
       type: object
@@ -582,8 +727,14 @@ components:
         board_model:
           type: string
           maxLength: 64
-          description: Node-reported and diagnostic only.
-          examples: ["raspberrypi5-4gb"]
+          description: |
+            The Mender device type, from `/data/mender/device_type`. Node-reported and diagnostic only.
+            Mender targets artifacts by device type, so it is the string that decides which software a
+            board is allowed to receive, which makes it the more useful diagnostic than either a
+            hardware description or `/proc/device-tree/model`, whose board revision means nothing to
+            either end. It carries neither RAM size nor hardware revision; those would be separate
+            fields if they are ever wanted.
+          examples: ["pi5-v3-arm64"]
         agreements:
           $ref: '#/components/schemas/Agreements'
         config:
@@ -614,19 +765,38 @@ components:
         the same length; all four empty is a valid frame and worth sending. The array bound is a body
         guard rather than a statement about how many detections a CPI produces, which is single figures
         in practice.
-      required: [t, seq, config_version, delay, doppler, snr, adsb_hex]
+      required: [t, seq, boot_id, config_version, delay, doppler, snr, adsb_hex]
       additionalProperties: false
       properties:
         t:
           type: number
           minimum: 0
-          description: Unix epoch seconds, node clock, the capture time of the CPI.
+          description: |
+            Unix epoch seconds, node clock, the **end** of the capture window. blah2 stamps the clock
+            the moment the buffer holds a full CPI, before any processing, so the samples behind a
+            frame span `[t - cpi_s, t]` and the frame itself arrives roughly a CPI-processing-time
+            later, about 900 ms today.
+
+            The window is described by this one number plus `cpi_s` in `NodeConfig` rather than by a
+            start and a duration on every frame, since the CPI is a configuration value that changes
+            rarely and putting it on the hot path would repeat it at the frame rate.
+
+            Detections are not individually timestamped within the window, and should not be. A CPI is
+            cross-correlated as a whole and a detection is a peak in the resulting map, so its time
+            *is* the window; the Doppler measurement is likewise an average over it. `t` plus `cpi_s`
+            is the complete and honest description of when a detection happened, and it sets the floor
+            on how tightly two nodes' frames can meaningfully be called simultaneous.
           examples: [1753900000.123]
         seq:
           type: integer
           minimum: 0
-          description: Per-node monotonic counter, incremented once per frame, for gap detection.
+          description: |
+            Counter incremented once per frame sent, from 0 at process start, for gap detection. It is
+            restart-local, so it must be read together with `boot_id`: same `boot_id` and a jump means
+            frames were lost, a new `boot_id` means the node restarted.
           examples: [918273]
+        boot_id:
+          $ref: '#/components/schemas/BootId'
         config_version:
           $ref: '#/components/schemas/ConfigVersion'
         delay:
@@ -684,35 +854,49 @@ components:
       type: object
       description: |
         Diagnostic only. The server does not use it to decide whether a node is working: `blah2: "up"`
-        and `queue_depth: 0` read identically on a wedged node and a working one.
+        reads identically on a wedged node and a working one, and what settles that question is the
+        server's own record of frame arrivals.
+
+        The four values a node can always attempt to read are required and nullable, so a value it
+        could not obtain arrives as an explicit `null` rather than as an absent key. `cpu_pct` is the
+        motivating case: `/proc/stat` is cumulative, so the first beat after start has no percentage
+        to report, and `null` says that where absence would not.
       additionalProperties: false
+      required: [cpu_pct, disk_free_mb, temp_c, blah2]
       properties:
         cpu_pct:
-          type: number
+          type: [number, "null"]
           minimum: 0
           maximum: 100
+          description: |
+            `null` until two samples of `/proc/stat` exist, which means the first beat after every
+            process start.
           examples: [31]
         disk_free_mb:
-          type: integer
+          type: [integer, "null"]
           minimum: 0
           examples: [9100]
         temp_c:
-          type: number
+          type: [number, "null"]
           minimum: -50
           maximum: 150
           examples: [58]
         blah2:
-          type: string
-          enum: [up, down, unknown]
+          type: [string, "null"]
+          enum: [up, down, unknown, null]
+          description: |
+            `null` before the first poll, meaning "we have not looked". `unknown` means "we looked and
+            could not tell", which is a different thing and does not currently arise on a node.
           examples: ["up"]
         adsb:
           type: string
           enum: [up, down, unknown]
+          description: |
+            Omitted entirely when ADS-B is disabled in node configuration, since blah2-api gates the
+            key on `truth.adsb.enabled` and reporting a deliberate setting as a fault would page
+            someone. Absence therefore means "disabled", not "unknown"; a dedicated `disabled` value
+            would say that better and is an open item rather than a change made here.
           examples: ["up"]
-        queue_depth:
-          type: integer
-          minimum: 0
-          examples: [0]
 
     NodeVersions:
       type: object
@@ -735,14 +919,27 @@ components:
         reporting `streaming` while no frames have arrived is flagged as wedged, using the server's own
         record of frame arrivals rather than anything the node says about itself.
 
-        `starting` covers the window before the radar has produced anything, which is where a new
-        owner most often needs support. `paused` is the node honouring `streaming_allowed: false`.
-      enum: [starting, streaming, paused, error, stopping]
+        What the field buys the server is not liveness, which arrivals already settle, but **why** a
+        node that should be sending frames is not. Each value answers that:
+
+        | Value | Meaning | What the server does with it |
+        |---|---|---|
+        | `starting` | The radar has not produced anything yet since process start | Suppress wedged alerting; this is the warmup window where a new owner most needs support |
+        | `streaming` | Frames are flowing | Expect arrivals; absence of them is a fault worth raising |
+        | `stalled` | The client is healthy and blah2 has stopped producing after having produced | Raise against the radar, not the node. Distinguishes "blah2 died" from "the network ate the frames", which the server cannot tell apart on its own |
+        | `paused` | The node is honouring `streaming_allowed: false` | Expect no frames; not a fault |
+        | `error` | The client itself cannot function: token refused, configuration unreadable | Raise against the node |
+        | `stopping` | Shutting down | Never required. A node that omits it and simply stops is behaving correctly; a final beat on the way out is a network call during shutdown and can hang |
+
+        `stalled` is new, and answers the case where a working node has a stopped radar. `error` read
+        as "the node is broken" when the node is fine, and `starting` is not true of something that
+        has already run. Confirm before implementing.
+      enum: [starting, streaming, stalled, paused, error, stopping]
       examples: ["streaming"]
 
     HeartbeatRequest:
       type: object
-      required: [state, uptime_s, config_version]
+      required: [state, uptime_s, config_version, boot_id]
       additionalProperties: false
       properties:
         state:
@@ -751,8 +948,25 @@ components:
           type: integer
           minimum: 0
           examples: [84213]
+        boot_id:
+          $ref: '#/components/schemas/BootId'
         config_version:
-          $ref: '#/components/schemas/ConfigVersion'
+          type: [integer, "null"]
+          minimum: 1
+          description: |
+            The node's active configuration version, or `null` when it does not yet hold one. Only the
+            server issues the value, from a registration or a `PUT /nodes/config` response, so there is
+            a window at every start where the node genuinely has none: the token is persisted across
+            restarts and the version deliberately is not, since caching it would let a node report a
+            version the server has since replaced.
+
+            `null` rather than an absent key, so that the heartbeat really is unconditional. A node
+            that cannot build a configuration at all, and so can never PUT one, is precisely the node
+            worth hearing from, and requiring a version here would make it the one that goes silent.
+
+            It stays required and non-null on `DetectionFrame`, where a frame cannot be filed without
+            the geometry it was measured against.
+          examples: [7]
         health:
           $ref: '#/components/schemas/NodeHealth'
         versions:

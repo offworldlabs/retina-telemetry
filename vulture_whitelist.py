@@ -49,6 +49,16 @@ unknown
 # never named.
 public
 private
+# Blah2.NoneType_None — v1.1.1 added `null` to the enum alongside a nullable
+# type, and the generator turned that into a real member. It is redundant (the
+# type union already makes the field nullable) and nothing should ever use it.
+# Flagged to the server author as worth deleting from the enum list.
+NoneType_None
+# NodeConfig.delay_tolerance_us — set in wire/config.py, but only ever as a
+# keyword argument, because the source attribute is `delay_tolerance_km`. The
+# rename across the unit conversion is the point of the naming convention, and
+# the cost is that vulture cannot see the wire-side name being used.
+delay_tolerance_us
 
 # The generated schema classes. Nothing constructs the response types: the
 # client validates against them by name, which vulture does not follow.
@@ -79,19 +89,14 @@ _.do_PUT
 #   tools/mock_server.py:142
 protocol_version
 
-# ── UNREVIEWED: appears dead, needs a decision (delete, or finish wiring) ──────
-# TODO: no reference found anywhere in the estate
-#   tools/mock_server.py:370  (unused method)
+# _Handler dispatches endpoint handlers by name at mock_server.py:438 —
+#   getattr(self, f"_{endpoint}")(body)
+# so vulture sees four definitions and no callers. Reviewed 2026-08-14: all four
+# are reachable, and the UNREVIEWED backlog that used to list them said "no
+# reference found anywhere in the estate", which was simply untrue. The fifth
+# entry, probe_report.failures(), *was* dead and is deleted rather than
+# whitelisted.
 _._config
-# TODO: no reference found anywhere in the estate
-#   tools/mock_server.py:344  (unused method)
 _._detection
-# TODO: no reference found anywhere in the estate
-#   tools/mock_server.py:358  (unused method)
 _._heartbeat
-# TODO: no reference found anywhere in the estate
-#   tools/mock_server.py:331  (unused method)
 _._register
-# TODO: no reference found anywhere in the estate
-#   tools/probe_report.py:24  (unused function)
-failures

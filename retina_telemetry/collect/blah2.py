@@ -35,6 +35,7 @@ and ``sdrconnect`` modes.
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from typing import Any
@@ -161,6 +162,7 @@ class Blah2Client:
 
         self._last_timestamp_ms: int | None = None
         self._last_poll_ok: bool | None = None
+        self._last_adsb_present: bool | None = None
         self._last_error: str | None = None
 
     def poll_detection(self) -> DetectionPoll | None:
@@ -175,14 +177,33 @@ class Blah2Client:
         try:
             response = self._session.get(f"{self._base_url}/api/detection", timeout=self._timeout_s)
             response.raise_for_status()
-            payload = response.json()
+            body = response.text
         except Exception as exc:  # noqa: BLE001 - the poll loop must never die
             self._last_poll_ok = False
             self._last_error = f"detection poll failed: {exc}"
             log.debug("%s", self._last_error)
             return None
 
+        # Reached blah2-api, so it is up whatever the body turns out to be. Set
+        # before parsing on purpose: decoding used to happen inside the block
+        # above, so an unparseable body was reported as a transport failure and
+        # the heartbeat said blah2 "down" for a service answering 200.
         self._last_poll_ok = True
+
+        # The warmup case, and the reason this is handled separately. blah2-api
+        # initialises `var detection = ''` (api/server.js:69) and serves that
+        # until blah2 delivers its first CPI, so an empty 200 means "up, nothing
+        # yet" — which is a normal state on every stack start, not a fault.
+        if not body.strip():
+            self._last_error = None
+            return None
+
+        try:
+            payload = json.loads(body)
+        except ValueError as exc:
+            self._last_error = f"unparseable frame: {exc}"
+            log.warning("discarding an unparseable detection body: %s", exc)
+            return None
 
         try:
             frame = parse_frame(payload)
@@ -196,6 +217,11 @@ class Blah2Client:
             return None  # polled twice inside one CPI, which is expected
 
         self._last_timestamp_ms = frame.timestamp_ms
+        # Whether blah2-api enriched this frame with associations. It gates the
+        # whole `adsb` key on `truth.adsb.enabled`, so the key's presence *is*
+        # the configuration flag — which makes this the only way the heartbeat
+        # can report NodeHealth.adsb at all.
+        self._last_adsb_present = frame.adsb is not None
         self._last_error = None
         return frame
 
@@ -219,10 +245,28 @@ class Blah2Client:
     def last_poll_ok(self) -> bool | None:
         """Whether the most recent poll reached blah2-api.
 
-        ``None`` before the first attempt — stage 2 omits ``NodeHealth.blah2``
-        rather than guessing, which is what the field being optional is for.
+        ``None`` before the first attempt — stage 2 sends ``NodeHealth.blah2``
+        as an explicit ``null`` rather than guessing, which is what the spec's
+        "known to be unknown" means.
         """
         return self._last_poll_ok
+
+    @property
+    def last_adsb_present(self) -> bool | None:
+        """Whether the last parsed frame carried ADS-B associations.
+
+        ``None`` until a frame has been parsed. Sticky afterwards: it reflects
+        the last frame we actually saw rather than resetting when a poll fails,
+        because a node whose blah2 is down has not stopped having ADS-B
+        configured, and ``NodeHealth.blah2`` already says not to trust the rest.
+
+        Note the spec cannot express "I have not looked yet" for this field —
+        ``adsb`` is optional and its absence means *disabled*, so the window
+        before the first frame is reported as disabled. The spec calls a
+        dedicated ``disabled`` value an open item; until then this is the
+        closest honest thing.
+        """
+        return self._last_adsb_present
 
     @property
     def last_error(self) -> str | None:

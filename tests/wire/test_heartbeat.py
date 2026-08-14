@@ -3,13 +3,21 @@ import pytest
 
 from retina_telemetry.collect.host import HostSnapshot
 from retina_telemetry.wire.heartbeat import build_heartbeat
+from retina_telemetry.wire.models import Blah2, NodeHealth
+from retina_telemetry.wire.serialise import to_wire
 
 OWL_HOST = HostSnapshot(cpu_pct=63.8, temp_c=70.5, disk_free_mb=15743, host_uptime_s=181569)
 
 
 def build(**overrides):
     return build_heartbeat(
-        **{"state": "streaming", "uptime_s": 181569, "config_version": 7, **overrides}
+        **{
+            "state": "streaming",
+            "uptime_s": 181569,
+            "config_version": 7,
+            "boot_id": "28a156bd3f8652f4",
+            **overrides,
+        }
     )
 
 
@@ -30,16 +38,19 @@ def test_uptime_is_required_so_the_caller_must_resolve_an_unreadable_one():
         build(uptime_s=None)
 
 
-def test_the_three_required_fields_are_all_it_needs():
-    """health, versions and errors are optional throughout, so a node that
-    knows nothing about itself still heartbeats."""
+def test_a_node_that_knows_nothing_about_itself_still_heartbeats():
+    """The point of the endpoint. `versions` stays optional and is omitted, but
+    `health` is now always built: since v1.1.1 its four core fields are required
+    and nullable, so an all-null block is a real report rather than an empty
+    one."""
     beat = build()
 
     assert beat.state == "streaming"
     assert beat.uptime_s == 181569
     assert beat.config_version == 7
-    assert beat.health is None
     assert beat.versions is None
+    assert beat.health is not None
+    assert beat.health.cpu_pct is None
 
 
 def test_every_health_field_traced_to_its_source():
@@ -48,7 +59,11 @@ def test_every_health_field_traced_to_its_source():
     assert beat.health.cpu_pct == 63.8  # HostSnapshot.cpu_pct
     assert beat.health.temp_c == 70.5  # HostSnapshot.temp_c
     assert beat.health.disk_free_mb == 15743  # HostSnapshot.disk_free_mb
-    assert beat.health.blah2 == "up"  # Blah2Client.last_poll_ok
+    # Compared by member, not by string. Adding `null` to the enum in v1.1.1
+    # made the generator emit a plain Enum rather than a StrEnum, so
+    # `Blah2.up == "up"` is False — a silent trap for anything comparing to a
+    # literal. `adsb` has no null and is still a StrEnum, hence the difference.
+    assert beat.health.blah2 is Blah2.up  # Blah2Client.last_poll_ok
     assert beat.health.adsb == "up"  # DetectionPoll.adsb is not None
 
 
@@ -56,7 +71,7 @@ def test_every_health_field_traced_to_its_source():
 
 
 def test_blah2_down_when_the_poll_failed():
-    assert build(blah2_up=False).health.blah2 == "down"
+    assert build(blah2_up=False).health.blah2 is Blah2.down
 
 
 def test_blah2_omitted_before_the_first_poll():
@@ -104,22 +119,31 @@ def test_first_read_has_no_cpu_and_that_is_not_an_error():
     assert build(host=first).health.cpu_pct is None
 
 
-def test_health_omitted_entirely_when_nothing_is_known():
+def test_health_is_all_nulls_rather_than_omitted_when_nothing_is_known():
+    """v1.1.1 inverted this. The block used to disappear when every field was
+    unknown; now the four core fields are required, so it goes out as explicit
+    nulls. `null` means "known to be unknown", and absence would say less."""
     empty = HostSnapshot(cpu_pct=None, temp_c=None, disk_free_mb=None, host_uptime_s=None)
 
-    assert build(host=empty, blah2_up=None, adsb_present=None).health is None
+    health = build(host=empty, blah2_up=None, adsb_present=None).health
+
+    assert health is not None
+    assert (health.cpu_pct, health.disk_free_mb, health.temp_c, health.blah2) == (
+        None,
+        None,
+        None,
+        None,
+    )
 
 
 # ── queue_depth ──────────────────────────────────────────────────────
 
 
-def test_queue_depth_is_never_populated():
-    """Meaningless with at most one request in flight and no queue — 0 and 1
-    are the only possible values and neither tells the server anything. Q11."""
-    beat = build(host=OWL_HOST, blah2_up=True)
-
-    assert beat.health.queue_depth is None
-    assert "queue_depth" not in beat.model_dump(exclude_none=True)["health"]
+def test_queue_depth_no_longer_exists():
+    """It was meaningless under a transport with one request in
+    flight and no queue, and v1.1.1 removed it. Asserted rather than deleted so
+    a revision reinstating it is noticed."""
+    assert "queue_depth" not in NodeHealth.model_fields
 
 
 # ── versions ─────────────────────────────────────────────────────────
@@ -142,7 +166,7 @@ def test_partial_versions_send_what_is_readable():
 
 
 def test_errors_default_to_an_empty_list():
-    assert build().model_dump(mode="json", exclude_none=True)["errors"] == []
+    assert to_wire(build())["errors"] == []
 
 
 def test_errors_are_copied_not_aliased():
@@ -153,6 +177,4 @@ def test_errors_are_copied_not_aliased():
     beat = build(errors=accumulated)
     accumulated.clear()
 
-    assert beat.model_dump(mode="json", exclude_none=True)["errors"] == [
-        "detection poll failed: connection refused"
-    ]
+    assert to_wire(beat)["errors"] == ["detection poll failed: connection refused"]

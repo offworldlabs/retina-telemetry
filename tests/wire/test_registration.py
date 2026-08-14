@@ -5,6 +5,7 @@ import pytest
 
 from retina_telemetry.collect.consent import AcceptanceRecord, Consent
 from retina_telemetry.wire.registration import IncompletePayload, build_registration
+from retina_telemetry.wire.serialise import to_wire
 from tests.conftest import consented
 from tests.wire.test_config import OWL
 
@@ -114,28 +115,26 @@ def test_the_default_state_of_every_node_today_refuses_to_build():
     currently produces."""
     from retina_telemetry.collect.consent import NONE_GIVEN
 
-    with pytest.raises(IncompletePayload, match="Q2"):
+    with pytest.raises(IncompletePayload, match="never shown"):
         build(consent=NONE_GIVEN)
 
 
-# ── the Q1 blocker surfaces as one exception type ────────────────────
+# ── an uncharacterised antenna does not block ────────────────────────
 
 
 def test_a_node_without_beam_geometry_still_registers():
     """The normal case for every node in the fleet: retina-gui does not collect
     the geometry, so registration must not depend on it."""
-    payload = build(config=dataclasses.replace(OWL, beam_width_deg=None)).model_dump(
-        mode="json", exclude_none=True
-    )
+    payload = to_wire(build(config=dataclasses.replace(OWL, beam_width_deg=None)))
 
-    assert "beam_width_deg" not in payload["config"]
+    assert payload["config"]["beam_width_deg"] is None
     assert payload["config"]["rx_lat"] == 51.4769
 
 
 def test_incomplete_is_distinct_from_a_server_refusal():
     """A 403 means retry; this means there is nothing to retry with until
     something changes locally. Consent is the only trigger now — the beam fields
-    stopped being one when the spec made them optional."""
+    stopped being one when the spec made them nullable."""
     from retina_telemetry.collect.consent import NONE_GIVEN
 
     with pytest.raises(IncompletePayload):
@@ -154,6 +153,7 @@ def test_unreadable_board_model_does_not_strand_the_node():
 
 
 def test_board_model_is_the_mender_device_type_not_the_spec_example():
-    """Their example is "raspberrypi5-4gb"; we send the Mender device type. See
-    Q15 — the field is free text so nothing breaks."""
+    """Their example is "raspberrypi5-4gb"; we send the Mender device type,
+    which is what decides the software a board may receive. The field is free
+    text in the schema, so nothing breaks."""
     assert build().board_model == "pi5-v3-arm64"

@@ -6,6 +6,7 @@ import pytest
 
 from retina_telemetry.comms.client import Backoff, Client, Kind
 from retina_telemetry.wire.config import build_node_config
+from retina_telemetry.wire.serialise import to_wire
 from tests.wire.test_config import OWL
 from tools.mock_server import MockServer
 
@@ -21,7 +22,7 @@ REGISTRATION = {
             "choice": "public",
         },
     },
-    "config": build_node_config(OWL).model_dump(mode="json", exclude_none=True),
+    "config": to_wire(build_node_config(OWL)),
 }
 
 
@@ -46,6 +47,7 @@ def frame(config_version):
     return {
         "t": 1786014064.679,
         "seq": 1,
+        "boot_id": "28a156bd3f8652f4",
         "config_version": config_version,
         "delay": [41.362],
         "doppler": [-118.0],

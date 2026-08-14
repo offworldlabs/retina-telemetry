@@ -15,16 +15,20 @@
 # Nothing is reachable from any network and the tunnel dies with the session.
 # Not port 8080 — tar1090 already holds that on the node.
 #
-# ## The two synthetic values, and why
+# ## The one synthetic value, and why
 #
-# Everything is real except the two fields that do not exist on any node yet:
+# Everything is real except the records that do not exist on any node yet:
 #
-#   beam_width_deg   Q1 — no config key for it anywhere in the stack
-#   consent records  Q2 — three of them now, and the wizard persists none
+#   consent records  three of them, and the retina-gui wizard persists none
 #
-# Both are written to a scratch directory and pointed at with env vars. The
-# rest of the configuration is copied verbatim from the node's own config.yml,
-# so every coordinate, frequency and bin count is the real one.
+# The antenna geometry is deliberately NOT synthesised. Since spec v1.1.1 both
+# beam fields are nullable, so a node without them sends explicit nulls — that
+# is what every node in the fleet does, and the run should exercise it rather
+# than paper over it.
+#
+# The consent file is written to a scratch directory and pointed at with an env
+# var. The configuration is copied verbatim from the node's own config.yml, so
+# every coordinate, frequency and bin count is the real one.
 #
 # ## Safety
 #
@@ -73,14 +77,13 @@ set -euo pipefail
 SCRATCH="$REMOTE_DIR/scratch"
 mkdir -p "$SCRATCH"
 
-# Real configuration, plus the one field Q1 blocks. Everything else verbatim.
+# The node's own configuration, verbatim. Nothing substituted.
 python3 - "$SCRATCH" <<'PY'
 import json, sys, pathlib, yaml
 scratch = pathlib.Path(sys.argv[1])
 config = yaml.safe_load(pathlib.Path("/data/retina-node/config/config.yml").read_text())
-config["location"]["rx"]["beam_width"] = 60          # Q1: synthetic
 (scratch / "config.yml").write_text(yaml.safe_dump(config))
-# Q2: synthetic. Three separately versioned records since the 2026-08-10
+# Synthetic. Three separately versioned records since the 2026-08-10
 # revision; `publication` is a privacy decision the wizard must actually put
 # to the owner, and nothing on a node may manufacture one.
 ACCEPTED = {"version": "2026-07-01", "accepted_at": "2026-07-31T09:12:00Z"}

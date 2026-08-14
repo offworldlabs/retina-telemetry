@@ -31,10 +31,12 @@ back, which is what keeps the disciplines in one place.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import random
 import signal
 import threading
+from collections.abc import Callable
 from typing import Any
 
 import pydantic
@@ -59,6 +61,7 @@ from retina_telemetry.wire.config import build_node_config
 from retina_telemetry.wire.detection import build_detection_frame
 from retina_telemetry.wire.heartbeat import build_heartbeat
 from retina_telemetry.wire.registration import IncompletePayload, build_registration
+from retina_telemetry.wire.serialise import to_wire
 
 log = logging.getLogger("retina_telemetry")
 
@@ -72,6 +75,10 @@ class Service:
 
         self.state = State(self.settings.token_path)
         self.errors = Errors()
+        #: Loops that raised and will not come back. Reported in the status
+        #: document, because a stopped loop is otherwise indistinguishable
+        #: from a node that is simply quiet.
+        self._dead_loops: set[str] = set()
         self.status = StatusWriter(self.settings.status_path)
         self.slot = Slot()
 
@@ -148,6 +155,7 @@ class Service:
                         frame = build_detection_frame(
                             poll,
                             seq=self.state.next_seq(),
+                            boot_id=snapshot.boot_id,
                             config_version=snapshot.config_version,
                         )
                     except pydantic.ValidationError as exc:
@@ -158,7 +166,7 @@ class Service:
                         self.errors.add(f"frame rejected before sending: {exc.errors()[0]['msg']}")
                         log.warning("discarding an unsendable frame: %s", exc)
                     else:
-                        self.slot.put(frame.model_dump(mode="json", exclude_none=True))
+                        self.slot.put(to_wire(frame))
             elif self.blah2.last_error:
                 self.errors.add(self.blah2.last_error)
             self.stop.wait(self.settings.poll_interval_s)
@@ -252,36 +260,54 @@ class Service:
         if node_id is None or config is None:
             return None
         try:
-            return build_registration(
-                node_id=node_id,
-                board_model=identity_reader.read_board_model(self.settings.device_type_path),
-                consent=self.consent(),
-                config=config,
-            ).model_dump(mode="json", exclude_none=True)
+            return to_wire(
+                build_registration(
+                    node_id=node_id,
+                    board_model=identity_reader.read_board_model(self.settings.device_type_path),
+                    consent=self.consent(),
+                    config=config,
+                )
+            )
         except IncompletePayload as exc:
             log.info("cannot register yet: %s", exc)
+            return None
+        except ValueError as exc:
+            # The same widening as _send_config, and it should have been done at
+            # both call sites at once. pydantic's ValidationError is a
+            # ValueError, so a config that parses but violates the spec's bounds
+            # — a latitude past 90, an fc_hz below the minimum — used to escape
+            # here and kill the registration loop for the lifetime of the
+            # process, with nothing written anywhere to say why.
+            self._config_rejected = f"configuration rejected: {exc}"
+            self.errors.add(f"registration: {exc}")
+            log.warning("cannot build a registration payload: %s", exc)
             return None
 
     def _beat(self) -> None:
         batch = self.errors.take()
 
         def payload() -> dict[str, Any] | None:
+            # No config_version guard. It was here because the field was
+            # required and non-null; v1.1.1 made it nullable precisely so a node
+            # that has never held one still beats. Removing the guard is
+            # the whole of that fix.
             snapshot = self.state.snapshot()
-            if snapshot.config_version is None:
-                return None
             host = self.host.read()
-            return build_heartbeat(
-                state=self.current_state().wire,
-                uptime_s=with_uptime_fallback(snapshot, host.host_uptime_s),
-                config_version=snapshot.config_version,
-                host=host,
-                blah2_up=self.blah2.last_poll_ok,
-                adsb_present=None,
-                owl_os=self.settings.owl_os,
-                retina_node=self.settings.retina_node,
-                blah2_image=self.settings.blah2_image,
-                errors=batch.messages,
-            ).model_dump(mode="json", exclude_none=True)
+            return to_wire(
+                build_heartbeat(
+                    state=self.current_state().wire,
+                    uptime_s=with_uptime_fallback(snapshot, host.host_uptime_s),
+                    config_version=snapshot.config_version,
+                    boot_id=snapshot.boot_id,
+                    host=host,
+                    blah2_up=self.blah2.last_poll_ok,
+                    adsb_present=self.blah2.last_adsb_present,
+                    owl_os=self.settings.owl_os,
+                    retina_node=self.settings.retina_node,
+                    blah2_image=self.settings.blah2_image,
+                    errors=batch.messages,
+                )
+            )
 
         outcome = send_until_delivered(
             self.client,
@@ -300,7 +326,7 @@ class Service:
 
     def _send_config(self, config: NodeConfigRaw) -> bool:
         try:
-            payload = build_node_config(config).model_dump(mode="json", exclude_none=True)
+            payload = to_wire(build_node_config(config))
         except ValueError as exc:
             # Wider than the IncompleteConfig it replaces, and deliberately so.
             # pydantic's ValidationError is a ValueError, so this now also
@@ -335,7 +361,7 @@ class Service:
         if is_fatal_for_config(outcome):
             # The node cannot stream at all until somebody edits the
             # configuration, so this has to reach the status document rather
-            # than be retried into silence. See Q12.
+            # than be retried into silence.
             self._config_rejected = f"the server rejected this configuration: {outcome.describe()}"
             self.errors.add(self._config_rejected)
             self.state.config_resend.clear()
@@ -347,18 +373,68 @@ class Service:
             state=str(state),
             snapshot=self.state.snapshot(),
             node_id=self.node_id(),
-            detail=self._config_rejected or self._config_unreadable or explain(state),
+            detail=self._dead_loop_detail()
+            or self._config_rejected
+            or self._config_unreadable
+            or explain(state),
             errors=self.errors.snapshot(),
         )
 
+    def _dead_loop_detail(self) -> str | None:
+        """Takes precedence over every other detail. A stopped loop means the
+        node is not doing what the rest of the document claims it is."""
+        if not self._dead_loops:
+            return None
+        return (
+            f"internal fault: the {', '.join(sorted(self._dead_loops))} "
+            f"loop{'s have' if len(self._dead_loops) > 1 else ' has'} stopped. "
+            "Restart the container; this will not recover on its own."
+        )
+
     # ── lifecycle ────────────────────────────────────────────────────
+
+    def _supervised(self, name: str, loop: Callable[[], None]) -> Callable[[], None]:
+        """Wrap a loop so an unexpected exception is loud rather than fatal.
+
+        Every loop already guards the failures it expects. This is for the ones
+        nobody thought of, and it exists because the alternative is silence: a
+        daemon thread that raises writes nothing to ``errors[]``, nothing to the
+        status document, and leaves the process alive with one fewer loop. A
+        node that has stopped heartbeating looks exactly like a node that has
+        lost power.
+
+        Two real cases got here. A ``rx_lat`` outside the spec's bounds raised
+        ``ValidationError`` out of the registration payload builder, and one
+        fault longer than 508 characters seen twice rendered to 517 and failed
+        ``HeartbeatRequest``'s ``maxLength``. Both killed their loop for the
+        lifetime of the process; both are fixed at source, and this is what
+        makes the next one visible instead.
+
+        Restarting the loop is deliberately not attempted. A thread that died on
+        a deterministic input would spin, and the useful outcome is that a human
+        sees which loop stopped and why.
+        """
+
+        def supervised() -> None:
+            try:
+                loop()
+            except BaseException as exc:  # noqa: BLE001 - the point is to catch everything
+                self._dead_loops.add(name)
+                self.errors.add(f"{name} loop stopped: {type(exc).__name__}: {exc}")
+                log.exception("%s loop stopped and will not restart", name)
+                # Written immediately rather than waiting for the status loop,
+                # which may itself be the loop that died.
+                with contextlib.suppress(Exception):
+                    self.write_status()
+
+        return supervised
 
     def run(self) -> int:
         log.info("starting; api=%s blah2=%s", self.settings.api_url, self.settings.blah2_url)
         self.write_status()
 
         threads = [
-            threading.Thread(target=loop, name=name, daemon=True)
+            threading.Thread(target=self._supervised(name, loop), name=name, daemon=True)
             for name, loop in (
                 ("poll", self.poll_loop),
                 ("send", self.send_loop),
