@@ -35,8 +35,8 @@
       - ${GUI_DATA_DIR:-/data/retina-gui}:/data/retina-gui:ro
       # The only writable mount. Holds the bearer token at 0600 and the status
       # document at 0644, and lives under /data so the token survives an OS
-      # update. Losing it means re-registering, which needs an operator to open
-      # a reflash window.
+      # update. Losing it means re-registering, which needs an operator to reactivate
+      # the node — see POST /nodes/register.
       - ${TELEMETRY_DATA_DIR:-/data/retina-telemetry}:/data/retina-telemetry
 
     # No docker socket. blah2 and ADS-B liveness are derived from the detection

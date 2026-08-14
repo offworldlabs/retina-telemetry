@@ -22,7 +22,10 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -e '.[dev]'
-      - run: ruff check . && tools/generate-models.sh --check && pytest -q
+      # The same gates as ci.yml, from the same script. Listing them here
+      # separately is how this drifted: it was missing the dead-code check and
+      # the format check for three days.
+      - run: tools/check.sh
 
       - name: Version matches the tag
         run: |

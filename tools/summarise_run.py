@@ -11,6 +11,7 @@ import sys
 from collections import Counter
 
 BOLD, DIM, GREEN, RESET = "\033[1m", "\033[2m", "\033[32m", "\033[0m"
+RED = "\033[31m"
 
 
 def timeline(requests: list[dict]) -> None:

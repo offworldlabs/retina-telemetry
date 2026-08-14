@@ -18,21 +18,16 @@ jobs:
       - name: Install
         run: pip install -e '.[dev]'
 
-      - name: Lint
-        run: |
-          ruff check .
-          ruff format --check .
+      # Every gate lives in tools/check.sh so this workflow, release.yml and a
+      # developer's terminal cannot disagree about what "green" means. They did:
+      # the dead-code check and `ruff format --check` were added here and never
+      # to release, so a tag could publish an image this job would have failed.
+      - name: Gates
+        run: tools/check.sh
 
-      - name: Dead code
-        run: tools/check-dead-code.sh
-
-      # The spec is someone else's contract, so the models are derived from it
-      # rather than maintained alongside it. This fails if the checked-in copy
-      # has drifted, which is how a revision upstream announces itself.
-      - name: Models match the spec
-        run: tools/generate-models.sh --check
-
-      - name: Test
+      # Coverage is CI-only — it is a review aid rather than a gate, and adding
+      # it to check.sh would slow the local loop for no benefit.
+      - name: Coverage
         run: pytest -q --cov=retina_telemetry --cov-report=term
 
   image:
