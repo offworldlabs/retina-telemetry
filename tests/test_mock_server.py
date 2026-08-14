@@ -368,3 +368,58 @@ def test_a_changed_configuration_creates_a_version(server):
     )
 
     assert second["config_version"] == first["config_version"] + 1
+
+
+def test_an_oversized_heartbeat_is_refused_before_parsing(server):
+    """The spec caps heartbeat bodies at 8 KiB at the origin, ahead of parsing.
+    The mock enforces it now because schema validation alone accepted a 10 KiB
+    beat that production would have refused unread — and the node carrying
+    twenty distinct long faults is exactly the one whose beat matters."""
+    token, version = register(server)
+    bloated = beat(version) | {"errors": ["x" * 512] * 20}
+
+    status, _, _ = post(f"{server.url}/nodes/heartbeat", bloated, token)
+
+    assert status == 413
+
+
+def test_the_errors_accumulator_never_produces_one(server):
+    """The corresponding node-side bound. Errors are dropped least-frequent
+    first until the rendered array fits, so this is the accumulator's own
+    output going through the same check."""
+    from retina_telemetry.errors import DEFAULT_LIMIT, Errors
+    from retina_telemetry.wire.heartbeat import build_heartbeat
+
+    token, version = register(server)
+    errors = Errors()
+    for i in range(DEFAULT_LIMIT):
+        errors.add(f"distinct fault {i} " + "x" * 600)
+
+    payload = to_wire(
+        build_heartbeat(
+            state="streaming",
+            uptime_s=1,
+            config_version=version,
+            boot_id=BOOT_ID,
+            errors=errors.take().messages,
+        )
+    )
+    status, _, _ = post(f"{server.url}/nodes/heartbeat", payload, token)
+
+    assert status == 200
+
+
+def test_a_full_detection_frame_is_within_its_larger_cap(server):
+    """512 detections across four parallel arrays is legitimately large, which
+    is why the spec allows a detection frame 64 KiB rather than 8."""
+    token, version = register(server)
+    full = frame(version) | {
+        "delay": [123.456] * 512,
+        "doppler": [-1188.88] * 512,
+        "snr": [14.25] * 512,
+        "adsb_hex": ["4ca1f2"] * 512,
+    }
+
+    status, _, _ = post(f"{server.url}/nodes/detection", full, token)
+
+    assert status == 202

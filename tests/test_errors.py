@@ -1,6 +1,6 @@
 import threading
 
-from retina_telemetry.errors import MAX_MESSAGE, Errors
+from retina_telemetry.errors import DEFAULT_LIMIT, MAX_MESSAGE, Errors
 
 
 def test_a_fault_is_recorded():
@@ -226,3 +226,47 @@ def test_every_rendered_fault_builds_a_valid_heartbeat():
         boot_id="k3n8v2qp71ab",
         errors=errors.take().messages,
     )
+
+
+def test_the_whole_errors_array_fits_the_specs_body_cap():
+    """The count bound and the per-message bound compose past a third one: 20
+    items of 512 characters is 10 KiB of errors alone, against an 8 KiB cap the
+    spec applies at the origin *ahead of parsing*. A node carrying twenty
+    distinct long faults is exactly the node whose heartbeat matters."""
+    import json
+
+    from retina_telemetry.wire.heartbeat import build_heartbeat
+    from retina_telemetry.wire.serialise import to_wire
+
+    errors = Errors()
+    for i in range(DEFAULT_LIMIT):
+        errors.add(f"distinct fault {i} " + "x" * 600)
+
+    body = json.dumps(
+        to_wire(
+            build_heartbeat(
+                state="streaming",
+                uptime_s=1,
+                config_version=1,
+                boot_id="k3n8v2qp71ab",
+                errors=errors.take().messages,
+            )
+        )
+    )
+
+    assert len(body.encode()) <= 8192
+
+
+def test_the_persistent_fault_survives_the_byte_bound():
+    """Dropped least-frequent-first, so what is left is the problem rather than
+    the noise around it."""
+    errors = Errors()
+    for i in range(DEFAULT_LIMIT):
+        errors.add(f"noise {i} " + "x" * 600)
+    for _ in range(50):
+        errors.add("the persistent one")
+
+    messages = errors.take().messages
+
+    assert messages[0] == "the persistent one (x50)"
+    assert len(messages) < DEFAULT_LIMIT

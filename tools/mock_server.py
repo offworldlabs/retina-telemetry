@@ -61,6 +61,21 @@ BASE_PATH = "/v1"
 
 #: Endpoint name → (method, path, request model). The name is what the control
 #: channel uses to queue a scripted response.
+#: The spec's origin-side body caps, in bytes: "Request bodies are size-capped
+#: at the origin, ahead of parsing: 8 KiB for registration, heartbeat and
+#: configuration, 64 KiB for a detection frame."
+#:
+#: Enforced here because schema validation alone let a 10 KiB heartbeat through
+#: that production would have refused unread — and the node carrying twenty
+#: distinct long faults is precisely the one whose beat matters most.
+BODY_CAPS = {
+    "register": 8 * 1024,
+    "heartbeat": 8 * 1024,
+    "config": 8 * 1024,
+    "detection": 64 * 1024,
+}
+MAX_BODY_BYTES = 64 * 1024
+
 ENDPOINTS = {
     "register": ("POST", f"{BASE_PATH}/nodes/register", RegisterRequest),
     "detection": ("POST", f"{BASE_PATH}/nodes/detection", DetectionFrame),
@@ -370,6 +385,19 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _handle(self, method: str) -> None:
         endpoint = self._endpoint_for(method, self.path)
+
+        # Enforced before parsing, the way the spec says the origin does it:
+        # "Request bodies are size-capped at the origin, ahead of parsing: 8 KiB
+        # for registration, heartbeat and configuration, 64 KiB for a detection
+        # frame." Without this the mock accepted a 10 KiB heartbeat that
+        # production would have refused unread — and the node carrying twenty
+        # distinct long faults is precisely the one whose beat matters.
+        declared = int(self.headers.get("Content-Length") or 0)
+        cap = BODY_CAPS.get(endpoint or "", MAX_BODY_BYTES)
+        if declared > cap:
+            self._error(413, "payload_too_large", f"{declared} bytes exceeds the {cap} cap")
+            return
+
         body = self._read_body()
 
         with self.state.lock:

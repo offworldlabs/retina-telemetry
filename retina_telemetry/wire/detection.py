@@ -8,6 +8,7 @@ state supplies.
 from __future__ import annotations
 
 import logging
+import math
 import re
 from typing import Any
 
@@ -73,16 +74,49 @@ def build_detection_frame(
         )
 
     limit = MAX_DETECTIONS
+    delay = km_to_us(poll.delay_km[:limit])
+    doppler = list(poll.doppler_hz[:limit])
+    snr = list(poll.snr_db[:limit])
+    adsb_hex = _adsb_hex(poll)[:limit]
+
+    keep = _finite_indices(delay, doppler, snr)
+    if len(keep) != len(delay):
+        log.warning("dropping %d detection(s) carrying a non-finite value", len(delay) - len(keep))
+        delay = [delay[i] for i in keep]
+        doppler = [doppler[i] for i in keep]
+        snr = [snr[i] for i in keep]
+        adsb_hex = [adsb_hex[i] for i in keep]
+
     return DetectionFrame(
         t=ms_to_s(poll.timestamp_ms),
         seq=seq,
         boot_id=boot_id,
         config_version=config_version,
-        delay=km_to_us(poll.delay_km[:limit]),
-        doppler=list(poll.doppler_hz[:limit]),
-        snr=list(poll.snr_db[:limit]),
-        adsb_hex=_adsb_hex(poll)[:limit],
+        delay=delay,
+        doppler=doppler,
+        snr=snr,
+        adsb_hex=adsb_hex,
     )
+
+
+def _finite_indices(*arrays: list[float]) -> list[int]:
+    """Indices where every parallel array holds a finite number.
+
+    ``inf`` and ``nan`` serialise as the bare tokens ``Infinity`` and ``NaN``,
+    which are **not valid JSON** — a strict parser rejects the whole body, so one
+    bad value costs the entire frame and the loss is opaque from both ends.
+
+    Reachable rather than theoretical: ``snr`` is ``10*log10(|x|) - noisePower``
+    (``CfarDetector1D.cpp:48``), so a detection with zero magnitude gives
+    ``-inf``. pydantic accepts it because the spec bounds these arrays' length
+    and not their values.
+
+    Dropping the index across all four arrays rather than the frame, on the same
+    reasoning as a malformed ``adsb_hex``: one bad value must not cost the other
+    detections in the CPI. Dropping it from *all* of them is what keeps the four
+    parallel, which the spec requires and the server relies on.
+    """
+    return [i for i in range(len(arrays[0])) if all(math.isfinite(array[i]) for array in arrays)]
 
 
 def _adsb_hex(poll: DetectionPoll) -> list[str | None]:

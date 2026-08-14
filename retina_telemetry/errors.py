@@ -35,6 +35,19 @@ from dataclasses import dataclass, field
 #: dropped.
 DEFAULT_LIMIT = 20
 
+#: Total bytes ``errors`` may occupy once rendered.
+#:
+#: The spec caps a heartbeat body at 8 KiB **at the origin, ahead of parsing**,
+#: and the other two bounds compose straight past it: 20 items of 512
+#: characters is 10 KiB of errors alone. A node carrying twenty distinct long
+#: faults is exactly the node whose heartbeat matters, and it would have been
+#: rejected before anything read it.
+#:
+#: 6 KiB leaves generous room for the rest of a beat, which is a few hundred
+#: bytes. Faults are dropped least-frequent-first to fit, same as the count
+#: bound, so the persistent problem survives and the noise goes.
+MAX_ERRORS_BYTES = 6 * 1024
+
 #: The spec bounds ``errors`` items at 512 characters, and says anything beyond
 #: the list bound is dropped node-side rather than truncating the request. A
 #: message long enough to hit this is a traceback that lost its way, and the
@@ -136,7 +149,20 @@ def _render(counts: Counter[str]) -> list[str]:
     A node going permanently silent over a long log line is the exact outcome
     the rest of the heartbeat design exists to avoid.
     """
-    return [_render_one(message, count) for message, count in counts.most_common()]
+    rendered: list[str] = []
+    budget = MAX_ERRORS_BYTES
+    for message, count in counts.most_common():
+        one = _render_one(message, count)
+        # +3 for the JSON quotes and separator this entry costs in the array.
+        cost = len(one.encode()) + 3
+        if cost > budget:
+            # most_common() is descending, so everything left is rarer than
+            # what is already in. Stopping keeps the persistent fault and
+            # drops the noise, which is the same trade the count bound makes.
+            break
+        budget -= cost
+        rendered.append(one)
+    return rendered
 
 
 def _render_one(message: str, count: int) -> str:

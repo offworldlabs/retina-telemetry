@@ -1,3 +1,5 @@
+import json
+
 import pydantic
 import pytest
 
@@ -199,3 +201,78 @@ def test_arrays_are_capped_at_the_spec_bound():
     payload = to_wire(frame)
     assert len(payload["delay"]) == 512
     assert len({len(payload[k]) for k in ("delay", "doppler", "snr", "adsb_hex")}) == 1
+
+
+# ── values that cannot survive JSON ──────────────────────────────────
+
+
+def test_a_non_finite_value_costs_one_detection_not_the_frame():
+    """`inf` and `nan` serialise as the bare tokens Infinity and NaN, which are
+    not valid JSON — a strict parser rejects the whole body. Reachable rather
+    than theoretical: snr is 10*log10(|x|) - noisePower, so a zero-magnitude
+    detection gives -inf."""
+    frame = build_detection_frame(
+        poll(delay_km=[12.4, float("inf")], doppler_hz=[-118.0, 1.0], snr_db=[14.2, 2.0]),
+        seq=1,
+        boot_id="28a156bd3f8652f4",
+        config_version=1,
+    )
+
+    payload = to_wire(frame)
+
+    assert payload["delay"] == [41.362]
+    assert len({len(payload[k]) for k in ("delay", "doppler", "snr", "adsb_hex")}) == 1
+
+
+def test_a_dropped_detection_takes_its_adsb_entry_with_it():
+    """All four arrays must stay parallel, so the index goes from every one."""
+    frame = build_detection_frame(
+        poll(
+            delay_km=[12.4, 30.1],
+            doppler_hz=[float("nan"), 44.5],
+            snr_db=[14.2, 9.8],
+            adsb=[ASSOCIATION, None],
+        ),
+        seq=1,
+        boot_id="28a156bd3f8652f4",
+        config_version=1,
+    )
+
+    payload = to_wire(frame)
+
+    assert payload["doppler"] == [44.5]
+    assert payload["adsb_hex"] == [None]
+
+
+def test_every_frame_survives_a_strict_json_parser():
+    """The property that actually matters. json.dumps emits Infinity happily;
+    it is the receiving parser that refuses."""
+    frame = build_detection_frame(
+        poll(
+            delay_km=[float("inf"), 12.4, float("-inf")],
+            doppler_hz=[1.0, -118.0, 3.0],
+            snr_db=[float("nan"), 14.2, 3.0],
+        ),
+        seq=1,
+        boot_id="28a156bd3f8652f4",
+        config_version=1,
+    )
+
+    body = json.dumps(to_wire(frame))
+
+    def refuse(token):
+        raise AssertionError(f"emitted the non-JSON token {token}")
+
+    json.loads(body, parse_constant=refuse)
+
+
+def test_a_wholly_non_finite_frame_becomes_an_empty_one():
+    """Empty is a valid frame and worth sending — the detector was running."""
+    frame = build_detection_frame(
+        poll(delay_km=[float("inf")], doppler_hz=[float("nan")], snr_db=[1.0]),
+        seq=1,
+        boot_id="28a156bd3f8652f4",
+        config_version=1,
+    )
+
+    assert to_wire(frame)["delay"] == []
