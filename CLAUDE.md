@@ -72,9 +72,23 @@ All at `/home/joshp/retina/`, all separate git repos:
 |---|---|
 | `blah2-arm` | The radar itself (C++) plus `api/` (Node). Source of detections |
 | `retina-node` | `docker-compose.yml` for the whole node stack, and the config defaults |
-| `retina-gui` | On-node web UI, config authority, setup wizard, Mender/device state |
+| `retina-gui` | On-node web UI, config authority, setup wizard, Mender/device state. **Owes us four things — see below** |
 | `retina-tracker` | Tracking sidecar. Out of scope — decided, not pending. This service does not communicate tracks |
 | `owl-os` | Ansible OS build. Owns the Mender identity script |
+
+### What retina-gui owes this service
+
+Nothing here is buildable from this repo, and the first one blocks every node:
+
+| | Blocking | What |
+|---|---|---|
+| Persist the three consent records to `/data/retina-gui/telemetry-consent.json` | **yes** | The EULA is a placeholder and the wizard checkbox persists nothing. We never synthesise one, so a node without them refuses to register |
+| Cap the tower-name field at 32 characters | **yes** | The spec caps `tx_callsign` at 32 and the field is unbounded free text. A longer name means no `NodeConfig` can be built — reported rather than fatal, but still no registration |
+| Read `/data/retina-telemetry/status.json` | no, but | Zero references to it in retina-gui today. We bind no ports, so it is the only way *no identity*, *revoked token* and *rejected config* reach an operator |
+| Collect `location.rx.beam_width` / `beam_azimuth` | no | Deferred indefinitely. Both are nullable, so sending two nulls is correct behaviour rather than a gap |
+
+`owl-os` separately owes a `mender-update show-provides` snapshot so
+`versions.retina_node` has a source. Optional field; omitted honestly until then.
 
 ## Facts that are easy to get wrong
 

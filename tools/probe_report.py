@@ -21,10 +21,6 @@ GREEN, RED, YELLOW, DIM, BOLD, RESET = (
 _failures = 0
 
 
-def failures() -> int:
-    return _failures
-
-
 def section(title: str) -> None:
     print(f"\n{BOLD}── {title} {'─' * max(0, 58 - len(title))}{RESET}")
 
