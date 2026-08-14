@@ -102,21 +102,25 @@ class NodeState(StrEnum):
 
     @property
     def wire(self) -> WireState:
-        """The spec's word for this, over its closed set of five.
+        """The spec's word for this, over its closed set of six.
 
         Our vocabulary is richer because the status document can report things
         the wire cannot — a node with no identity has no way to say so to the
         server, since it cannot build a heartbeat at all. Everything that does
         reach the server has an honest equivalent here; the rest map to
         `starting`, which is true of them and never actually sent.
+
+        The two faults are deliberately different words, because they point at
+        different teams. A radar that produced and then stopped is `stalled`,
+        which the spec says to raise against the radar; a refused token is
+        `error`, raised against this client. Before v1.1.1 both were `error`,
+        which meant a healthy node with a dead blah2 paged the wrong people.
         """
         return {
             NodeState.STREAMING: WireState.streaming,
             NodeState.PAUSED: WireState.paused,
             NodeState.STARTING: WireState.starting,
-            # A working node with a radar that has stopped, and a node whose
-            # token was refused, are both faults rather than beginnings.
-            NodeState.NO_DETECTIONS: WireState.error,
+            NodeState.NO_DETECTIONS: WireState.stalled,
             NodeState.REVOKED: WireState.error,
         }.get(self, WireState.starting)
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from retina_telemetry.collect.node_config import NodeConfigRaw
 from retina_telemetry.wire.models import NodeConfig
-from retina_telemetry.wire.units import m_to_ft, max_range_km
+from retina_telemetry.wire.units import m_to_ft, max_range_km, tolerance_km_to_us
 
 
 def build_node_config(config: NodeConfigRaw) -> NodeConfig:
@@ -23,8 +23,11 @@ def build_node_config(config: NodeConfigRaw) -> NodeConfig:
     | ``tx_callsign`` | ``config.tx_name`` | none |
     | ``fc_hz`` / ``fs_hz`` | ``config.fc_hz`` / ``fs_hz`` | none |
     | ``max_range_km`` | ``config.delay_max_bins``, ``config.fs_hz`` | × c ÷ fs ÷ 1000 |
-    | ``beam_width_deg`` | ``config.beam_width_deg`` | none — omitted if unset |
-    | ``beam_azimuth_deg`` | ``config.beam_azimuth_deg`` | none — omitted if unset |
+    | ``beam_width_deg`` | ``config.beam_width_deg`` | none — ``null`` if unset |
+    | ``beam_azimuth_deg`` | ``config.beam_azimuth_deg`` | none — ``null`` if unset |
+    | ``cpi_s`` | ``config.cpi_s`` | none, seconds both sides |
+    | ``delay_tolerance_us`` | ``config.delay_tolerance_km`` | **× 3.335641** |
+    | ``doppler_tolerance_hz`` | ``config.doppler_tolerance_hz`` | none, Hz both sides |
 
     **Both beam fields are optional and nothing is substituted for them.** The
     spec made them optional on 2026-08-11, so an uncharacterised antenna simply
@@ -56,4 +59,7 @@ def build_node_config(config: NodeConfigRaw) -> NodeConfig:
         beam_width_deg=config.beam_width_deg,
         beam_azimuth_deg=config.beam_azimuth_deg,
         max_range_km=max_range_km(config.delay_max_bins, config.fs_hz),
+        cpi_s=config.cpi_s,
+        delay_tolerance_us=tolerance_km_to_us(config.delay_tolerance_km),
+        doppler_tolerance_hz=config.doppler_tolerance_hz,
     )

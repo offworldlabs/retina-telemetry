@@ -4,6 +4,7 @@ import pytest
 
 from retina_telemetry.collect.node_config import NodeConfigRaw
 from retina_telemetry.wire.config import build_node_config
+from retina_telemetry.wire.serialise import to_wire
 
 # Owl's real values, from the live probe.
 OWL = NodeConfigRaw(
@@ -17,6 +18,7 @@ OWL = NodeConfigRaw(
     fc_hz=503000000.0,
     fs_hz=2000000.0,
     delay_max_bins=400,
+    cpi_s=0.5,
     beam_width_deg=60.0,  # not written on a real node; see Q1
     beam_azimuth_deg=None,
 )
@@ -76,23 +78,27 @@ def test_tx_callsign_carries_a_display_name():
 # behaviour, not an edge case.
 
 
-def test_an_unset_beam_width_is_omitted_not_defaulted():
-    """Nothing is substituted. A value the node did not give us must never reach
-    the server — the same discipline as the consent records."""
+def test_an_unset_beam_width_is_an_explicit_null():
+    """Nothing is substituted, and nothing is omitted either. v1.1.1 makes both
+    beam fields required-and-nullable, so `null` says "not characterised" where
+    an absent key would say nothing at all."""
     unconfigured = dataclasses.replace(OWL, beam_width_deg=None)
 
-    payload = build_node_config(unconfigured).model_dump(mode="json", exclude_none=True)
+    payload = to_wire(build_node_config(unconfigured))
 
-    assert "beam_width_deg" not in payload
+    assert "beam_width_deg" in payload
+    assert payload["beam_width_deg"] is None
 
 
-def test_an_uncharacterised_antenna_omits_both_keys():
+def test_an_uncharacterised_antenna_sends_two_nulls():
+    """The state of every node in the fleet: retina-gui does not collect the
+    geometry from owners and is not scheduled to."""
     bare = dataclasses.replace(OWL, beam_width_deg=None, beam_azimuth_deg=None)
 
-    payload = build_node_config(bare).model_dump(mode="json", exclude_none=True)
+    payload = to_wire(build_node_config(bare))
 
-    assert "beam_width_deg" not in payload
-    assert "beam_azimuth_deg" not in payload
+    assert payload["beam_width_deg"] is None
+    assert payload["beam_azimuth_deg"] is None
     assert payload["rx_lat"] == 51.4769  # the rest of the config is intact
 
 
@@ -119,9 +125,9 @@ def test_a_known_azimuth_survives_an_unknown_width():
     points but not how wide the beam is has told us something true."""
     partial = dataclasses.replace(OWL, beam_width_deg=None, beam_azimuth_deg=90.0)
 
-    payload = build_node_config(partial).model_dump(mode="json", exclude_none=True)
+    payload = to_wire(build_node_config(partial))
 
-    assert "beam_width_deg" not in payload
+    assert payload["beam_width_deg"] is None
     assert payload["beam_azimuth_deg"] == 90.0
 
 

@@ -49,6 +49,16 @@ unknown
 # never named.
 public
 private
+# Blah2.NoneType_None — v1.1.1 added `null` to the enum alongside a nullable
+# type, and the generator turned that into a real member. It is redundant (the
+# type union already makes the field nullable) and nothing should ever use it.
+# Flagged to the server author as worth deleting from the enum list.
+NoneType_None
+# NodeConfig.delay_tolerance_us — set in wire/config.py, but only ever as a
+# keyword argument, because the source attribute is `delay_tolerance_km`. The
+# rename across the unit conversion is the point of the naming convention, and
+# the cost is that vulture cannot see the wire-side name being used.
+delay_tolerance_us
 
 # The generated schema classes. Nothing constructs the response types: the
 # client validates against them by name, which vulture does not follow.

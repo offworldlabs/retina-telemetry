@@ -32,6 +32,7 @@ def build_detection_frame(
     poll: DetectionPoll,
     *,
     seq: int,
+    boot_id: str,
     config_version: int,
 ) -> DetectionFrame:
     """Convert one polled frame into the wire payload.
@@ -40,6 +41,7 @@ def build_detection_frame(
     |---|---|---|
     | ``t`` | ``poll.timestamp_ms`` | ÷ 1000 → float seconds |
     | ``seq`` | argument | — |
+    | ``boot_id`` | argument | — |
     | ``config_version`` | argument | — |
     | ``delay`` | ``poll.delay_km`` | × 3.335641 → µs |
     | ``doppler`` | ``poll.doppler_hz`` | none, already Hz |
@@ -53,8 +55,15 @@ def build_detection_frame(
             constant and intended under latest-wins, while ``t`` spacing beyond
             one CPI is capture loss. The two are independent, and only the first
             is visible to the server (Q3).
+        boot_id: from ``state.py``, distinct per process start. Required on
+            every frame rather than the heartbeat alone: a restart between two
+            beats would otherwise corrupt the server's gap accounting for up to
+            a minute.
         config_version: server-issued, cached in ``state.py``. Never invented —
-            the server returns it and the node adopts whatever comes back.
+            the server returns it and the node adopts whatever comes back. Stays
+            required and non-null here even though the heartbeat's became
+            nullable, because a frame cannot be filed without the geometry it
+            was measured against.
     """
     if poll.n_detections > MAX_DETECTIONS:
         log.warning(
@@ -67,6 +76,7 @@ def build_detection_frame(
     return DetectionFrame(
         t=ms_to_s(poll.timestamp_ms),
         seq=seq,
+        boot_id=boot_id,
         config_version=config_version,
         delay=km_to_us(poll.delay_km[:limit]),
         doppler=list(poll.doppler_hz[:limit]),

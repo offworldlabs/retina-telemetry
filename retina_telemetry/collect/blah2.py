@@ -161,6 +161,7 @@ class Blah2Client:
 
         self._last_timestamp_ms: int | None = None
         self._last_poll_ok: bool | None = None
+        self._last_adsb_present: bool | None = None
         self._last_error: str | None = None
 
     def poll_detection(self) -> DetectionPoll | None:
@@ -196,6 +197,11 @@ class Blah2Client:
             return None  # polled twice inside one CPI, which is expected
 
         self._last_timestamp_ms = frame.timestamp_ms
+        # Whether blah2-api enriched this frame with associations. It gates the
+        # whole `adsb` key on `truth.adsb.enabled`, so the key's presence *is*
+        # the configuration flag — which makes this the only way the heartbeat
+        # can report NodeHealth.adsb at all.
+        self._last_adsb_present = frame.adsb is not None
         self._last_error = None
         return frame
 
@@ -219,10 +225,28 @@ class Blah2Client:
     def last_poll_ok(self) -> bool | None:
         """Whether the most recent poll reached blah2-api.
 
-        ``None`` before the first attempt — stage 2 omits ``NodeHealth.blah2``
-        rather than guessing, which is what the field being optional is for.
+        ``None`` before the first attempt — stage 2 sends ``NodeHealth.blah2``
+        as an explicit ``null`` rather than guessing, which is what the spec's
+        "known to be unknown" means.
         """
         return self._last_poll_ok
+
+    @property
+    def last_adsb_present(self) -> bool | None:
+        """Whether the last parsed frame carried ADS-B associations.
+
+        ``None`` until a frame has been parsed. Sticky afterwards: it reflects
+        the last frame we actually saw rather than resetting when a poll fails,
+        because a node whose blah2 is down has not stopped having ADS-B
+        configured, and ``NodeHealth.blah2`` already says not to trust the rest.
+
+        Note the spec cannot express "I have not looked yet" for this field —
+        ``adsb`` is optional and its absence means *disabled*, so the window
+        before the first frame is reported as disabled. The spec calls a
+        dedicated ``disabled`` value an open item; until then this is the
+        closest honest thing.
+        """
+        return self._last_adsb_present
 
     @property
     def last_error(self) -> str | None:

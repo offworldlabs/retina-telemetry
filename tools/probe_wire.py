@@ -27,6 +27,7 @@ from retina_telemetry.wire.config import build_node_config  # noqa: E402
 from retina_telemetry.wire.detection import build_detection_frame  # noqa: E402
 from retina_telemetry.wire.heartbeat import build_heartbeat  # noqa: E402
 from retina_telemetry.wire.registration import IncompletePayload, build_registration  # noqa: E402
+from retina_telemetry.wire.serialise import to_wire
 from retina_telemetry.wire.units import KM_TO_US, M_TO_FT  # noqa: E402
 from tools.probe_report import (  # noqa: E402
     BOLD,
@@ -43,12 +44,16 @@ from tools.probe_report import (  # noqa: E402
 # reader mistakes them for something this layer knows.
 PLACEHOLDER_SEQ = 1
 PLACEHOLDER_CONFIG_VERSION = 1
+#: Real boot_ids come from state.py, which the probe does not construct. Shaped
+#: to the spec's ^[0-9a-z]{8,32}$ so the payload printed here is one the server
+#: would accept.
+PLACEHOLDER_BOOT_ID = "probe000000000000"
 
 
 def _json(model) -> None:
     # mode="json" is load-bearing: without it the acceptance timestamps stay as
     # datetime objects and json.dumps refuses them.
-    detail(json.dumps(model.model_dump(mode="json", exclude_none=True), indent=2))
+    detail(json.dumps(to_wire(model), indent=2))
 
 
 # ── DetectionFrame ───────────────────────────────────────────────────
@@ -69,7 +74,10 @@ def probe_detection() -> None:
         return
 
     frame = build_detection_frame(
-        poll, seq=PLACEHOLDER_SEQ, config_version=PLACEHOLDER_CONFIG_VERSION
+        poll,
+        seq=PLACEHOLDER_SEQ,
+        boot_id=PLACEHOLDER_BOOT_ID,
+        config_version=PLACEHOLDER_CONFIG_VERSION,
     )
 
     ok("built from a live frame", f"{poll.n_detections} detection(s)")
@@ -182,6 +190,7 @@ def probe_heartbeat() -> None:
         state="streaming",
         uptime_s=snapshot.host_uptime_s,
         config_version=PLACEHOLDER_CONFIG_VERSION,
+        boot_id=PLACEHOLDER_BOOT_ID,
         host=snapshot,
         blah2_up=client.last_poll_ok,
         adsb_present=poll.adsb is not None if poll else None,
@@ -211,7 +220,11 @@ def probe_heartbeat() -> None:
         f"adsb {beat.health.adsb!r}",
         "'up' or omitted, never 'down' — absent means association is switched off",
     )
-    check("queue_depth never populated", beat.health.queue_depth is None, "meaningless — Q11")
+    check(
+        "queue_depth is gone from the schema",
+        "queue_depth" not in type(beat.health).model_fields,
+        "removed in v1.1.1 — Q11 accepted",
+    )
     note("versions omitted", "no readable source yet; needs the owl-os provides snapshot")
 
     print(f"\n  {BOLD}what the server would receive:{RESET}")

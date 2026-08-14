@@ -87,14 +87,23 @@ def test_a_restored_token_asks_for_a_config_resend(state, path):
     assert State(path).config_resend.is_set()
 
 
-def test_a_restored_node_cannot_heartbeat_until_config_lands(state, path):
-    """HeartbeatRequest requires config_version, so a token alone is not
-    enough to say anything at all."""
+def test_a_restored_node_heartbeats_before_config_lands(state, path):
+    """A token alone is enough to beat, and that is the Q16 fix.
+
+    ``HeartbeatRequest.config_version`` became nullable in v1.1.1 precisely so
+    the beat is unconditional: a node that can never build a configuration —
+    and so can never PUT one, and so can never be issued a version — used to go
+    silent, which is the opposite of what you want from a broken node.
+
+    Streaming is still gated, because ``DetectionFrame.config_version`` stays
+    required and non-null: a frame cannot be filed without the geometry it was
+    measured against.
+    """
     registered(state)
     restarted = State(path)
 
     assert restarted.snapshot().registered
-    assert not restarted.snapshot().may_heartbeat
+    assert restarted.snapshot().may_heartbeat  # <- inverted by v1.1.1
     assert not restarted.snapshot().may_stream
 
     restarted.config_resent(config_version=9)

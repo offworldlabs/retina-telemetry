@@ -59,11 +59,23 @@ def main() -> int:
         span = last["t"] - first["t"]
         total = sum(len(r["body"]["delay"]) for r in detections)
         empty = sum(1 for r in detections if not r["body"]["delay"])
-        gaps = last["seq"] - first["seq"] + 1 - len(detections)
+        boots = {r["body"]["boot_id"] for r in detections}
+        # seq is restart-local, so a gap count is only meaningful within one
+        # boot_id. Across a restart the counter resets and the arithmetic below
+        # would report a huge negative "gap" that is really a new process.
+        per_boot = {}
+        for r in detections:
+            per_boot.setdefault(r["body"]["boot_id"], []).append(r["body"]["seq"])
+        gaps = sum(max(v) - min(v) + 1 - len(v) for v in per_boot.values())
+        rate = (len(detections) - 1) / span if span > 0 else 0
 
         print(f"\n  {BOLD}detections{RESET}")
         print(f"    {DIM}window        {span:.1f} s, {len(detections)} frames sent{RESET}")
+        print(
+            f"    {DIM}rate          {rate:.2f} Hz  (2 Hz is the ceiling, not the expectation){RESET}"
+        )
         print(f"    {DIM}seq           {first['seq']} → {last['seq']}, {gaps} dropped{RESET}")
+        print(f"    {DIM}boot_id       {len(boots)} distinct  {sorted(boots)}{RESET}")
         print(f"    {DIM}detections    {total} across all frames, {empty} empty frames{RESET}")
         print(f"    {DIM}config_ver    {last['config_version']}{RESET}")
 
@@ -79,8 +91,29 @@ def main() -> int:
     beats = [r for r in requests if r["endpoint"] == "heartbeat"]
     if beats:
         last = beats[-1]["body"]
+        # The v1.1.1 required-nullable fields. Their *presence* is the thing to
+        # check: exclude_none=True would drop them and the server would refuse
+        # the payload, which is the whole reason wire/serialise.py exists.
+        nullable = ["config_version"]
+        health_nullable = ["cpu_pct", "disk_free_mb", "temp_c", "blah2"]
+        missing = [k for k in nullable if k not in last]
+        missing += [f"health.{k}" for k in health_nullable if k not in last.get("health", {})]
+        states = sorted({b["body"]["state"] for b in beats})
+        null_cv = sum(1 for b in beats if b["body"]["config_version"] is None)
+
+        print(f"\n  {BOLD}heartbeats{RESET}")
+        print(f"    {DIM}states seen   {states}{RESET}")
+        print(
+            f"    {DIM}null cfg_ver  {null_cv} of {len(beats)}  (Q16: a beat before one is issued){RESET}"
+        )
+        if missing:
+            print(f"    {RED}required-nullable keys DROPPED: {missing}{RESET}")
+        else:
+            print(
+                f"    {DIM}required nulls all present ({len(nullable) + len(health_nullable)} fields){RESET}"
+            )
         print(f"\n  {BOLD}last heartbeat{RESET}")
-        print(f"    {DIM}{json.dumps(last, indent=2)[:600]}{RESET}")
+        print(f"    {DIM}{json.dumps(last, indent=2)[:700]}{RESET}")
 
     registration = next((r for r in requests if r["endpoint"] == "register"), None)
     if registration:
@@ -90,7 +123,11 @@ def main() -> int:
         print(f"    {DIM}board_model   {body['board_model']}{RESET}")
         print(f"    {DIM}rx_alt_ft     {body['config']['rx_alt_ft']}  (from metres){RESET}")
         print(f"    {DIM}max_range_km  {body['config']['max_range_km']}  (derived){RESET}")
-        print(f"    {DIM}beam_azimuth  {body['config']['beam_azimuth_deg']}  (null = omni){RESET}")
+        cfg = body["config"]
+        print(f"    {DIM}beam_width    {cfg['beam_width_deg']}  (null = not characterised){RESET}")
+        print(f"    {DIM}beam_azimuth  {cfg['beam_azimuth_deg']}{RESET}")
+        print(f"    {DIM}cpi_s         {cfg['cpi_s']}  (the window t closes){RESET}")
+        print(f"    {DIM}delay_tol_us  {cfg['delay_tolerance_us']}  (from km × 3.335641){RESET}")
 
     return 0
 

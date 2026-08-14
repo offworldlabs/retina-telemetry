@@ -59,6 +59,7 @@ from retina_telemetry.wire.config import build_node_config
 from retina_telemetry.wire.detection import build_detection_frame
 from retina_telemetry.wire.heartbeat import build_heartbeat
 from retina_telemetry.wire.registration import IncompletePayload, build_registration
+from retina_telemetry.wire.serialise import to_wire
 
 log = logging.getLogger("retina_telemetry")
 
@@ -148,6 +149,7 @@ class Service:
                         frame = build_detection_frame(
                             poll,
                             seq=self.state.next_seq(),
+                            boot_id=snapshot.boot_id,
                             config_version=snapshot.config_version,
                         )
                     except pydantic.ValidationError as exc:
@@ -158,7 +160,7 @@ class Service:
                         self.errors.add(f"frame rejected before sending: {exc.errors()[0]['msg']}")
                         log.warning("discarding an unsendable frame: %s", exc)
                     else:
-                        self.slot.put(frame.model_dump(mode="json", exclude_none=True))
+                        self.slot.put(to_wire(frame))
             elif self.blah2.last_error:
                 self.errors.add(self.blah2.last_error)
             self.stop.wait(self.settings.poll_interval_s)
@@ -252,12 +254,14 @@ class Service:
         if node_id is None or config is None:
             return None
         try:
-            return build_registration(
-                node_id=node_id,
-                board_model=identity_reader.read_board_model(self.settings.device_type_path),
-                consent=self.consent(),
-                config=config,
-            ).model_dump(mode="json", exclude_none=True)
+            return to_wire(
+                build_registration(
+                    node_id=node_id,
+                    board_model=identity_reader.read_board_model(self.settings.device_type_path),
+                    consent=self.consent(),
+                    config=config,
+                )
+            )
         except IncompletePayload as exc:
             log.info("cannot register yet: %s", exc)
             return None
@@ -266,22 +270,27 @@ class Service:
         batch = self.errors.take()
 
         def payload() -> dict[str, Any] | None:
+            # No config_version guard. It was here because the field was
+            # required and non-null; v1.1.1 made it nullable precisely so a node
+            # that has never held one still beats (Q16). Removing the guard is
+            # the whole of that fix.
             snapshot = self.state.snapshot()
-            if snapshot.config_version is None:
-                return None
             host = self.host.read()
-            return build_heartbeat(
-                state=self.current_state().wire,
-                uptime_s=with_uptime_fallback(snapshot, host.host_uptime_s),
-                config_version=snapshot.config_version,
-                host=host,
-                blah2_up=self.blah2.last_poll_ok,
-                adsb_present=None,
-                owl_os=self.settings.owl_os,
-                retina_node=self.settings.retina_node,
-                blah2_image=self.settings.blah2_image,
-                errors=batch.messages,
-            ).model_dump(mode="json", exclude_none=True)
+            return to_wire(
+                build_heartbeat(
+                    state=self.current_state().wire,
+                    uptime_s=with_uptime_fallback(snapshot, host.host_uptime_s),
+                    config_version=snapshot.config_version,
+                    boot_id=snapshot.boot_id,
+                    host=host,
+                    blah2_up=self.blah2.last_poll_ok,
+                    adsb_present=self.blah2.last_adsb_present,
+                    owl_os=self.settings.owl_os,
+                    retina_node=self.settings.retina_node,
+                    blah2_image=self.settings.blah2_image,
+                    errors=batch.messages,
+                )
+            )
 
         outcome = send_until_delivered(
             self.client,
@@ -300,7 +309,7 @@ class Service:
 
     def _send_config(self, config: NodeConfigRaw) -> bool:
         try:
-            payload = build_node_config(config).model_dump(mode="json", exclude_none=True)
+            payload = to_wire(build_node_config(config))
         except ValueError as exc:
             # Wider than the IncompleteConfig it replaces, and deliberately so.
             # pydantic's ValidationError is a ValueError, so this now also

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Annotated
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, RootModel
-from enum import StrEnum
+from enum import Enum, StrEnum
 
 
 class AcceptanceRecord(BaseModel):
@@ -84,8 +84,8 @@ class NodeConfig(BaseModel):
     tx_callsign: Annotated[
         str,
         Field(
-            description="Illuminator callsign.",
-            examples=["CRYSTAL_PALACE"],
+            description="The illuminator's name as the operator typed it in the tower step, free text and with\nspaces. Not a regulatory callsign, despite the field name: Tower-Finder holds those and\ncould be plumbed through instead, which is open. Any underscored form in an earlier\nexample was an example rather than a convention, so nothing normalises it.\n",
+            examples=["Crystal Palace"],
             max_length=32,
             min_length=1,
         ),
@@ -101,20 +101,55 @@ class NodeConfig(BaseModel):
     ]
     beam_width_deg: Annotated[
         float | None,
-        Field(description="Antenna beam width, degrees.", examples=[60], gt=0.0, le=360.0),
-    ] = None
+        Field(
+            description="Antenna beam width, degrees. `null` means the antenna has not been characterised, which is\nthe state of every node in the fleet: retina-gui does not collect the geometry from owners\nand is not scheduled to. Nullable rather than optional, on the same reasoning as `cpu_pct`\n— it is known to be unknown, and there should be exactly one way to say so.\n\nNothing is substituted for a missing value. A placeholder width would be wrong data the\nserver cannot detect, whereas `null` is a fact it can act on.\n",
+            examples=[60],
+            gt=0.0,
+            le=360.0,
+        ),
+    ]
     beam_azimuth_deg: Annotated[
         float | None,
         Field(
-            description="Antenna boresight, degrees. `null` means broadside/omnidirectional; send `null` rather than\n`0.0` if you can.\n",
+            description="Antenna boresight, degrees. `null` means either broadside/omnidirectional or not\ncharacterised; the node cannot currently distinguish the two, since an unset configuration\nkey reads the same as a deliberate choice. Send `null` rather than `0.0` if you can.\n",
             examples=[None],
             ge=0.0,
             lt=360.0,
         ),
-    ] = None
+    ]
     max_range_km: Annotated[
         float,
-        Field(description="Maximum range of interest, km.", examples=[150], gt=0.0, le=1000.0),
+        Field(
+            description="Maximum range of interest, km. Derived on the node as\n`process.ambiguity.delayMax × c / fs / 1000` rather than read from a stored field, so it\ncan never disagree with what blah2 actually computes. Sending it rather than having the\nserver recompute it is deliberate: the derivation needs `delayMax`, which is not otherwise\non the wire, and the server is the compute-constrained end.\n",
+            examples=[150],
+            gt=0.0,
+            le=1000.0,
+        ),
+    ]
+    cpi_s: Annotated[
+        float,
+        Field(
+            description="Coherent processing interval, seconds, from `process.data.cpi`. It is the width of the\ncapture window every `DetectionFrame.t` closes, so the server needs it to know what a\nframe's samples span, and it bounds how tightly two nodes' frames can be treated as\nsimultaneous.\n\nIt is not a send cadence. Processing takes longer than a CPI today, so frames arrive at\nroughly half this rate; `1 / cpi_s` is the ceiling on frame rate, never the expectation.\n",
+            examples=[0.5],
+            gt=0.0,
+            le=10.0,
+        ),
+    ]
+    delay_tolerance_us: Annotated[
+        float,
+        Field(
+            description="The gate blah2-api applies when matching a detection to an ADS-B track, in the same unit\nas `DetectionFrame.delay`. It is node configuration, so strictness varies board to board,\nand without it `adsb_hex` values from two nodes are hypotheses formed under thresholds the\nserver cannot see and should not be compared as though they were alike.\n",
+            examples=[6.67],
+            gt=0.0,
+        ),
+    ]
+    doppler_tolerance_hz: Annotated[
+        float,
+        Field(
+            description="The Doppler half of the same gate, in Hz. See `delay_tolerance_us`.\n",
+            examples=[5.0],
+            gt=0.0,
+        ),
     ]
 
 
@@ -133,8 +168,8 @@ class RegisterRequest(BaseModel):
     board_model: Annotated[
         str,
         Field(
-            description="Node-reported and diagnostic only.",
-            examples=["raspberrypi5-4gb"],
+            description="The Mender device type, from `/data/mender/device_type`. Node-reported and diagnostic only.\nMender targets artifacts by device type, so it is the string that decides which software a\nboard is allowed to receive, which makes it the more useful diagnostic than either a\nhardware description or `/proc/device-tree/model`, whose board revision means nothing to\neither end. It carries neither RAM size nor hardware revision; those would be separate\nfields if they are ever wanted.\n",
+            examples=["pi5-v3-arm64"],
             max_length=64,
         ),
     ]
@@ -187,7 +222,7 @@ class DetectionFrame(BaseModel):
     t: Annotated[
         float,
         Field(
-            description="Unix epoch seconds, node clock, the capture time of the CPI.",
+            description="Unix epoch seconds, node clock, the **end** of the capture window. blah2 stamps the clock\nthe moment the buffer holds a full CPI, before any processing, so the samples behind a\nframe span `[t - cpi_s, t]` and the frame itself arrives roughly a CPI-processing-time\nlater, about 900 ms today.\n\nThe window is described by this one number plus `cpi_s` in `NodeConfig` rather than by a\nstart and a duration on every frame, since the CPI is a configuration value that changes\nrarely and putting it on the hot path would repeat it at the frame rate.\n\nDetections are not individually timestamped within the window, and should not be. A CPI is\ncross-correlated as a whole and a detection is a peak in the resulting map, so its time\n*is* the window; the Doppler measurement is likewise an average over it. `t` plus `cpi_s`\nis the complete and honest description of when a detection happened, and it sets the floor\non how tightly two nodes' frames can meaningfully be called simultaneous.\n",
             examples=[1753900000.123],
             ge=0.0,
         ),
@@ -195,9 +230,17 @@ class DetectionFrame(BaseModel):
     seq: Annotated[
         int,
         Field(
-            description="Per-node monotonic counter, incremented once per frame, for gap detection.",
+            description="Counter incremented once per frame sent, from 0 at process start, for gap detection. It is\nrestart-local, so it must be read together with `boot_id`: same `boot_id` and a jump means\nframes were lost, a new `boot_id` means the node restarted.\n",
             examples=[918273],
             ge=0,
+        ),
+    ]
+    boot_id: Annotated[
+        str,
+        Field(
+            description="Distinct per process start, generated in memory and never persisted. It exists to make `seq`\ninterpretable: `seq` is restart-local and resets to 0, so without this the server cannot tell a\nreset from a gap. Persisting a monotonic counter instead would cost an fsync per frame on an SD\ncard, or be checkpointed coarsely enough to lie after a hard stop, and one write per boot is\nneither.\n\nThe pair `(boot_id, seq)` is what the server counts loss and staleness against, so it is\nrequired on every frame rather than on the heartbeat alone: a restart between two beats would\notherwise corrupt gap accounting for up to a minute. It need only be distinct, not ordered.\n",
+            examples=["k3n8v2qp71ab"],
+            pattern="^[0-9a-z]{8,32}$",
         ),
     ]
     config_version: Annotated[
@@ -261,10 +304,11 @@ class DetectionAck(BaseModel):
     ]
 
 
-class Blah2(StrEnum):
+class Blah2(Enum):
     up = "up"
     down = "down"
     unknown = "unknown"
+    NoneType_None = None
 
 
 class Adsb(StrEnum):
@@ -277,12 +321,31 @@ class NodeHealth(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
-    cpu_pct: Annotated[float | None, Field(examples=[31], ge=0.0, le=100.0)] = None
-    disk_free_mb: Annotated[int | None, Field(examples=[9100], ge=0)] = None
-    temp_c: Annotated[float | None, Field(examples=[58], ge=-50.0, le=150.0)] = None
-    blah2: Annotated[Blah2 | None, Field(examples=["up"])] = None
-    adsb: Annotated[Adsb | None, Field(examples=["up"])] = None
-    queue_depth: Annotated[int | None, Field(examples=[0], ge=0)] = None
+    cpu_pct: Annotated[
+        float | None,
+        Field(
+            description="`null` until two samples of `/proc/stat` exist, which means the first beat after every\nprocess start.\n",
+            examples=[31],
+            ge=0.0,
+            le=100.0,
+        ),
+    ]
+    disk_free_mb: Annotated[int | None, Field(examples=[9100], ge=0)]
+    temp_c: Annotated[float | None, Field(examples=[58], ge=-50.0, le=150.0)]
+    blah2: Annotated[
+        Blah2 | None,
+        Field(
+            description='`null` before the first poll, meaning "we have not looked". `unknown` means "we looked and\ncould not tell", which is a different thing and does not currently arise on a node.\n',
+            examples=["up"],
+        ),
+    ]
+    adsb: Annotated[
+        Adsb | None,
+        Field(
+            description='Omitted entirely when ADS-B is disabled in node configuration, since blah2-api gates the\nkey on `truth.adsb.enabled` and reporting a deliberate setting as a fault would page\nsomeone. Absence therefore means "disabled", not "unknown"; a dedicated `disabled` value\nwould say that better and is an open item rather than a change made here.\n',
+            examples=["up"],
+        ),
+    ] = None
 
 
 class NodeVersions(BaseModel):
@@ -297,6 +360,7 @@ class NodeVersions(BaseModel):
 class NodeState(StrEnum):
     starting = "starting"
     streaming = "streaming"
+    stalled = "stalled"
     paused = "paused"
     error = "error"
     stopping = "stopping"
@@ -312,10 +376,18 @@ class HeartbeatRequest(BaseModel):
     )
     state: NodeState
     uptime_s: Annotated[int, Field(examples=[84213], ge=0)]
-    config_version: Annotated[
-        int,
+    boot_id: Annotated[
+        str,
         Field(
-            description="Server-owned version of the node's configuration. Returned rather than assumed: on operator\nreactivation the server already holds configuration history for that board, so the node's first\nversion afterwards will not be 1.\n",
+            description="Distinct per process start, generated in memory and never persisted. It exists to make `seq`\ninterpretable: `seq` is restart-local and resets to 0, so without this the server cannot tell a\nreset from a gap. Persisting a monotonic counter instead would cost an fsync per frame on an SD\ncard, or be checkpointed coarsely enough to lie after a hard stop, and one write per boot is\nneither.\n\nThe pair `(boot_id, seq)` is what the server counts loss and staleness against, so it is\nrequired on every frame rather than on the heartbeat alone: a restart between two beats would\notherwise corrupt gap accounting for up to a minute. It need only be distinct, not ordered.\n",
+            examples=["k3n8v2qp71ab"],
+            pattern="^[0-9a-z]{8,32}$",
+        ),
+    ]
+    config_version: Annotated[
+        int | None,
+        Field(
+            description="The node's active configuration version, or `null` when it does not yet hold one. Only the\nserver issues the value, from a registration or a `PUT /nodes/config` response, so there is\na window at every start where the node genuinely has none: the token is persisted across\nrestarts and the version deliberately is not, since caching it would let a node report a\nversion the server has since replaced.\n\n`null` rather than an absent key, so that the heartbeat really is unconditional. A node\nthat cannot build a configuration at all, and so can never PUT one, is precisely the node\nworth hearing from, and requiring a version here would make it the one that goes silent.\n\nIt stays required and non-null on `DetectionFrame`, where a frame cannot be filed without\nthe geometry it was measured against.\n",
             examples=[7],
             ge=1,
         ),

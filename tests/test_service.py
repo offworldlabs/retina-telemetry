@@ -185,9 +185,12 @@ def test_a_node_with_no_identity_says_so(node, server):
     assert "Mender" in document["detail"]
 
 
-def test_a_node_without_beam_geometry_registers_without_it(node, server):
+def test_a_node_without_beam_geometry_registers_with_nulls(node, server):
     """The real state of every node in the fleet, and it must not strand them.
-    retina-gui is not collecting the geometry, so this is the default path."""
+    retina-gui is not collecting the geometry, so this is the default path —
+    and since v1.1.1 the keys travel as explicit nulls rather than being
+    dropped, which is what the server needs to distinguish "not characterised"
+    from a payload someone forgot to populate."""
     document = yaml.safe_load((node / "config.yml").read_text())
     del document["location"]["rx"]["beam_width"]
     (node / "config.yml").write_text(yaml.safe_dump(document))
@@ -197,7 +200,8 @@ def test_a_node_without_beam_geometry_registers_without_it(node, server):
 
     sent = server.received("register")
     assert len(sent) == 1
-    assert "beam_width_deg" not in sent[0].body["config"]
+    assert sent[0].body["config"]["beam_width_deg"] is None
+    assert sent[0].body["config"]["beam_azimuth_deg"] is None
 
 
 def test_fixing_consent_takes_effect_without_a_restart(node, server):
@@ -367,4 +371,4 @@ def test_beam_geometry_removed_after_registration_still_resends(node, server):
 
     resent = server.received("config")
     assert resent, "the resend must still happen"
-    assert "beam_width_deg" not in resent[-1].body
+    assert resent[-1].body["beam_width_deg"] is None

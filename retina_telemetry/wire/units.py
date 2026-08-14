@@ -52,6 +52,19 @@ def km_to_us(delay_km: list[float]) -> list[float]:
     return [round(value * KM_TO_US, DELAY_DECIMALS) for value in delay_km]
 
 
+def tolerance_km_to_us(tolerance_km: float) -> float:
+    """The ADS-B association gate, kilometres → microseconds.
+
+    Same constant as :func:`km_to_us` and for the same reason: blah2-api
+    compares the gate against a bistatic range in kilometres
+    (``api/bistatic.js:67``), while the spec wants it in the unit
+    ``DetectionFrame.delay`` travels in. A separate function because it takes a
+    scalar, and because a call site reading ``tolerance_km_to_us`` says what is
+    being converted where ``km_to_us`` would not.
+    """
+    return round(tolerance_km * KM_TO_US, DELAY_DECIMALS)
+
+
 def m_to_ft(altitude_m: float) -> float:
     """Metres → feet.
 

@@ -12,6 +12,7 @@ import urllib.request
 import pytest
 
 from retina_telemetry.wire.config import build_node_config
+from retina_telemetry.wire.serialise import to_wire
 from tests.wire.test_config import OWL
 from tools.mock_server import MockServer
 
@@ -55,17 +56,24 @@ def register(server):
                     "choice": "public",
                 },
             },
-            "config": build_node_config(OWL).model_dump(mode="json", exclude_none=True),
+            "config": to_wire(build_node_config(OWL)),
         },
     )
     assert status == 200
     return body["token"], body["config_version"]
 
 
+#: Hand-built rather than produced by the builders, on purpose: these tests
+#: check the *mock*, so a payload the builders and the mock both got wrong
+#: would pass. Kept in step with the spec by hand.
+BOOT_ID = "28a156bd3f8652f4"
+
+
 def frame(config_version=1, seq=1):
     return {
         "t": 1786014064.679,
         "seq": seq,
+        "boot_id": BOOT_ID,
         "config_version": config_version,
         "delay": [41.362],
         "doppler": [-118.0],
@@ -75,7 +83,12 @@ def frame(config_version=1, seq=1):
 
 
 def beat(config_version=1):
-    return {"state": "streaming", "uptime_s": 181569, "config_version": config_version}
+    return {
+        "state": "streaming",
+        "uptime_s": 181569,
+        "config_version": config_version,
+        "boot_id": BOOT_ID,
+    }
 
 
 # ── the happy path ───────────────────────────────────────────────────
@@ -165,7 +178,7 @@ def test_a_malformed_node_id_is_rejected(server):
                     "choice": "public",
                 },
             },
-            "config": build_node_config(OWL).model_dump(mode="json", exclude_none=True),
+            "config": to_wire(build_node_config(OWL)),
         },
     )
 
@@ -183,31 +196,37 @@ def test_a_frame_missing_a_required_array_is_rejected(server):
     assert status == 400
 
 
-def test_a_config_omitting_the_beam_fields_is_accepted(server):
-    """Both became optional on 2026-08-11, so omitting them is legal — the mock
-    confirms it against the same generated schema the server will use.
-
-    This asserted a 400 until that revision: beam_azimuth_deg was the spec's only
-    required-and-nullable field, and this was the test proving exclude_none=True
-    produced a payload the server refuses. With no such field left, the whole
-    hazard is gone and so is wire/serialise.py. See test_payload_encoding.py for
-    the canary that fires if a revision brings one back."""
+def test_a_config_with_null_beam_fields_is_accepted(server):
+    """An uncharacterised antenna, which is every node in the fleet. The mock
+    validates against the same generated schema the server will use, so this is
+    the closest thing we have to proof the shape is right."""
     token, _ = register(server)
-    without = build_node_config(dataclasses.replace(OWL, beam_width_deg=None)).model_dump(
-        mode="json", exclude_none=True
-    )
-    assert "beam_width_deg" not in without
+    bare = to_wire(build_node_config(dataclasses.replace(OWL, beam_width_deg=None)))
+    assert bare["beam_width_deg"] is None
 
-    status, _, _ = post(f"{server.url}/nodes/config", without, token, method="PUT")
+    status, _, _ = post(f"{server.url}/nodes/config", bare, token, method="PUT")
 
     assert status == 200
+
+
+def test_dropping_a_required_null_is_rejected(server):
+    """The reason wire/serialise.py exists, demonstrated end to end rather than
+    argued. `exclude_none=True` drops beam_azimuth_deg, which the spec requires,
+    and the server refuses the payload."""
+    token, _ = register(server)
+    naive = build_node_config(OWL).model_dump(mode="json", exclude_none=True)
+    assert "beam_azimuth_deg" not in naive
+
+    status, _, _ = post(f"{server.url}/nodes/config", naive, token, method="PUT")
+
+    assert status == 400
 
 
 def test_the_correctly_serialised_config_is_accepted(server):
     token, _ = register(server)
     status, body, _ = post(
         f"{server.url}/nodes/config",
-        build_node_config(OWL).model_dump(mode="json", exclude_none=True),
+        to_wire(build_node_config(OWL)),
         token,
         method="PUT",
     )
@@ -281,7 +300,7 @@ def test_a_config_put_bumps_the_version_and_clears_stale(server):
 
     _, body, _ = post(
         f"{server.url}/nodes/config",
-        build_node_config(OWL).model_dump(mode="json", exclude_none=True),
+        to_wire(build_node_config(OWL)),
         token,
         method="PUT",
     )
@@ -321,7 +340,7 @@ def test_an_unchanged_configuration_does_not_create_a_version(server):
     """The spec: a new version only if the configuration differs from the
     active one, and the active version returned either way."""
     token, _ = register(server)
-    payload = build_node_config(OWL).model_dump(mode="json", exclude_none=True)
+    payload = to_wire(build_node_config(OWL))
 
     _, first, _ = post(f"{server.url}/nodes/config", payload, token, method="PUT")
     _, second, _ = post(f"{server.url}/nodes/config", payload, token, method="PUT")
@@ -335,7 +354,7 @@ def test_a_changed_configuration_creates_a_version(server):
     token, _ = register(server)
     _, first, _ = post(
         f"{server.url}/nodes/config",
-        build_node_config(OWL).model_dump(mode="json", exclude_none=True),
+        to_wire(build_node_config(OWL)),
         token,
         method="PUT",
     )
@@ -343,7 +362,7 @@ def test_a_changed_configuration_creates_a_version(server):
     moved = dataclasses.replace(OWL, rx_lat=51.5)
     _, second, _ = post(
         f"{server.url}/nodes/config",
-        build_node_config(moved).model_dump(mode="json", exclude_none=True),
+        to_wire(build_node_config(moved)),
         token,
         method="PUT",
     )
