@@ -38,27 +38,28 @@ def post(url, body=None, token=None, method="POST"):
         return exc.code, json.load(exc), dict(exc.headers)
 
 
-def register(server):
-    status, body, _ = post(
-        f"{server.url}/nodes/register",
-        {
-            "node_id": "ret824685c9",
-            "board_model": "pi5-v3-arm64",
-            "agreements": {
-                "licence": {"version": "2026-07-01", "accepted_at": "2026-07-31T09:12:00Z"},
-                "remote_management": {
-                    "version": "2026-07-01",
-                    "accepted_at": "2026-07-31T09:12:00Z",
-                },
-                "publication": {
-                    "version": "2026-07-01",
-                    "accepted_at": "2026-07-31T09:12:00Z",
-                    "choice": "public",
-                },
+def _registration(**overrides):
+    return {
+        "node_id": "ret824685c9",
+        "board_model": "pi5-v3-arm64",
+        "agreements": {
+            "licence": {"version": "2026-07-01", "accepted_at": "2026-07-31T09:12:00Z"},
+            "remote_management": {
+                "version": "2026-07-01",
+                "accepted_at": "2026-07-31T09:12:00Z",
             },
-            "config": to_wire(build_node_config(OWL)),
+            "publication": {
+                "version": "2026-07-01",
+                "accepted_at": "2026-07-31T09:12:00Z",
+                "choice": "public",
+            },
         },
-    )
+        "config": to_wire(build_node_config(OWL)),
+    } | overrides
+
+
+def register(server):
+    status, body, _ = post(f"{server.url}/nodes/register", _registration())
     assert status == 200
     return body["token"], body["config_version"]
 
@@ -159,41 +160,59 @@ def test_registration_needs_no_token(server):
 
 
 def test_a_malformed_node_id_is_rejected(server):
-    """The mock validates against the same generated models the client builds
-    with, so the spec's own pattern applies here too."""
-    status, body, _ = post(
-        f"{server.url}/nodes/register",
-        {
-            "node_id": "Unknown",
-            "board_model": "x",
-            "agreements": {
-                "licence": {"version": "2026-07-01", "accepted_at": "2026-07-31T09:12:00Z"},
-                "remote_management": {
-                    "version": "2026-07-01",
-                    "accepted_at": "2026-07-31T09:12:00Z",
-                },
-                "publication": {
-                    "version": "2026-07-01",
-                    "accepted_at": "2026-07-31T09:12:00Z",
-                    "choice": "public",
-                },
-            },
-            "config": to_wire(build_node_config(OWL)),
-        },
-    )
+    """`node_id` carries the spec's pattern on the request model, so the server
+    refuses it before the handler runs — which is also what keeps an empty one
+    away from the Mender lookup, where it would match the first record carrying
+    no identity at all."""
+    status, body, _ = post(f"{server.url}/nodes/register", _registration(node_id="Unknown"))
 
-    assert status == 400
-    assert "pattern" in body["detail"].lower()
+    # 422, not the spec's 400: FastAPI renders its own shape for a model it
+    # rejected, and nothing on the server converts it.
+    assert status == 422
+    assert [e["loc"] for e in body["detail"]] == [["body", "node_id"]]
+    assert "pattern" in body["detail"][0]["msg"].lower()
 
 
-def test_a_frame_missing_a_required_array_is_rejected(server):
+def test_a_schema_failure_is_422_in_fastapis_shape_not_the_taxonomy(server):
+    """The divergence a node meets on every malformed request.
+
+    `detail` is a *list* here, where every refusal the contract declares puts a
+    string under `error`. Nothing on the server converts it, so a client that
+    parses only the taxonomy has to survive this.
+    """
     token, version = register(server)
     broken = frame(version)
     del broken["adsb_hex"]
 
-    status, _, _ = post(f"{server.url}/nodes/detection", broken, token)
+    status, body, _ = post(f"{server.url}/nodes/detection", broken, token)
 
-    assert status == 400
+    assert status == 422
+    assert "error" not in body
+    assert isinstance(body["detail"], list)
+    assert ["body", "adsb_hex"] in [e["loc"] for e in body["detail"]]
+
+
+def test_mismatched_parallel_arrays_are_422(server):
+    """The four arrays are one table on the server's side, so a short one means
+    the frame does not say what it appears to."""
+    token, version = register(server)
+    lopsided = frame(version) | {"snr": [14.2, 9.8]}
+
+    status, _, _ = post(f"{server.url}/nodes/detection", lopsided, token)
+
+    assert status == 422
+
+
+def test_a_frame_naming_a_node_is_refused(server):
+    """Attribution comes from the token, so a body that names a node is a
+    refusal rather than a question about which of the two to believe."""
+    token, version = register(server)
+
+    status, _, _ = post(
+        f"{server.url}/nodes/detection", frame(version) | {"node_ref": "nde000000000000"}, token
+    )
+
+    assert status == 422
 
 
 def test_a_config_with_null_beam_fields_is_accepted(server):
@@ -273,40 +292,67 @@ def test_a_scripted_403_can_repeat(server):
 
 
 def test_levels_can_be_flipped_mid_run(server):
-    """config_stale and streaming_allowed are levels restated on every
-    response, not edges, so a node that missed one still learns."""
+    """streaming_allowed is restated on every response, not sent on an edge, so
+    a node that missed one still learns.
+
+    The server holds no such flag: it derives the level from the node's status
+    on each response, and a blocked node is the only thing that makes it false.
+    """
     token, version = register(server)
 
-    with server.state.lock:
-        server.state.streaming_allowed = False
+    server.block()
 
     _, body, _ = post(f"{server.url}/nodes/detection", frame(version), token)
 
     assert body["streaming_allowed"] is False
+    assert body["accepted"] == 0  # telling it to pause is the courtesy; this is the block
 
 
-def test_a_stale_config_version_gets_409(server):
+def test_a_version_the_server_never_issued_is_409(server):
     token, _ = register(server)
 
-    status, _, _ = post(f"{server.url}/nodes/detection", frame(config_version=99), token)
+    status, body, _ = post(f"{server.url}/nodes/detection", frame(config_version=99), token)
 
     assert status == 409
+    assert body == {"error": "unknown_config_version"}
 
 
-def test_a_config_put_bumps_the_version_and_clears_stale(server):
+def test_a_superseded_version_is_accepted_and_reported_stale(server):
+    """The narrower 409, and the case a node meets every time it PUTs.
+
+    A version the server issued and has since replaced is not an unknown one:
+    the configuration table is append-only precisely so the geometry a frame was
+    computed under stays readable, which is what makes the frame interpretable.
+    409-ing every mismatch instead would refuse the frames already in flight
+    when a node changes its configuration — a re-PUT loop rather than a
+    recovery — and would make config_stale on the ack unreachable.
+    """
+    token, first = register(server)
+    moved = dataclasses.replace(OWL, rx_lat=51.5)
+    _, put, _ = post(f"{server.url}/nodes/config", to_wire(build_node_config(moved)), token, "PUT")
+    assert put["config_version"] == first + 1
+
+    status, body, _ = post(f"{server.url}/nodes/detection", frame(first), token)
+
+    assert status == 202
+    assert body == {"accepted": 1, "config_stale": True, "streaming_allowed": True}
+
+
+def test_a_config_put_of_the_registered_configuration_does_not_move_the_version(server):
+    """Registration stores the configuration it carried, so the node is already
+    at that version and the first PUT is a resend.
+
+    The old mock stored nothing at registration, so its first PUT always bumped
+    — which quietly hid the resend path a node actually takes on every start.
+    """
     token, version = register(server)
-    with server.state.lock:
-        server.state.config_stale = True
 
     _, body, _ = post(
-        f"{server.url}/nodes/config",
-        to_wire(build_node_config(OWL)),
-        token,
-        method="PUT",
+        f"{server.url}/nodes/config", to_wire(build_node_config(OWL)), token, method="PUT"
     )
 
-    assert body["config_version"] == version + 1
-    _, beat_body, _ = post(f"{server.url}/nodes/heartbeat", beat(body["config_version"]), token)
+    assert body["config_version"] == version
+    _, beat_body, _ = post(f"{server.url}/nodes/heartbeat", beat(version), token)
     assert beat_body["config_stale"] is False
 
 
@@ -378,9 +424,12 @@ def test_an_oversized_heartbeat_is_refused_before_parsing(server):
     token, version = register(server)
     bloated = beat(version) | {"errors": ["x" * 512] * 20}
 
-    status, _, _ = post(f"{server.url}/nodes/heartbeat", bloated, token)
+    status, body, _ = post(f"{server.url}/nodes/heartbeat", bloated, token)
 
     assert status == 413
+    # The server's own taxonomy, not the spec's `payload_too_large`. The
+    # contract declares no 413 anywhere, so the body is the server's choice.
+    assert body == {"error": "too_large"}
 
 
 def test_the_errors_accumulator_never_produces_one(server):
@@ -423,3 +472,156 @@ def test_a_full_detection_frame_is_within_its_larger_cap(server):
     status, _, _ = post(f"{server.url}/nodes/detection", full, token)
 
     assert status == 202
+
+
+# ── the divergences from the contract, made reachable ────────────────
+#
+# Five places where Tower-Finder's implementation departs from the spec, all of
+# them reachable by a healthy node. These tests exist so the departures are
+# rehearsed here rather than discovered on a real board.
+
+
+def test_the_two_401_shapes(server):
+    """The same condition answers in two shapes depending on which path met it.
+
+    PUT /nodes/config catches its own dependency and restores the contract's
+    `Error`; detection and heartbeat take that dependency through `Depends` and
+    let FastAPI render its own. Our client keys off the status, so it survives
+    both — which is exactly what this pins.
+    """
+    register(server)
+
+    _, detection, _ = post(f"{server.url}/nodes/detection", frame(), "tok_wrong")
+    _, heartbeat, _ = post(f"{server.url}/nodes/heartbeat", beat(), "tok_wrong")
+    _, config, _ = post(
+        f"{server.url}/nodes/config", to_wire(build_node_config(OWL)), "tok_wrong", "PUT"
+    )
+
+    assert detection == heartbeat == {"detail": "unauthorized"}
+    assert config == {"error": "unauthorized"}
+
+
+def test_a_bad_token_beats_a_malformed_body(server):
+    """Dependencies are solved before the body is validated, so 401 wins over
+    422. The config path reads its body by hand for the same reason: a
+    body-shaped refusal ahead of identity resolution would sort live tokens
+    from dead ones."""
+    register(server)
+    broken = frame()
+    del broken["adsb_hex"]
+
+    status, _, _ = post(f"{server.url}/nodes/detection", broken, "tok_wrong")
+
+    assert status == 401
+
+
+def test_re_registration_revokes_the_previous_token(server):
+    """The reflash path. A board that comes back keeps its node_ref and its
+    configuration version, and its previous token dies."""
+    first, version = register(server)
+
+    second, again = register(server)
+
+    assert second != first
+    assert again == version
+    assert post(f"{server.url}/nodes/detection", frame(version), first)[0] == 401
+    assert post(f"{server.url}/nodes/detection", frame(version), second)[0] == 202
+
+
+def test_registration_is_refused_with_403_not_429_when_the_allowance_is_spent(server):
+    """Five an hour per node_id, and every admitted attempt counts — including
+    one that turns out to name an identity Mender has not accepted.
+
+    A 429 would tell a caller its identity is known enough to be counted, so
+    the limiter shares the one opaque refusal with every other class.
+    """
+    for _ in range(5):
+        assert register(server)
+
+    status, body, headers = post(f"{server.url}/nodes/register", _registration())
+
+    assert status == 403
+    assert body == {"error": "forbidden"}
+    assert 240 <= int(headers["Retry-After"]) <= 359
+
+
+def test_every_refusal_class_is_one_body(server):
+    """Unknown device, awaiting acceptance, Mender unreachable and rate limited
+    are indistinguishable, at the same latency, by design."""
+    bodies = set()
+    for reason in ("unknown", "pending", "down"):
+        server.state.mender = reason
+        status, body, headers = post(f"{server.url}/nodes/register", _registration())
+        assert status == 403
+        assert int(headers["Retry-After"]) > 0
+        bodies.add(json.dumps(body, sort_keys=True))
+
+    assert bodies == {json.dumps({"error": "forbidden"}, sort_keys=True)}
+
+
+def test_the_detection_rate_limit_is_a_429_carrying_retry_after(server):
+    """Eight a second, sized against the contract's 2 Hz ceiling. Owl runs at
+    0.6-0.9 Hz, so a node never reaches this — but a retry loop would."""
+    token, version = register(server)
+
+    admitted = [post(f"{server.url}/nodes/detection", frame(version), token)[0] for _ in range(8)]
+    status, body, headers = post(f"{server.url}/nodes/detection", frame(version), token)
+
+    assert admitted == [202] * 8
+    assert status == 429
+    assert body == {"error": "rate_limited"}
+    assert int(headers["Retry-After"]) >= 1
+
+
+def test_the_heartbeat_keeps_its_own_allowance(server):
+    """Keyed on (node_id, endpoint), so a node streaming at its ceiling can
+    still be heard from. The beat is the one thing a node in trouble has left."""
+    token, version = register(server)
+    for _ in range(8):
+        post(f"{server.url}/nodes/detection", frame(version), token)
+
+    assert post(f"{server.url}/nodes/detection", frame(version), token)[0] == 429
+    assert post(f"{server.url}/nodes/heartbeat", beat(version), token)[0] == 200
+
+
+# ── the config validator's three unspecifiable checks ────────────────
+
+
+def test_a_degenerate_baseline_is_refused_against_tx_lat(server):
+    """Not in the spec and not expressible in a JSON schema: a receiver and
+    illuminator at the same point give the solver nothing to work with. Our
+    models cannot catch it, so it arrives as a 400 from the server."""
+    token, _ = register(server)
+    same = to_wire(build_node_config(OWL))
+    same["tx_lat"], same["tx_lon"] = same["rx_lat"], same["rx_lon"]
+
+    status, body, _ = post(f"{server.url}/nodes/config", same, token, "PUT")
+
+    assert status == 400
+    assert body == {"error": "invalid_config", "detail": "tx_lat"}
+
+
+def test_an_unknown_field_is_named_back_and_bounded(server):
+    """The rejected field is caller-supplied JSON, and `Error.detail` is capped
+    at 512. Passed through whole it would fail the server's own response model
+    and turn a 400 the node must not retry into a 500 it will."""
+    token, _ = register(server)
+    key = "z" * 600
+
+    status, body, _ = post(
+        f"{server.url}/nodes/config", to_wire(build_node_config(OWL)) | {key: 1}, token, "PUT"
+    )
+
+    assert status == 400
+    assert body == {"error": "invalid_config", "detail": "z" * 512}
+
+
+def test_a_body_that_is_not_an_object_is_a_400_naming_config(server):
+    token, _ = register(server)
+
+    status, body, _ = post(
+        f"{server.url}/nodes/config", [to_wire(build_node_config(OWL))], token, "PUT"
+    )
+
+    assert status == 400
+    assert body == {"error": "invalid_config", "detail": "config"}
