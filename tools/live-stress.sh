@@ -100,7 +100,7 @@ run_phase () {
     -e HEARTBEAT_INTERVAL_S=10 -e STATUS_INTERVAL_S=5 \
     -v "$REMOTE_DIR/app:/app:ro" -v "$SCRATCH:/scratch" -v /data/mender:/data/mender:ro \
     -w /app "$IMAGE" \
-    sh -c "pip install --quiet --no-cache-dir requests PyYAML pydantic \
+    sh -c "pip install --quiet --no-cache-dir --timeout 60 --retries 10 requests PyYAML pydantic \
            && timeout ${RUN_FOR} python -m retina_telemetry; true" 2>&1 | tail -3
 }
 

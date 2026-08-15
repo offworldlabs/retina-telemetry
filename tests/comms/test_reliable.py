@@ -164,11 +164,21 @@ def test_an_already_stopped_sender_does_nothing(server, state, stop):
 
 
 def test_levels_are_applied_on_success(server, state, stop):
+    """A changed configuration, because an unchanged one is a no-op.
+
+    The fixture registers with ``CONFIG``, and the server stores that as version
+    1 — so re-PUTting it returns 1 and there is no level to observe. That is the
+    server's real behaviour and the reason it matters: a comparison done in SQL
+    would mint a version per resend for every node in the fleet, since
+    ``NULL = NULL`` is never true and the whole fleet sends a null beam width.
+    Moving a field is what makes the version move.
+    """
     before = state.snapshot().config_version
+    moved = CONFIG | {"max_range_km": CONFIG["max_range_km"] + 10.0}
 
-    send(server, state, stop)
+    send(server, state, stop, payload=moved)
 
-    assert state.snapshot().config_version == before + 1  # the mock bumps on a PUT
+    assert state.snapshot().config_version == before + 1
 
 
 def test_levels_are_applied_on_failure_too(server, state, stop):

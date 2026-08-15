@@ -121,7 +121,7 @@ docker run --rm --network host \
   -v /data/mender:/data/mender:ro \
   -w /app \
   "$IMAGE" \
-  sh -c "pip install --quiet --no-cache-dir requests PyYAML pydantic \
+  sh -c "pip install --quiet --no-cache-dir --timeout 60 --retries 10 requests PyYAML pydantic \
          && timeout ${RUN_FOR} python -m retina_telemetry; true"
 
 echo

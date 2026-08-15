@@ -72,7 +72,7 @@ echo "→ running stage $STAGE in $IMAGE (host network, all mounts read-only)"
 echo
 # Each probe exits with its own failure count; `set -e` inside the container
 # would stop at the first, so they are chained explicitly and the codes summed.
-RUN="pip install --quiet --no-cache-dir requests PyYAML pydantic; rc=0"
+RUN="pip install --quiet --no-cache-dir --timeout 60 --retries 10 requests PyYAML pydantic; rc=0"
 for probe in $PROBES; do
   RUN="$RUN; python /app/$probe || rc=\$((rc + \$?))"
 done

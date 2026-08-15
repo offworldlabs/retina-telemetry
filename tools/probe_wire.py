@@ -211,10 +211,21 @@ def probe_heartbeat() -> None:
         f"cpu {beat.health.cpu_pct}%  temp {beat.health.temp_c}°C  "
         f"disk {beat.health.disk_free_mb} MB",
     )
+    # Compared on `.value`, which is not fussiness. `NodeHealth.blah2` is
+    # required-and-nullable, so the generator gives its enum a `None` member and
+    # cannot derive it from `str` — it is a plain `Enum`, where `Blah2.up ==
+    # "up"` is False. `adsb` is optional, keeps no `None` member, and so comes
+    # out a `StrEnum` that compares equal to its value. Two enums over the same
+    # three words, differing only in nullability, and this check silently failed
+    # against a perfectly good `"up"` from the day v1.1.1 was adopted.
+    #
+    # The payload is unaffected: `to_wire` dumps with `mode="json"`, which
+    # renders either kind as its value.
+    blah2 = beat.health.blah2
     check(
         "blah2 reported from the poll",
-        beat.health.blah2 in ("up", "down", None),
-        f"{beat.health.blah2!r}",
+        getattr(blah2, "value", blah2) in ("up", "down", None),
+        f"{blah2!r}",
     )
     note(
         f"adsb {beat.health.adsb!r}",

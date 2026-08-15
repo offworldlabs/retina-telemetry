@@ -301,6 +301,37 @@ def test_a_node_whose_radar_never_started_says_starting(node, server):
     assert status(node)["state"] == NodeState.STARTING
 
 
+def test_a_superseded_version_is_recovered_without_a_409(node, server, monkeypatch):
+    """The path the old mock could not produce, and the one a node meets in the
+    seconds after any configuration change.
+
+    The server moves its active version underneath a streaming node. The frames
+    already in flight carry the old one, which it *issued* — so they are accepted
+    with `config_stale` rather than refused, and the node resends its
+    configuration and carries on. A mock that 409'd on any mismatch tested the
+    recovery from the wrong signal entirely.
+    """
+    service = Service(settings_for(node, server))
+    monkeypatch.setattr(
+        service.blah2, "poll_detection", lambda: _poll(frame(int(time.time() * 1000)))
+    )
+
+    run_briefly(service, until=lambda: server.received("detection"))
+    configs_before = len(server.received("config"))
+    server.move_config_version(9)
+
+    run_briefly(service, until=lambda: len(server.received("config")) > configs_before)
+
+    # It resent its configuration rather than sitting stale for ever, and
+    # adopted the version that came back.
+    assert len(server.received("config")) > configs_before
+    assert service.state.snapshot().config_version == 10
+    # And it went on streaming, at the version it now holds.
+    frames_after = len(server.received("detection"))
+    run_briefly(service, until=lambda: len(server.received("detection")) > frames_after)
+    assert server.received("detection")[-1].body["config_version"] == 10
+
+
 def _poll(payload):
     from retina_telemetry.collect.blah2 import parse_frame
 

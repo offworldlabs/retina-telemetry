@@ -110,7 +110,7 @@ docker run -d --name retina-stalled --network host --pull missing \
   -e DISK_PATH=/data/mender -e HEARTBEAT_INTERVAL_S=10 -e STATUS_INTERVAL_S=5 \
   -v "$REMOTE_DIR/app:/app:ro" -v "$SCRATCH:/scratch" -v /data/mender:/data/mender:ro \
   -w /app "$IMAGE" \
-  sh -c "pip install --quiet --no-cache-dir requests PyYAML pydantic \
+  sh -c "pip install --quiet --no-cache-dir --timeout 60 --retries 10 requests PyYAML pydantic \
          && python -m retina_telemetry" >/dev/null
 
 say_state () { python3 -c "
