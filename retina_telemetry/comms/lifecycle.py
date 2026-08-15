@@ -31,7 +31,13 @@ import logging
 from enum import StrEnum
 from typing import Any
 
-from retina_telemetry.comms.client import Backoff, Client, Kind, Outcome
+from retina_telemetry.comms.client import (
+    REGISTER_TIMEOUT_S,
+    Backoff,
+    Client,
+    Kind,
+    Outcome,
+)
 from retina_telemetry.state import Snapshot, State
 from retina_telemetry.wire.models import NodeState as WireState
 
@@ -238,7 +244,7 @@ class Registrar:
         Retrying is the caller's loop, so a stop signal can interrupt it — a
         method that slept internally could not be shut down promptly.
         """
-        outcome = self._client.post(REGISTER_PATH, payload)
+        outcome = self._client.post(REGISTER_PATH, payload, timeout_s=REGISTER_TIMEOUT_S)
 
         if outcome.ok:
             body = outcome.body or {}
