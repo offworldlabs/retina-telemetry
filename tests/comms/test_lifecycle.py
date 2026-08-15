@@ -1,6 +1,6 @@
 import pytest
 
-from retina_telemetry.comms.client import Backoff, Client, Kind
+from retina_telemetry.comms.client import Backoff, Client, Kind, Outcome
 from retina_telemetry.comms.lifecycle import NodeState, Registrar, derive_state, explain
 from tests.comms.conftest import REGISTRATION
 
@@ -346,3 +346,41 @@ def test_attempt_never_sleeps(registrar, server):
     registrar.attempt(REGISTRATION)
 
     assert time.monotonic() - started < 1.0
+
+
+def test_registration_gets_a_much_longer_timeout_than_everything_else():
+    """Found live against production on 2026-08-15: a real enrolled node's
+    registration exceeded the 5s default and the read timed out, leaving the
+    node holding at `registering` with no token.
+
+    The server queries Mender while the request is open — the spec says so — so
+    this call is bounded by a third party's API rather than ours. A timeout is
+    the worst outcome available: the request may have succeeded server-side and
+    minted a token we never read, so the node is unregistered locally and
+    registered remotely, and each retry spends one of 5/hour.
+    """
+    from retina_telemetry.comms.client import DEFAULT_TIMEOUT_S, REGISTER_TIMEOUT_S
+    from retina_telemetry.comms.stream import DETECTION_TIMEOUT_S
+
+    register_read = REGISTER_TIMEOUT_S[1]
+    assert register_read >= 30
+    assert register_read > DEFAULT_TIMEOUT_S[1]
+    # The two disciplines pull in opposite directions and both override the
+    # default: detections are abandoned early so the next frame goes out fresh.
+    assert DETECTION_TIMEOUT_S[1] < DEFAULT_TIMEOUT_S[1] < register_read
+
+
+def test_the_registrar_actually_passes_it(state):
+    """The default's docstring claimed the must-land endpoints override it, and
+    for a long time none of them did."""
+    from unittest import mock
+
+    from retina_telemetry.comms.client import REGISTER_TIMEOUT_S
+
+    client = mock.Mock()
+    client.post.return_value = Outcome(
+        kind=Kind.UNREACHABLE, status=None, body=None, retry_after_s=None, error="no answer"
+    )
+    Registrar(client, state).attempt({"node_id": "ret824685c9"})
+
+    assert client.post.call_args.kwargs["timeout_s"] == REGISTER_TIMEOUT_S

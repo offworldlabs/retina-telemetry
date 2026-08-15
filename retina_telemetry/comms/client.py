@@ -26,9 +26,25 @@ log = logging.getLogger(__name__)
 DEFAULT_BASE_URL = "https://api.retina.fm/v1"
 
 #: Connect and read timeouts. The spec wants a detection request abandoned
-#: after "a few seconds" so the next frame goes out fresh; the must-land
-#: endpoints override this with something longer.
+#: after "a few seconds" so the next frame goes out fresh, which is what
+#: ``stream.DETECTION_TIMEOUT_S`` narrows this to.
 DEFAULT_TIMEOUT_S = (3.05, 5.0)
+
+#: Registration only, and much longer than everything else.
+#:
+#: The server queries Mender **while the request is open** — the spec says so —
+#: so a registration is bounded by a third party's API rather than by ours.
+#: Measured against production on 2026-08-15: an unknown ``node_id`` is refused
+#: in under a second, but a real enrolled node exceeded five seconds and the
+#: read timed out. The node then held at ``registering`` with no token, retrying
+#: into an attempt that could never finish, and each retry spends one of the
+#: 5/hour and 20/day the server allows.
+#:
+#: A timeout here is the worst of both: the request may well have *succeeded*
+#: server-side and minted a token we never read, so the node is unregistered
+#: locally and registered remotely. Being generous costs one slow start once
+#: per node lifetime; being tight costs a node that cannot come up at all.
+REGISTER_TIMEOUT_S = (3.05, 30.0)
 
 USER_AGENT = "retina-telemetry"
 
