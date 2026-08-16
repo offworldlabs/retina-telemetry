@@ -682,8 +682,21 @@ class State:
     #: knob because it is the ordinary reason a real node cannot register.
     mender: str = "accepted"
 
-    registration_limiter: RegistrationRateLimiter = field(default_factory=RegistrationRateLimiter)
-    token_limiter: TokenRateLimiter = field(default_factory=TokenRateLimiter)
+    #: The clock both limiters count against, injectable so a test can freeze
+    #: it. Their windows are aligned on it rather than sliding from first use,
+    #: so a burst that straddles a boundary is handed a fresh allowance part way
+    #: through. That is the real server's behaviour and worth keeping, but it
+    #: makes "is the ninth request refused?" a question about scheduling as much
+    #: as about the limiter: on a loaded runner the burst stretches, the odds of
+    #: straddling rise with it, and the test fails having found nothing wrong.
+    clock: Any = time.monotonic
+
+    registration_limiter: RegistrationRateLimiter = field(init=False)
+    token_limiter: TokenRateLimiter = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.registration_limiter = RegistrationRateLimiter(self.clock)
+        self.token_limiter = TokenRateLimiter(self.clock)
 
     def reset(self) -> None:
         with self.lock:
@@ -1176,10 +1189,14 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 class MockServer:
-    """The mock, as a context manager. Binds port 0 unless told otherwise."""
+    """The mock, as a context manager. Binds port 0 unless told otherwise.
 
-    def __init__(self, port: int = 0, verbose: bool = False) -> None:
-        self.state = State()
+    ``clock`` is handed to the rate limiters; see :attr:`State.clock` for why a
+    test that asserts on a refusal wants to freeze it.
+    """
+
+    def __init__(self, port: int = 0, verbose: bool = False, clock: Any = time.monotonic) -> None:
+        self.state = State(clock=clock)
         handler = type("Handler", (_Handler,), {"state": self.state})
         self._httpd = ThreadingHTTPServer(("127.0.0.1", port), handler)
         self._httpd.verbose = verbose  # type: ignore[attr-defined]

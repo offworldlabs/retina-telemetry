@@ -23,6 +23,41 @@ def server():
         yield running
 
 
+class Clock:
+    """A hand-wound clock, for the tests that assert on a rate limit.
+
+    The limiters' windows are aligned on the clock, so a burst straddling a
+    boundary is handed a fresh allowance part way through — which makes "was
+    the ninth refused?" depend on when the burst happened to start. Left on
+    ``time.monotonic`` that is a coin weighted by how loaded the runner is: it
+    came up tails once on CI, against a merge that had touched none of this.
+
+    Starts mid-window rather than on a boundary so that nothing depends on the
+    two coinciding, and advances only when a test says so.
+    """
+
+    def __init__(self, now: float = 1000.5) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+@pytest.fixture
+def clock():
+    return Clock()
+
+
+@pytest.fixture
+def frozen_server(clock):
+    """A mock whose limiter windows move only when :class:`Clock` is wound."""
+    with MockServer(clock=clock) as running:
+        yield running
+
+
 def post(url, body=None, token=None, method="POST"):
     request = urllib.request.Request(
         url,
@@ -559,9 +594,14 @@ def test_every_refusal_class_is_one_body(server):
     assert bodies == {json.dumps({"error": "forbidden"}, sort_keys=True)}
 
 
-def test_the_detection_rate_limit_is_a_429_carrying_retry_after(server):
+def test_the_detection_rate_limit_is_a_429_carrying_retry_after(frozen_server):
     """Eight a second, sized against the contract's 2 Hz ceiling. Owl runs at
-    0.6-0.9 Hz, so a node never reaches this — but a retry loop would."""
+    0.6-0.9 Hz, so a node never reaches this — but a retry loop would.
+
+    On a frozen clock, so that all nine land in one window by construction
+    rather than by being quick enough.
+    """
+    server = frozen_server
     token, version = register(server)
 
     admitted = [post(f"{server.url}/nodes/detection", frame(version), token)[0] for _ in range(8)]
@@ -573,9 +613,29 @@ def test_the_detection_rate_limit_is_a_429_carrying_retry_after(server):
     assert int(headers["Retry-After"]) >= 1
 
 
-def test_the_heartbeat_keeps_its_own_allowance(server):
+def test_the_detection_allowance_refreshes_on_the_window_boundary(frozen_server, clock):
+    """The other side of the same coin, and the one that made CI red.
+
+    Windows are aligned on the clock rather than sliding from first use, so a
+    burst crossing a boundary is handed a full allowance part way through. Real
+    behaviour, pinned deliberately here — it used to be reachable only by a
+    runner slow enough to blunder into it.
+    """
+    server = frozen_server
+    token, version = register(server)
+    for _ in range(8):
+        post(f"{server.url}/nodes/detection", frame(version), token)
+    assert post(f"{server.url}/nodes/detection", frame(version), token)[0] == 429
+
+    clock.advance(1)
+
+    assert post(f"{server.url}/nodes/detection", frame(version), token)[0] == 202
+
+
+def test_the_heartbeat_keeps_its_own_allowance(frozen_server):
     """Keyed on (node_id, endpoint), so a node streaming at its ceiling can
     still be heard from. The beat is the one thing a node in trouble has left."""
+    server = frozen_server
     token, version = register(server)
     for _ in range(8):
         post(f"{server.url}/nodes/detection", frame(version), token)
