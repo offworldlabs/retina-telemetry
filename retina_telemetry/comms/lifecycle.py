@@ -71,6 +71,11 @@ class NodeState(StrEnum):
     #: Opted in, but no {version, accepted_at} to send. Registration requires
     #: one, so this is as far as the node gets.
     NO_AGREEMENT = "no_agreement"
+    #: Agreed, but retina-gui's setup wizard has not been finished, so the
+    #: configuration is still the shipped default. Registering here would tell
+    #: the server the node is at Greenwich Observatory running off Crystal
+    #: Palace. Clears when the owner completes the wizard, no restart needed.
+    SETUP_INCOMPLETE = "setup_incomplete"
     #: Everything needed, no token yet.
     UNREGISTERED = "unregistered"
     #: A registration request is in flight, or waiting out a Retry-After.
@@ -137,6 +142,7 @@ def derive_state(
     has_identity: bool,
     licence_accepted: bool,
     all_records_present: bool,
+    setup_complete: bool,
     registering: bool = False,
     detections_flowing: bool | None = None,
     ever_detected: bool = False,
@@ -148,6 +154,10 @@ def derive_state(
     is not worth reporting, because nothing would be done about it either way.
 
     Args:
+        setup_complete: whether retina-gui has recorded the setup wizard as
+            finished, from ``collect.wizard.setup_complete()``. Until it has,
+            the node config is the shipped default rather than the owner's, so
+            there is nothing true to register with.
         detections_flowing: whether blah2-api answered the last poll, from
             ``Blah2Client.last_poll_ok``. ``None`` means we have not polled yet,
             which does not downgrade the state — reporting no detections before
@@ -163,6 +173,11 @@ def derive_state(
         return NodeState.NO_IDENTITY
     if not all_records_present:
         return NodeState.NO_AGREEMENT
+    # Last of the local gates, and deliberately below the agreement: an owner
+    # who has not accepted the terms has not finished setup either, and
+    # `no_agreement` is the more actionable of the two things to tell them.
+    if not setup_complete:
+        return NodeState.SETUP_INCOMPLETE
 
     if not snapshot.registered:
         return NodeState.REGISTERING if registering else NodeState.UNREGISTERED
@@ -196,6 +211,11 @@ def explain(state: NodeState) -> str | None:
         NodeState.NO_AGREEMENT: (
             "no record of the terms being accepted, which registration requires. "
             "Complete the agreements step in the retina-gui setup wizard."
+        ),
+        NodeState.SETUP_INCOMPLETE: (
+            "the setup wizard has not been finished, so this node is still on the "
+            "default configuration and has nothing true to report. Finish it in "
+            "retina-gui, including the tower step. Registration follows on its own."
         ),
         NodeState.REGISTERING: (
             "registering. A refusal here is deliberately opaque and is the normal "

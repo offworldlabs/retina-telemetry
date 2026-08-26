@@ -22,6 +22,7 @@ def ready(state, **overrides):
         "has_identity": True,
         "licence_accepted": True,
         "all_records_present": True,
+        "setup_complete": True,
         **overrides,
     }
 
@@ -52,6 +53,33 @@ def test_a_missing_agreement_blocks_registration(state):
         derive_state(state.snapshot(), **ready(state, all_records_present=False))
         is NodeState.NO_AGREEMENT
     )
+
+
+def test_an_unfinished_wizard_blocks_registration(state):
+    """The config is still the shipped Greenwich/Crystal Palace default, so
+    there is nothing true to register with."""
+    assert (
+        derive_state(state.snapshot(), **ready(state, setup_complete=False))
+        is NodeState.SETUP_INCOMPLETE
+    )
+
+
+def test_a_missing_agreement_outranks_an_unfinished_wizard(state):
+    """Both are true of a node partway through setup, and the agreement is the
+    more actionable thing to put in front of an owner."""
+    derived = derive_state(
+        state.snapshot(), **ready(state, all_records_present=False, setup_complete=False)
+    )
+
+    assert derived is NodeState.NO_AGREEMENT
+
+
+def test_a_finished_wizard_is_not_enough_on_its_own(state):
+    """The gate is additional to the existing preconditions, not a substitute:
+    a node with no identity still reports that."""
+    derived = derive_state(state.snapshot(), **ready(state, has_identity=False))
+
+    assert derived is NodeState.NO_IDENTITY
 
 
 def test_everything_present_but_no_token(state):
@@ -199,7 +227,12 @@ def test_a_revoked_token_is_an_error_on_the_wire():
 
 def test_states_that_never_reach_the_server_still_map_to_something_true():
     """`starting` is true of all of them, and none is ever sent."""
-    for state in (NodeState.OPTED_OUT, NodeState.NO_IDENTITY, NodeState.AWAITING_CONFIG):
+    for state in (
+        NodeState.OPTED_OUT,
+        NodeState.NO_IDENTITY,
+        NodeState.SETUP_INCOMPLETE,
+        NodeState.AWAITING_CONFIG,
+    ):
         assert state.wire.value == "starting"
 
 
@@ -210,6 +243,7 @@ def test_every_blocked_state_explains_itself():
         NodeState.OPTED_OUT,
         NodeState.NO_IDENTITY,
         NodeState.NO_AGREEMENT,
+        NodeState.SETUP_INCOMPLETE,
         NodeState.STARTING,
         NodeState.NO_DETECTIONS,
         NodeState.REVOKED,

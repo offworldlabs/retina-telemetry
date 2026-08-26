@@ -17,6 +17,7 @@ from retina_telemetry.collect.consent import DEFAULT_CONSENT_PATH
 from retina_telemetry.collect.host import DEFAULT_DISK_PATH
 from retina_telemetry.collect.identity import DEFAULT_DEVICE_TYPE_PATH, DEFAULT_NODE_ID_PATH
 from retina_telemetry.collect.node_config import DEFAULT_CONFIG_PATH
+from retina_telemetry.collect.wizard import DEFAULT_WIZARD_FLAG_PATH
 from retina_telemetry.comms.client import DEFAULT_BASE_URL as API_URL
 from retina_telemetry.state import DEFAULT_TOKEN_PATH
 from retina_telemetry.status import DEFAULT_STATUS_PATH
@@ -45,6 +46,12 @@ class Settings:
         default_factory=lambda: _path("DEVICE_TYPE_PATH", DEFAULT_DEVICE_TYPE_PATH)
     )
     consent_path: Path = field(default_factory=lambda: _path("CONSENT_PATH", DEFAULT_CONSENT_PATH))
+    #: retina-gui's setup-wizard-completed flag. Registration waits for it,
+    #: so that a node cannot report the shipped Greenwich/Crystal Palace
+    #: default as though the owner had chosen it.
+    wizard_flag_path: Path = field(
+        default_factory=lambda: _path("WIZARD_FLAG_PATH", DEFAULT_WIZARD_FLAG_PATH)
+    )
     config_path: Path = field(default_factory=lambda: _path("CONFIG_PATH", DEFAULT_CONFIG_PATH))
     disk_path: Path = field(default_factory=lambda: _path("DISK_PATH", DEFAULT_DISK_PATH))
 

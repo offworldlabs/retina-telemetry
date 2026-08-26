@@ -44,6 +44,7 @@ import pydantic
 from retina_telemetry.collect import consent as consent_reader
 from retina_telemetry.collect import identity as identity_reader
 from retina_telemetry.collect import node_config as config_reader
+from retina_telemetry.collect import wizard as wizard_reader
 from retina_telemetry.collect.blah2 import Blah2Client
 from retina_telemetry.collect.consent import Consent
 from retina_telemetry.collect.host import HostReader
@@ -113,6 +114,9 @@ class Service:
     def consent(self) -> Consent:
         return consent_reader.read_consent(self.settings.consent_path)
 
+    def setup_complete(self) -> bool:
+        return wizard_reader.setup_complete(self.settings.wizard_flag_path)
+
     def node_config(self) -> NodeConfigRaw | None:
         try:
             config = config_reader.read_config(self.settings.config_path)
@@ -132,6 +136,7 @@ class Service:
             # gate registration, and `complete` is what build_registration needs.
             licence_accepted=record.may_stream,
             all_records_present=record.complete,
+            setup_complete=self.setup_complete(),
             registering=self._registering.is_set(),
             detections_flowing=self.blah2.last_poll_ok,
             ever_detected=self.blah2.has_produced,
@@ -255,6 +260,13 @@ class Service:
     # ── payloads ─────────────────────────────────────────────────────
 
     def _registration_payload(self) -> dict[str, Any] | None:
+        # Checked before anything is read: until the wizard is finished, the
+        # config is the shipped Greenwich/Crystal Palace default, and a payload
+        # built from it would tell the server something false that only a
+        # later config change would correct — and only for an owner who goes
+        # back and finishes. See collect/wizard.py.
+        if not self.setup_complete():
+            return None
         node_id = self.node_id()
         config = self.node_config()
         if node_id is None or config is None:

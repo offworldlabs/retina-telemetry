@@ -32,6 +32,7 @@ def node(tmp_path):
     (tmp_path / "node_id").write_text("ret824685c9\n")
     (tmp_path / "device_type").write_text("device_type=pi5-v3-arm64\n")
     (tmp_path / "consent.json").write_text(json.dumps(CONSENT))
+    (tmp_path / "setup-wizard-completed").write_text("2026-06-30T08:18:00")
 
     document = json.loads(json.dumps(DEFAULTS))  # deep copy
     document["location"]["rx"]["beam_width"] = 60  # no real node has this set
@@ -48,6 +49,7 @@ def settings_for(node, server, **overrides):
         node_id_path=node / "node_id",
         device_type_path=node / "device_type",
         consent_path=node / "consent.json",
+        wizard_flag_path=node / "setup-wizard-completed",
         config_path=node / "config.yml",
         disk_path=node,
         poll_interval_s=0.05,
@@ -223,6 +225,53 @@ def test_fixing_consent_takes_effect_without_a_restart(node, server):
     thread.join(timeout=5)
 
     assert server.received("register")
+
+
+def test_an_unfinished_wizard_registers_nothing(node, server):
+    """Until the wizard is done the config is the shipped Greenwich/Crystal
+    Palace default, and registering would tell the server that is where the
+    node is. Silence is the correct behaviour."""
+    (node / "setup-wizard-completed").unlink()
+    service = Service(settings_for(node, server))
+
+    run_briefly(service, seconds=0.6)
+
+    assert server.requests == []
+    assert status(node)["state"] == "setup_incomplete"
+
+
+def test_finishing_the_wizard_takes_effect_without_a_restart(node, server):
+    """retina-gui writes the flag while this container is already running, so
+    a node that completes setup must not need bouncing to register."""
+    (node / "setup-wizard-completed").unlink()
+    service = Service(settings_for(node, server))
+
+    thread = threading.Thread(target=service.run, daemon=True)
+    thread.start()
+    time.sleep(0.3)
+    assert server.requests == []
+
+    (node / "setup-wizard-completed").write_text("2026-08-26T11:54:00")
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and not server.received("register"):
+        time.sleep(0.02)
+    service.shutdown()
+    thread.join(timeout=5)
+
+    assert server.received("register")
+
+
+def test_the_wizard_gate_does_not_stop_the_status_document(node, server):
+    """A node that can do nothing else must still say so: the status document
+    is the only channel out of this container."""
+    (node / "setup-wizard-completed").unlink()
+    service = Service(settings_for(node, server))
+
+    run_briefly(service, seconds=0.6)
+
+    document = status(node)
+    assert document["state"] == "setup_incomplete"
+    assert "wizard" in document["detail"]
 
 
 # ── the server pushing back ──────────────────────────────────────────
