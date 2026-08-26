@@ -50,19 +50,27 @@ Corollary: **all unit conversion happens in stage 2.** Stage 1 hands over source
 under names that say so — `delay_km`, `timestamp_ms`, `rx_alt_m` — and stage 2 emits the
 spec's names and units. A missing conversion is then visible at the call site.
 
-## The one thing that blocks a real deployment
+## Registration waits on two files retina-gui writes
 
-**Nothing on a node persists the three consent records**, so no node can register.
-`RegisterRequest.agreements` needs `licence`, `remote_management` and `publication`;
-the retina-gui EULA is a placeholder and its wizard checkbox persists nothing.
+Both live under `/data/retina-gui`, mounted read-only, and neither is ever synthesised
+here. A node missing either refuses to register and says which in its status document.
 
-`publication` is a privacy decision rather than a form field: it governs whether a
-dwelling's position reaches a public archive, and its `version` records which disclosure
-wording the owner saw. **No record is ever synthesised** — a missing one means the owner
-was not shown that text, so a node without them refuses to register and says which are
-missing in its status document.
+**`telemetry-consent.json`** carries the three records `RegisterRequest.agreements`
+needs: `licence`, `remote_management` and `publication`. `publication` is a privacy
+decision rather than a form field: it governs whether a dwelling's position reaches a
+public archive, and its `version` records which disclosure wording the owner saw. A
+missing record means the owner was not shown that text. Shipped in retina-gui v0.7.0.
 
-That work is retina-gui's. Everything else here is built and verified.
+**`setup-wizard-completed`** proves the config is the owner's rather than the shipped
+default. `retina-node/config/default.yml` ships a *working* configuration (Greenwich
+Observatory, Crystal Palace), the merger writes it on first boot, and retina-gui records
+consent at wizard step 1 but the location at step 5. Without this gate we registered in
+that window and told the server real nodes were at Greenwich. See `collect/wizard.py`.
+
+**The flag postdates some nodes.** It only arrived in retina-gui aee29a6 (2026-06-24),
+so nodes configured before then had none; retina-gui backfills it at startup from a
+location in `user.yml`. That backfill must reach the fleet *before* this gate ships, or
+every configured node still holding a flagless `/data` stops registering.
 
 ## Sibling repos
 
@@ -82,9 +90,10 @@ Nothing here is buildable from this repo, and the first one blocks every node:
 
 | | Blocking | What |
 |---|---|---|
-| Persist the three consent records to `/data/retina-gui/telemetry-consent.json` | **yes** | The EULA is a placeholder and the wizard checkbox persists nothing. We never synthesise one, so a node without them refuses to register |
-| Cap the tower-name field at 32 characters | **yes** | The spec caps `tx_callsign` at 32 and the field is unbounded free text. A longer name means no `NodeConfig` can be built — reported rather than fatal, but still no registration |
-| Read `/data/retina-telemetry/status.json` | no, but | Zero references to it in retina-gui today. We bind no ports, so it is the only way *no identity*, *revoked token* and *rejected config* reach an operator |
+| Backfill `setup-wizard-completed` onto pre-2026-06-24 nodes | **yes** | Ours gates registration on it. Nodes configured before the flag existed have none and would never register. Must be deployed to the fleet before this gate ships |
+| Persist the three consent records to `/data/retina-gui/telemetry-consent.json` | shipped | Landed in retina-gui v0.7.0. Written at the agreements step, all three at once |
+| Cap the tower-name field at 32 characters | shipped | `TX_NAME_MAX_LENGTH` in `config_schema.py`. The spec caps `tx_callsign` at 32 and the field was unbounded free text |
+| Read `/data/retina-telemetry/status.json` | no, but | We bind no ports, so it is the only way *no identity*, *revoked token* and *rejected config* reach an operator. `telemetry_status.py` reads it and the home page shows it |
 | Collect `location.rx.beam_width` / `beam_azimuth` | no | Deferred indefinitely. Both are nullable, so sending two nulls is correct behaviour rather than a gap |
 
 `owl-os` separately owes a `mender-update show-provides` snapshot so

@@ -31,10 +31,13 @@ That matters most for ``publication``: the choice governs whether a dwelling's
 position ends up in a public archive, and the disclosure version records which
 wording the owner actually saw.
 
-Nothing writes this file yet — the wizard's agreements step persists nothing and
-the EULA is a placeholder. A missing file is therefore the
-state of every node in the fleet today, and is treated as "not accepted" rather
-than as an error.
+A missing file is the ordinary state of a node nobody has been through the
+wizard on, and is treated as "not accepted" rather than as an error. retina-gui
+has written it since v0.7.0, at the agreements step, all three records at once.
+
+Consent is necessary but no longer sufficient: it is recorded at wizard step 1
+while the location is chosen at step 5, so registration also waits on
+:mod:`retina_telemetry.collect.wizard`.
 """
 
 from __future__ import annotations
