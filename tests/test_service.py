@@ -274,6 +274,64 @@ def test_the_wizard_gate_does_not_stop_the_status_document(node, server):
     assert "wizard" in document["detail"]
 
 
+def test_an_unsited_node_registers_nothing(node, server):
+    """It has no geometry to register with, and the wire cannot carry a null
+    one yet. Silence beats asserting a position nobody chose."""
+    document = yaml.safe_load((node / "config.yml").read_text())
+    for end in ("rx", "tx"):
+        document["location"][end] = {
+            "latitude": None,
+            "longitude": None,
+            "altitude": None,
+            "name": None,
+        }
+    (node / "config.yml").write_text(yaml.safe_dump(document))
+    service = Service(settings_for(node, server))
+
+    run_briefly(service, seconds=0.6)
+
+    assert server.requests == []
+
+
+def test_an_unsited_node_is_not_reported_as_a_broken_config(node, server):
+    """The ordinary state of a new node, not a fault. Reading the geometry
+    with _require made every unsited node look unreadable, which is a support
+    call rather than a setup step."""
+    document = yaml.safe_load((node / "config.yml").read_text())
+    document["location"]["rx"]["latitude"] = None
+    (node / "config.yml").write_text(yaml.safe_dump(document))
+    service = Service(settings_for(node, server))
+
+    run_briefly(service, seconds=0.6)
+
+    detail = status(node)["detail"]
+    assert "position is configured" in detail
+    assert not any("could not be read" in e for e in status(node).get("errors", []))
+
+
+def test_siting_a_node_takes_effect_without_a_restart(node, server):
+    """retina-gui writes the config into a container already running."""
+    original = (node / "config.yml").read_text()
+    document = yaml.safe_load(original)
+    document["location"]["rx"]["latitude"] = None
+    (node / "config.yml").write_text(yaml.safe_dump(document))
+    service = Service(settings_for(node, server))
+
+    thread = threading.Thread(target=service.run, daemon=True)
+    thread.start()
+    time.sleep(0.3)
+    assert server.requests == []
+
+    (node / "config.yml").write_text(original)
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and not server.received("register"):
+        time.sleep(0.02)
+    service.shutdown()
+    thread.join(timeout=5)
+
+    assert server.received("register")
+
+
 # ── the server pushing back ──────────────────────────────────────────
 
 

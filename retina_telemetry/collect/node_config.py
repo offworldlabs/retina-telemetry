@@ -62,13 +62,16 @@ class NodeConfigRaw:
     Frozen, so ``==`` is the change check.
     """
 
-    rx_lat: float
-    rx_lon: float
-    rx_alt_m: float
-    tx_lat: float
-    tx_lon: float
-    tx_alt_m: float
-    tx_name: str
+    # Nullable: a node has no geometry until its owner picks a tower, and
+    # retina-node ships these null rather than defaulting to a plausible site.
+    # See `is_located`.
+    rx_lat: float | None
+    rx_lon: float | None
+    rx_alt_m: float | None
+    tx_lat: float | None
+    tx_lon: float | None
+    tx_alt_m: float | None
+    tx_name: str | None
     fc_hz: float
     fs_hz: float
     delay_max_bins: int
@@ -108,6 +111,26 @@ class NodeConfigRaw:
     beam_width_deg: float | None = None
     beam_azimuth_deg: float | None = None
 
+    @property
+    def is_located(self) -> bool:
+        """Whether this node knows its own geometry.
+
+        All-or-nothing: the bistatic solution needs every one of these, and a
+        missing value becomes NaN downstream rather than an error. `tx_name` is
+        excluded because a name is a label, not a position.
+        """
+        return all(
+            value is not None
+            for value in (
+                self.rx_lat,
+                self.rx_lon,
+                self.rx_alt_m,
+                self.tx_lat,
+                self.tx_lon,
+                self.tx_alt_m,
+            )
+        )
+
 
 def read_config(path: Path | str = DEFAULT_CONFIG_PATH) -> NodeConfigRaw:
     """Read and validate the merged node configuration.
@@ -134,15 +157,18 @@ def read_config(path: Path | str = DEFAULT_CONFIG_PATH) -> NodeConfigRaw:
         raise ConfigUnavailable(f"{path} does not contain a mapping")
 
     return NodeConfigRaw(
-        rx_lat=_require(document, "location.rx.latitude", float),
-        rx_lon=_require(document, "location.rx.longitude", float),
-        rx_alt_m=_require(document, "location.rx.altitude", float),
-        tx_lat=_require(document, "location.tx.latitude", float),
-        tx_lon=_require(document, "location.tx.longitude", float),
-        tx_alt_m=_require(document, "location.tx.altitude", float),
+        # _optional, not _require: an unset geometry is the ordinary state of a
+        # node whose owner has not reached the tower step, not a malformed
+        # config. Raising here would report every new node as broken.
+        rx_lat=_optional(document, "location.rx.latitude", float),
+        rx_lon=_optional(document, "location.rx.longitude", float),
+        rx_alt_m=_optional(document, "location.rx.altitude", float),
+        tx_lat=_optional(document, "location.tx.latitude", float),
+        tx_lon=_optional(document, "location.tx.longitude", float),
+        tx_alt_m=_optional(document, "location.tx.altitude", float),
         # A free-text display name the operator typed in the tower step, not a
         # regulatory callsign.
-        tx_name=_require(document, "location.tx.name", str),
+        tx_name=_optional(document, "location.tx.name", str),
         fc_hz=_require(document, "capture.fc", float),
         fs_hz=_require(document, "capture.fs", float),
         # Bins, not kilometres. Stage 2 derives max_range_km as
@@ -178,6 +204,16 @@ def _optional(document: dict[str, Any], dotted: str, kind: type) -> Any:
     if value is None:
         return None
     return _coerce(value, dotted, kind)
+
+
+def _optional(document: dict[str, Any], dotted: str, kind: type) -> Any:
+    """Like :func:`_require`, but absent or null is a legitimate answer.
+
+    A wrong *type* still raises: that is a malformed config rather than an
+    unset one, and reading it as absent would hide the difference.
+    """
+    value = _walk(document, dotted)
+    return None if value is None else _coerce(value, dotted, kind)
 
 
 def _require(document: dict[str, Any], dotted: str, kind: type) -> Any:

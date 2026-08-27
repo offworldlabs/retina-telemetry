@@ -221,9 +221,6 @@ def test_non_mapping_raises(tmp_path):
 @pytest.mark.parametrize(
     "dotted",
     [
-        "location.rx.latitude",
-        "location.tx.altitude",
-        "location.tx.name",
         "capture.fc",
         "capture.fs",
         "process.ambiguity.delayMax",
@@ -254,4 +251,67 @@ def test_non_string_tx_name_raises(tmp_path):
     document["location"]["tx"]["name"] = 12345
 
     with pytest.raises(ConfigUnavailable, match="must be a string"):
+        read_config(write(tmp_path, document))
+
+
+# ── geometry: nullable, and unset until an owner picks a tower ───────
+
+
+def test_a_null_geometry_reads_as_unlocated(tmp_path):
+    """What retina-node's default.yml will ship. Must not raise: an unsited
+    node is ordinary, not a malformed config."""
+    document = copy.deepcopy(DEFAULTS)
+    for end in ("rx", "tx"):
+        document["location"][end] = {
+            "latitude": None,
+            "longitude": None,
+            "altitude": None,
+            "name": None,
+        }
+
+    config = read_config(write(tmp_path, document))
+
+    assert config.is_located is False
+    assert config.rx_lat is None
+
+
+def test_a_full_geometry_is_located(tmp_path):
+    assert read_config(write(tmp_path, DEFAULTS)).is_located is True
+
+
+def test_a_partial_geometry_is_not_located(tmp_path):
+    """The bistatic solution needs all of it, and a missing value becomes NaN
+    downstream rather than an error."""
+    document = copy.deepcopy(DEFAULTS)
+    document["location"]["tx"]["longitude"] = None
+
+    assert read_config(write(tmp_path, document)).is_located is False
+
+
+def test_zero_is_a_real_coordinate(tmp_path):
+    """Testing for truthiness would report a node on the equator as unsited."""
+    document = copy.deepcopy(DEFAULTS)
+    for end in ("rx", "tx"):
+        document["location"][end].update(latitude=0, longitude=0, altitude=0)
+
+    assert read_config(write(tmp_path, document)).is_located is True
+
+
+def test_a_missing_transmitter_name_does_not_unlocate_a_node(tmp_path):
+    """A name is a label, not a position."""
+    document = copy.deepcopy(DEFAULTS)
+    document["location"]["tx"]["name"] = None
+
+    config = read_config(write(tmp_path, document))
+
+    assert config.is_located is True
+    assert config.tx_name is None
+
+
+def test_a_wrongly_typed_coordinate_still_raises(tmp_path):
+    """Optional means "may be absent", not "may be anything"."""
+    document = copy.deepcopy(DEFAULTS)
+    document["location"]["rx"]["latitude"] = "fifty-one"
+
+    with pytest.raises(ConfigUnavailable, match="location.rx.latitude"):
         read_config(write(tmp_path, document))
