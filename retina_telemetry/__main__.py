@@ -271,6 +271,11 @@ class Service:
         config = self.node_config()
         if node_id is None or config is None:
             return None
+        # An unsited node has no geometry to register with, and the wire cannot
+        # yet carry a null one. Holding is silent and free; the status document
+        # says why. Becomes "send the nulls" once the spec allows it.
+        if not config.is_located:
+            return None
         try:
             return to_wire(
                 build_registration(
@@ -388,8 +393,23 @@ class Service:
             detail=self._dead_loop_detail()
             or self._config_rejected
             or self._config_unreadable
+            or self._unsited_detail()
             or explain(state),
             errors=self.errors.snapshot(),
+        )
+
+    def _unsited_detail(self) -> str | None:
+        """A node with no geometry is not broken, it just has not been sited.
+
+        Reported through `detail` rather than as a NodeState because it does
+        not change what the node is doing: everything else about it is normal.
+        """
+        config = self.node_config()
+        if config is None or config.is_located:
+            return None
+        return (
+            "no receiver or transmitter position is configured, so this node cannot say "
+            "where it is and will not register. Choose a tower in retina-gui."
         )
 
     def _dead_loop_detail(self) -> str | None:
