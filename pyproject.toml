@@ -1,6 +1,6 @@
 [project]
 name = "retina-telemetry"
-version = "0.1.0"
+version = "0.2.1"
 description = "Node-side telemetry uplink for the RETINA passive radar fleet"
 requires-python = ">=3.11"
 dependencies = [
