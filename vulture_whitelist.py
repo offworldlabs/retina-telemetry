@@ -49,11 +49,6 @@ unknown
 # never named.
 public
 private
-# Blah2.NoneType_None — v1.1.1 added `null` to the enum alongside a nullable
-# type, and the generator turned that into a real member. It is redundant (the
-# type union already makes the field nullable) and nothing should ever use it.
-# Flagged to the server author as worth deleting from the enum list.
-NoneType_None
 # NodeConfig.delay_tolerance_us — set in wire/config.py, but only ever as a
 # keyword argument, because the source attribute is `delay_tolerance_km`. The
 # rename across the unit conversion is the point of the naming convention, and
@@ -66,13 +61,26 @@ ConfigResponse
 DetectionAck
 HeartbeatResponse
 RegisterResponse
-# Two of these exist because datamodel-codegen collided on the name. `Error` is
-# now the item type of HeartbeatRequest.errors, and `Error1` is the actual error
-# response schema from components/schemas/Error. Both are generated; neither is
-# ours to rename.
+# `Error` is the item type of HeartbeatRequest.errors; `ErrorBody` is the refusal
+# body every 4xx and 5xx under /v1/nodes wears. v1.2.0 renamed the latter from
+# `Error`, which ends the collision that used to generate an `Error1` alongside
+# it. Both are generated; neither is ours to rename.
 Error
-Error1
-
+ErrorBody
+# PUT /v1/nodes/contact, its document and its response. The endpoint arrived in
+# v1.2.0 and the document became a named schema with a phone `country` in v1.2.2.
+# Nothing here sends one: the owner's contact details have no source on a node,
+# and retina-gui would have to collect and persist them first, the way it does
+# the consent records. Generated because the endpoint is in the contract, and
+# kept so that adopting a later revision still shows what moved.
+ContactResponse
+updated_at
+NodeContact
+first_name
+last_name
+email
+phone
+country
 # read by socketserver.ThreadingMixIn
 #   tools/mock_server.py:392
 _.daemon_threads
@@ -91,12 +99,13 @@ protocol_version
 
 # _Handler dispatches endpoint handlers by name at mock_server.py:438 —
 #   getattr(self, f"_{endpoint}")(body)
-# so vulture sees four definitions and no callers. Reviewed 2026-08-14: all four
-# are reachable, and the UNREVIEWED backlog that used to list them said "no
-# reference found anywhere in the estate", which was simply untrue. The fifth
-# entry, probe_report.failures(), *was* dead and is deleted rather than
-# whitelisted.
+# so vulture sees a definition per endpoint and no callers. Reviewed 2026-08-14:
+# every one of them is reachable, and the UNREVIEWED backlog that used to list
+# them said "no reference found anywhere in the estate", which was simply
+# untrue. One entry alongside them, probe_report.failures(), *was* dead and is
+# deleted rather than whitelisted. `_contact` joined them with spec v1.2.0.
 _._config
+_._contact
 _._detection
 _._heartbeat
 _._register

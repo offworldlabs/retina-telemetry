@@ -30,8 +30,10 @@
       - ${MENDER_DATA_DIR:-/data/mender}:/data/mender:ro
       # The merged node configuration, same mount every other service takes.
       - ${CONFIG_DIR:-/data/retina-node/config}:/data/retina-node/config:ro
-      # retina-gui's device state, for the telemetry consent record. Read-only:
-      # retina-gui writes it, we only ever read.
+      # retina-gui's device state: the consent records, the setup-wizard flag
+      # and the contact document. Read-only, because retina-gui writes all
+      # three and we only ever read them. No mount change was needed when the
+      # contact document arrived, since it lives in this same directory.
       - ${GUI_DATA_DIR:-/data/retina-gui}:/data/retina-gui:ro
       # The only writable mount. Holds the bearer token at 0600 and the status
       # document at 0644, and lives under /data so the token survives an OS

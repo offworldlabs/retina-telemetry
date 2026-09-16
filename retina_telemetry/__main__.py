@@ -42,15 +42,17 @@ from typing import Any
 import pydantic
 
 from retina_telemetry.collect import consent as consent_reader
+from retina_telemetry.collect import contact as contact_reader
 from retina_telemetry.collect import identity as identity_reader
 from retina_telemetry.collect import node_config as config_reader
 from retina_telemetry.collect import wizard as wizard_reader
 from retina_telemetry.collect.blah2 import Blah2Client
 from retina_telemetry.collect.consent import Consent
+from retina_telemetry.collect.contact import Contact
 from retina_telemetry.collect.host import HostReader
 from retina_telemetry.collect.identity import IdentityUnavailable
 from retina_telemetry.collect.node_config import ConfigUnavailable, NodeConfigRaw
-from retina_telemetry.comms.client import Client
+from retina_telemetry.comms.client import Client, Kind, Outcome
 from retina_telemetry.comms.lifecycle import NodeState, Registrar, derive_state, explain
 from retina_telemetry.comms.reliable import is_fatal_for_config, send_until_delivered
 from retina_telemetry.comms.stream import DetectionStream, Slot
@@ -59,12 +61,47 @@ from retina_telemetry.settings import Settings
 from retina_telemetry.state import State, with_uptime_fallback
 from retina_telemetry.status import StatusWriter
 from retina_telemetry.wire.config import build_node_config
+from retina_telemetry.wire.contact import build_contact
 from retina_telemetry.wire.detection import build_detection_frame
 from retina_telemetry.wire.heartbeat import build_heartbeat
 from retina_telemetry.wire.registration import IncompletePayload, build_registration
 from retina_telemetry.wire.serialise import to_wire
 
 log = logging.getLogger("retina_telemetry")
+
+
+def _refusal_detail(outcome: Outcome) -> str:
+    """A sentence for the status document when registration is refused.
+
+    The two refusals mean opposite things and point at different people, so
+    they do not share wording. A ``400`` names a field and cannot clear without
+    somebody editing the configuration. A ``403`` is deliberately opaque and is
+    the *normal* answer while Mender acceptance propagates, so it has to carry
+    that reassurance itself: it is shown from the first refusal, and a newly
+    flashed node will show it for a while without anything being wrong.
+    """
+    if outcome.kind is Kind.INVALID:
+        field = (outcome.body or {}).get("detail")
+        named = f": {field}" if isinstance(field, str) and field else ""
+        return (
+            f"the server rejected this node's registration{named}. It names one field at a "
+            "time, so there may be more behind this one. Correct it on the Configuration "
+            "page; the node keeps trying and will register on its own once the value is "
+            "accepted."
+        )
+    if outcome.kind in (Kind.REFUSED, Kind.RATE_LIMITED):
+        return (
+            "the server has refused to register this node, without saying why. This is normal "
+            "on a newly flashed node and clears on its own once Mender has accepted it, so it "
+            "is worth leaving alone for an hour or so. If it persists beyond that, the node is "
+            "probably not accepted in Mender, or is waiting on an operator to open the "
+            "24-hour window a reflashed board needs."
+        )
+    return (
+        f"cannot reach the server to register: {outcome.describe()}. Nothing is wrong with "
+        "this node and it keeps trying; if it persists, check the node's own connectivity "
+        "before anything else."
+    )
 
 
 class Service:
@@ -97,6 +134,15 @@ class Service:
         # successful re-read wiped a rejection the operator still had to fix.
         self._config_unreadable: str | None = None
         self._config_rejected: str | None = None
+        #: The contact document as last accepted by the server, so the next
+        #: read can tell whether anything changed. Process-local like `seq`:
+        #: nothing but the token is persisted, so a restart re-sends once,
+        #: which the endpoint's wholesale replace makes idempotent.
+        self._contact_sent: Contact | None = None
+        #: Why the server last refused to register this node. Separate from
+        #: `_config_rejected`, which is a PUT answering about a configuration
+        #: the node is already registered to send.
+        self._registration_refused: str | None = None
 
     # ── node facts, re-read rather than cached ───────────────────────
     #
@@ -196,10 +242,16 @@ class Service:
             self.stop.wait(self.settings.heartbeat_interval_s)
 
     def config_loop(self) -> None:
-        """Resend on request, or when the file changes underneath us.
+        """Push what changed locally: the configuration, and the contact details.
 
         Nothing pushes at us, so a local edit is noticed by re-reading. The
         server asking arrives immediately through the resend event.
+
+        Both documents ride the same tick because both are "noticed by
+        re-reading a file retina-gui wrote" and neither has a cadence of its
+        own. The configuration can also be asked for; the contact details
+        cannot, since nothing on the server requests them and no response marks
+        them stale.
         """
         last_sent: NodeConfigRaw | None = None
         while not self.stop.is_set():
@@ -212,6 +264,11 @@ class Service:
             # first pass after a token arrives sends immediately.
             if not self.state.snapshot().registered:
                 continue
+
+            # Before the configuration, and deliberately not behind it: a node
+            # whose config.yml is unreadable can still say who owns it, and
+            # that is exactly the node somebody needs to ring.
+            self._send_contact_if_changed()
 
             config = self.node_config()
             if config is None:
@@ -239,9 +296,10 @@ class Service:
 
             payload = self._registration_payload()
             if payload is None:
-                # Blocked on something local — consent, identity, or the beam
-                # fields. Re-checked rather than abandoned, so fixing it takes
-                # effect without a restart.
+                # Blocked on something local: the wizard flag, identity, a
+                # consent record, or an unreadable config. Not the geometry,
+                # which has travelled as null since v1.2.0. Re-checked rather
+                # than abandoned, so fixing it takes effect without a restart.
                 self.stop.wait(self.settings.config_poll_s)
                 continue
 
@@ -252,8 +310,15 @@ class Service:
                 self._registering.clear()
 
             if outcome.ok:
+                self._registration_refused = None
                 return
             self.errors.add(outcome.describe())
+            # From the first refusal, not after a threshold. `errors[]` already
+            # carried this and nothing reads it: retina-gui renders `detail` and
+            # ignores the list, so a node refused for days showed its owner a
+            # blank line. The 403 wording carries its own "this is normal on a
+            # new node" rather than the delay doing that job.
+            self._registration_refused = _refusal_detail(outcome)
             if self.stop.wait(self.registrar.delay_before_retry(outcome)):
                 return
 
@@ -271,11 +336,11 @@ class Service:
         config = self.node_config()
         if node_id is None or config is None:
             return None
-        # An unsited node has no geometry to register with, and the wire cannot
-        # yet carry a null one. Holding is silent and free; the status document
-        # says why. Becomes "send the nulls" once the spec allows it.
-        if not config.is_located:
-            return None
+        # No geometry gate. An unsited node registers with six explicit nulls
+        # since spec v1.2.0: the server counts it, streams from it and simply
+        # places nothing on the map until a position arrives. Holding here was
+        # the interim while the wire could not carry a null, and it cost the
+        # fleet any sight of a node nobody had configured.
         try:
             return to_wire(
                 build_registration(
@@ -341,6 +406,68 @@ class Service:
             # that the list is cleared once a beat is acknowledged.
             batch.commit()
 
+    def _send_contact_if_changed(self) -> None:
+        """``PUT /nodes/contact``, on local change and never otherwise.
+
+        Nothing on the server asks for this and no response marks it stale, so
+        a change in the file is the only thing that sends it. The document is
+        compared whole, the same way ``NodeConfigRaw`` is.
+
+        **A node with nothing to report never calls the endpoint.** The spec
+        says so, and it matters: an empty document is a valid payload that
+        *clears* whatever the server holds, which is right for an owner who
+        deleted their details and wrong for one who never gave any. Those are
+        told apart by whether we have sent anything this process.
+
+        Failures are recorded in ``errors[]`` and nowhere else. A rejected or
+        undelivered contact document breaks nothing: the node registers,
+        streams and heartbeats exactly as before, and the only loss is a way to
+        ring the owner. That does not belong in the status document's `detail`,
+        which is reserved for the things stopping a node working.
+        """
+        contact = contact_reader.read_contact(self.settings.contact_path)
+        if contact == self._contact_sent:
+            return
+        if contact.is_empty and self._contact_sent is None:
+            # Never sent one and there is nothing to send. Sending an empty
+            # document here would be the node volunteering to clear a record it
+            # has never written.
+            return
+
+        try:
+            payload = to_wire(build_contact(contact))
+        except ValueError as exc:
+            # retina-gui checks the same caps at the box, so a value past them
+            # means the file was hand-edited. Dropped rather than retried: the
+            # next read is identical and would fail identically.
+            self.errors.add(f"contact: {exc}")
+            log.warning("cannot build a contact payload: %s", exc)
+            self._contact_sent = contact
+            return
+
+        outcome = send_until_delivered(
+            self.client,
+            "PUT",
+            "/nodes/contact",
+            lambda: payload,
+            state=self.state,
+            stop=self.stop,
+            token=self.state.snapshot().token,
+            max_attempts=3,
+        )
+        if outcome is None:
+            return
+        if outcome.ok:
+            self._contact_sent = contact
+            return
+
+        self.errors.add(f"contact: {outcome.describe()}")
+        if outcome.kind is Kind.INVALID:
+            # The server refused the document itself, so repeating it cannot
+            # help. Recorded as sent so the loop stops offering it every tick;
+            # editing the file produces a different document and tries again.
+            self._contact_sent = contact
+
     def _send_config(self, config: NodeConfigRaw) -> bool:
         try:
             payload = to_wire(build_node_config(config))
@@ -393,6 +520,10 @@ class Service:
             detail=self._dead_loop_detail()
             or self._config_rejected
             or self._config_unreadable
+            # Above the unsited line, because a node the server will not accept
+            # has a more urgent thing to say than one it would accept but
+            # cannot place.
+            or self._registration_refused
             or self._unsited_detail()
             or explain(state),
             errors=self.errors.snapshot(),
@@ -402,14 +533,21 @@ class Service:
         """A node with no geometry is not broken, it just has not been sited.
 
         Reported through `detail` rather than as a NodeState because it does
-        not change what the node is doing: everything else about it is normal.
+        not change what the node is doing: everything else about it is normal,
+        and since v1.2.0 that includes registering and streaming.
+
+        Kept after the registration gate went, and worth keeping. An unsited
+        node now looks entirely healthy from here: registered, streaming,
+        heartbeating, while contributing nothing to the map. This sentence
+        is the only thing that tells an operator why.
         """
         config = self.node_config()
         if config is None or config.is_located:
             return None
         return (
-            "no receiver or transmitter position is configured, so this node cannot say "
-            "where it is and will not register. Choose a tower in retina-gui."
+            "no receiver or transmitter position is configured. This node registers and "
+            "streams normally, but nothing it detects can be placed until it knows where "
+            "it is. Choose a tower in retina-gui."
         )
 
     def _dead_loop_detail(self) -> str | None:

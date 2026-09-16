@@ -39,6 +39,18 @@ PAYLOAD_SCHEMAS = (NodeConfig, RegisterRequest, DetectionFrame, HeartbeatRequest
 #: below, so a revision that adds or removes one is a visible edit here rather
 #: than a silent change in behaviour.
 REQUIRED_NULLABLE = {
+    # The geometry went nullable across two revisions, for a node whose owner
+    # cannot supply it: the six coordinates in v1.2.0, and `tx_callsign` in
+    # v1.2.2 once it was pointed out that a node with no tower has no name for
+    # one either. Both halves matter; the first without the second still left
+    # such a node unable to build a NodeConfig at all.
+    "NodeConfig.rx_lat",
+    "NodeConfig.rx_lon",
+    "NodeConfig.rx_alt_ft",
+    "NodeConfig.tx_lat",
+    "NodeConfig.tx_lon",
+    "NodeConfig.tx_alt_ft",
+    "NodeConfig.tx_callsign",
     "NodeConfig.beam_width_deg",
     "NodeConfig.beam_azimuth_deg",
     "HeartbeatRequest.config_version",

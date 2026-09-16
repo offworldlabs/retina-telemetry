@@ -36,6 +36,11 @@ set -euo pipefail
 HOST="${1:-owl}"
 PORT="${MOCK_PORT:-18080}"
 IMAGE="${PROBE_IMAGE:-python:3.11-slim}"
+#: Null the geometry in the scratch copy, for a node whose own config the server
+#: refuses. `stalled` is only reachable from a node that registered and streamed
+#: and then stopped, so without this a refused node sits at `unregistered` and
+#: this script silently proves nothing. The node's own config is never written to.
+UNSITE="${UNSITE:-0}"
 #: Container names, not compose service names — the service is `blah2_api`, the
 #: container is `blah2-api`. Stopped by name with plain `docker stop` rather
 #: than through compose: it needs no compose file, no sudo (the ssh user is in
@@ -80,15 +85,21 @@ echo "→ running: 40s streaming, blah2 stopped, 70s stalled, blah2 restarted"
 echo
 
 ssh -o ExitOnForwardFailure=yes -R "$PORT:127.0.0.1:$PORT" "$HOST" \
-  "REMOTE_DIR='$REMOTE_DIR' PORT='$PORT' IMAGE='$IMAGE' BLAH2='$BLAH2' bash -s" <<'REMOTE'
+  "REMOTE_DIR='$REMOTE_DIR' PORT='$PORT' IMAGE='$IMAGE' BLAH2='$BLAH2' UNSITE='$UNSITE' bash -s" <<'REMOTE'
 set -euo pipefail
 SCRATCH="$REMOTE_DIR/scratch"
 mkdir -p "$SCRATCH"
 
-python3 - "$SCRATCH" <<'PY'
+python3 - "$SCRATCH" "${UNSITE:-0}" <<'PY'
 import json, sys, pathlib, yaml
-scratch = pathlib.Path(sys.argv[1])
+scratch, unsite = pathlib.Path(sys.argv[1]), sys.argv[2] == "1"
 config = yaml.safe_load(pathlib.Path("/data/retina-node/config/config.yml").read_text())
+if unsite:
+    for end in ("rx", "tx"):
+        config["location"][end] = dict.fromkeys(
+            ("latitude", "longitude", "altitude", "name"), None
+        )
+    print("   UNSITE=1: geometry nulled in the scratch copy")
 (scratch / "config.yml").write_text(yaml.safe_dump(config))
 ACCEPTED = {"version": "2026-07-01", "accepted_at": "2026-07-31T09:12:00Z"}
 (scratch / "consent.json").write_text(json.dumps({
@@ -108,7 +119,9 @@ docker run -d --name retina-stalled --network host --pull missing \
   -e CONFIG_PATH=/scratch/config.yml -e CONSENT_PATH=/scratch/consent.json \
   -e TOKEN_PATH=/scratch/token -e STATUS_PATH=/scratch/status.json \
   -e DISK_PATH=/data/mender -e HEARTBEAT_INTERVAL_S=10 -e STATUS_INTERVAL_S=5 \
+  -e WIZARD_FLAG_PATH=/data/retina-gui/setup-wizard-completed \
   -v "$REMOTE_DIR/app:/app:ro" -v "$SCRATCH:/scratch" -v /data/mender:/data/mender:ro \
+  -v /data/retina-gui:/data/retina-gui:ro \
   -w /app "$IMAGE" \
   sh -c "pip install --quiet --no-cache-dir --timeout 60 --retries 10 requests PyYAML pydantic \
          && python -m retina_telemetry" >/dev/null

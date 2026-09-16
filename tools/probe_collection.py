@@ -67,11 +67,16 @@ def probe_node_config() -> None:
         f"delayMax {config.delay_max_bins} bins{RESET}"
     )
 
-    check(
-        "altitudes still in metres, not feet",
-        config.rx_alt_m < 1000,
-        f"rx_alt_m={config.rx_alt_m} (×3.28084 in stage 2)",
-    )
+    if config.is_located:
+        check(
+            "altitudes still in metres, not feet",
+            config.rx_alt_m < 1000,
+            f"rx_alt_m={config.rx_alt_m} (×3.28084 in stage 2)",
+        )
+    else:
+        # Ordinary until the owner reaches the tower step. The node registers
+        # and streams anyway since spec v1.2.0; it just places nothing.
+        note("no geometry configured", "unsited: registers with nulls, maps nothing")
     check(
         "delay_max is bins, not km",
         isinstance(config.delay_max_bins, int),
@@ -80,7 +85,7 @@ def probe_node_config() -> None:
 
     # Expected to be absent until retina-gui writes them, and valid either way.
     if config.beam_width_deg is None:
-        note("beam_width_deg absent", "expected, blocks registration")
+        note("beam_width_deg absent", "expected: nullable, blocks nothing")
     else:
         ok(f"beam_width_deg {config.beam_width_deg}", "configured on this node")
     note(

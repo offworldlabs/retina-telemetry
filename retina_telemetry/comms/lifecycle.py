@@ -39,7 +39,7 @@ from retina_telemetry.comms.client import (
     Outcome,
 )
 from retina_telemetry.state import Snapshot, State
-from retina_telemetry.wire.models import NodeState as WireState
+from retina_telemetry.wire.models import State as WireState
 
 log = logging.getLogger(__name__)
 
@@ -216,6 +216,10 @@ def explain(state: NodeState) -> str | None:
             "the setup wizard has not been finished, so this node is still on the "
             "default configuration and has nothing true to report. Finish it in "
             "retina-gui, including the tower step. Registration follows on its own."
+        ),
+        NodeState.UNREGISTERED: (
+            "not registered yet. Normal at first boot: the node registers on its own once "
+            "Mender has accepted it, and reports here if the server refuses."
         ),
         NodeState.REGISTERING: (
             "registering. A refusal here is deliberately opaque and is the normal "

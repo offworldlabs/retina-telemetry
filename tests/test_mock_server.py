@@ -661,6 +661,186 @@ def test_a_degenerate_baseline_is_refused_against_tx_lat(server):
     assert body == {"error": "invalid_config", "detail": "tx_lat"}
 
 
+def test_a_degenerate_baseline_is_not_checked_on_an_unsited_node(server):
+    """The check subtracts one coordinate from another, so reaching it with a
+    null geometry is how the ordinary state of a new node turns into a 500."""
+    token, _ = register(server)
+
+    status, _, _ = post(f"{server.url}/nodes/config", _unsited_payload(), token, "PUT")
+
+    assert status == 200
+
+
+# ── nullable geometry, since spec v1.2.0 ─────────────────────────────
+
+
+def test_a_wholly_null_geometry_is_accepted(server):
+    """A node whose owner has not picked a tower registers, streams and is
+    counted. It places nothing on the map, which is the server's business."""
+    token, _ = register(server)
+
+    status, body, _ = post(f"{server.url}/nodes/config", _unsited_payload(), token, "PUT")
+
+    assert status == 200
+    assert body["config_version"] >= 1
+
+
+@pytest.mark.parametrize("missing", ["rx_lat", "rx_lon", "tx_lat", "tx_lon"])
+def test_half_a_coordinate_pair_is_refused(server, missing):
+    """The schema's own description: a latitude and its longitude are given
+    together or both null. Half a pair is a half-written form, not an
+    unsited node, and the field named back is the one to fill in."""
+    token, _ = register(server)
+    half = to_wire(build_node_config(OWL)) | {missing: None}
+
+    status, body, _ = post(f"{server.url}/nodes/config", half, token, "PUT")
+
+    assert status == 400
+    assert body == {"error": "invalid_config", "detail": missing}
+
+
+def test_a_null_altitude_is_not_paired_with_anything(server):
+    """The contract pairs latitude with longitude and says nothing about
+    altitude, so refusing this would be a rule of our own invention."""
+    token, _ = register(server)
+    payload = to_wire(build_node_config(OWL)) | {"rx_alt_ft": None}
+
+    status, _, _ = post(f"{server.url}/nodes/config", payload, token, "PUT")
+
+    assert status == 200
+
+
+def test_a_null_callsign_is_accepted(server):
+    """Nullable since v1.2.2, for the node that cannot name its illuminator."""
+    token, _ = register(server)
+    payload = to_wire(build_node_config(OWL)) | {"tx_callsign": None}
+
+    status, _, _ = post(f"{server.url}/nodes/config", payload, token, "PUT")
+
+    assert status == 200
+
+
+def test_an_empty_callsign_is_still_refused(server):
+    """Deliberately not nullable's twin: a node that cannot name its
+    illuminator sends null, and giving it two ways to say so is what the
+    contract spells out against."""
+    token, _ = register(server)
+    payload = to_wire(build_node_config(OWL)) | {"tx_callsign": ""}
+
+    status, body, _ = post(f"{server.url}/nodes/config", payload, token, "PUT")
+
+    assert status == 400
+    assert body == {"error": "invalid_config", "detail": "tx_callsign"}
+
+
+def test_an_out_of_range_coordinate_is_still_refused(server):
+    """Nullable means "may be absent", not "may be anything"."""
+    token, _ = register(server)
+    payload = to_wire(build_node_config(OWL)) | {"rx_lat": 91.0}
+
+    status, body, _ = post(f"{server.url}/nodes/config", payload, token, "PUT")
+
+    assert status == 400
+    assert body == {"error": "invalid_config", "detail": "rx_lat"}
+
+
+def _unsited_payload():
+    """What retina-node's default.yml produces, through stage 2."""
+    return to_wire(
+        build_node_config(
+            dataclasses.replace(
+                OWL,
+                rx_lat=None,
+                rx_lon=None,
+                rx_alt_m=None,
+                tx_lat=None,
+                tx_lon=None,
+                tx_alt_m=None,
+                tx_name=None,
+            )
+        )
+    )
+
+
+# ── PUT /nodes/contact ───────────────────────────────────────────────
+
+CONTACT = {
+    "first_name": "Ada",
+    "last_name": "Lovelace",
+    "email": "ada@example.com",
+    "phone": "+441234567890",
+    "country": "GB",
+}
+
+
+def test_a_contact_document_is_accepted_and_timestamped(server):
+    token, _ = register(server)
+
+    status, body, _ = post(f"{server.url}/nodes/contact", CONTACT, token, "PUT")
+
+    assert status == 200
+    assert body["updated_at"].endswith("Z")
+
+
+def test_an_empty_contact_document_is_accepted(server):
+    """Every field is optional, and an empty document is how a removal
+    travels: the endpoint replaces wholesale."""
+    token, _ = register(server)
+
+    status, _, _ = post(f"{server.url}/nodes/contact", {}, token, "PUT")
+
+    assert status == 200
+
+
+def test_a_contact_document_replaces_rather_than_merges(server):
+    token, _ = register(server)
+    post(f"{server.url}/nodes/contact", CONTACT, token, "PUT")
+
+    post(f"{server.url}/nodes/contact", {"email": "grace@example.com"}, token, "PUT")
+
+    node = next(iter(server.state.nodes.values()))
+    assert node.contact == {"email": "grace@example.com"}
+
+
+def test_a_refused_contact_is_invalid_contact_not_invalid_config(server):
+    """The slugs split in v1.2.0 so retina-gui can tell which form to mark."""
+    token, _ = register(server)
+
+    status, body, _ = post(
+        f"{server.url}/nodes/contact", {**CONTACT, "country": "GBR"}, token, "PUT"
+    )
+
+    assert status == 400
+    assert body == {"error": "invalid_contact", "detail": "country"}
+
+
+def test_an_overlong_contact_value_is_refused(server):
+    token, _ = register(server)
+
+    status, body, _ = post(f"{server.url}/nodes/contact", {"email": "a" * 256}, token, "PUT")
+
+    assert status == 400
+    assert body["detail"] == "email"
+
+
+def test_an_unknown_contact_field_is_refused(server):
+    """`NodeContact` forbids extra properties."""
+    token, _ = register(server)
+
+    status, body, _ = post(
+        f"{server.url}/nodes/contact", {**CONTACT, "twitter": "@ada"}, token, "PUT"
+    )
+
+    assert status == 400
+    assert body["detail"] == "twitter"
+
+
+def test_contact_needs_a_bearer_token(server):
+    status, _, _ = post(f"{server.url}/nodes/contact", CONTACT, None, "PUT")
+
+    assert status == 401
+
+
 def test_an_unknown_field_is_named_back_and_bounded(server):
     """The rejected field is caller-supplied JSON, and `Error.detail` is capped
     at 512. Passed through whole it would fail the server's own response model

@@ -4,6 +4,7 @@ These are the only tests that exercise all three layers together, which makes
 them the ones that catch a payload the pieces each considered fine.
 """
 
+import dataclasses
 import json
 import threading
 import time
@@ -49,6 +50,7 @@ def settings_for(node, server, **overrides):
         node_id_path=node / "node_id",
         device_type_path=node / "device_type",
         consent_path=node / "consent.json",
+        contact_path=node / "contact.json",
         wizard_flag_path=node / "setup-wizard-completed",
         config_path=node / "config.yml",
         disk_path=node,
@@ -274,9 +276,10 @@ def test_the_wizard_gate_does_not_stop_the_status_document(node, server):
     assert "wizard" in document["detail"]
 
 
-def test_an_unsited_node_registers_nothing(node, server):
-    """It has no geometry to register with, and the wire cannot carry a null
-    one yet. Silence beats asserting a position nobody chose."""
+def unsite(node):
+    """Strip the geometry the way retina-node's default.yml ships it: the keys
+    present and every value null, so "unset" stays distinguishable from "this
+    configuration is malformed"."""
     document = yaml.safe_load((node / "config.yml").read_text())
     for end in ("rx", "tx"):
         document["location"][end] = {
@@ -286,20 +289,44 @@ def test_an_unsited_node_registers_nothing(node, server):
             "name": None,
         }
     (node / "config.yml").write_text(yaml.safe_dump(document))
+
+
+def test_an_unsited_node_registers_with_explicit_nulls(node, server):
+    """The whole point of phase two. Under v1.1.1 this node held registration
+    and the fleet could not see it at all; the server now counts it, streams
+    from it, and places nothing on the map until a position arrives."""
+    unsite(node)
     service = Service(settings_for(node, server))
 
-    run_briefly(service, seconds=0.6)
+    run_briefly(service, until=lambda: server.received("register"))
 
-    assert server.requests == []
+    config = server.requests[0].body["config"]
+    assert config["rx_lat"] is None
+    assert config["rx_lon"] is None
+    assert config["tx_alt_ft"] is None
+    # Present and null, never dropped: a required-and-nullable key's absence is
+    # a payload the server rejects.
+    assert {"rx_lat", "rx_lon", "rx_alt_ft", "tx_lat", "tx_lon", "tx_alt_ft"} <= set(config)
+    assert "tx_callsign" in config
+
+
+def test_an_unsited_node_names_no_illuminator(node, server):
+    """A tower's name and its position are set at the same wizard step, so the
+    node with no position has no name for one either. v1.2.2 made the field
+    nullable so that says itself, rather than a placeholder standing in."""
+    unsite(node)
+    service = Service(settings_for(node, server))
+
+    run_briefly(service, until=lambda: server.received("register"))
+
+    assert server.requests[0].body["config"]["tx_callsign"] is None
 
 
 def test_an_unsited_node_is_not_reported_as_a_broken_config(node, server):
     """The ordinary state of a new node, not a fault. Reading the geometry
     with _require made every unsited node look unreadable, which is a support
     call rather than a setup step."""
-    document = yaml.safe_load((node / "config.yml").read_text())
-    document["location"]["rx"]["latitude"] = None
-    (node / "config.yml").write_text(yaml.safe_dump(document))
+    unsite(node)
     service = Service(settings_for(node, server))
 
     run_briefly(service, seconds=0.6)
@@ -309,27 +336,194 @@ def test_an_unsited_node_is_not_reported_as_a_broken_config(node, server):
     assert not any("could not be read" in e for e in status(node).get("errors", []))
 
 
+def test_an_unsited_node_still_says_so_once_it_is_registered(node, server):
+    """It now looks entirely healthy from outside: registered, streaming and
+    heartbeating. The status detail is the only thing telling an operator why
+    nothing of theirs appears on the map."""
+    unsite(node)
+    service = Service(settings_for(node, server))
+
+    run_briefly(service, until=lambda: server.received("register"))
+
+    assert "position is configured" in status(node)["detail"]
+
+
 def test_siting_a_node_takes_effect_without_a_restart(node, server):
-    """retina-gui writes the config into a container already running."""
+    """retina-gui writes the config into a container already running. The node
+    registered while unsited, so what has to travel now is the configuration
+    change, not a held registration."""
     original = (node / "config.yml").read_text()
-    document = yaml.safe_load(original)
-    document["location"]["rx"]["latitude"] = None
-    (node / "config.yml").write_text(yaml.safe_dump(document))
+    unsite(node)
     service = Service(settings_for(node, server))
 
     thread = threading.Thread(target=service.run, daemon=True)
     thread.start()
-    time.sleep(0.3)
-    assert server.requests == []
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and not server.received("register"):
+        time.sleep(0.02)
 
     (node / "config.yml").write_text(original)
     deadline = time.monotonic() + 3.0
-    while time.monotonic() < deadline and not server.received("register"):
+    while time.monotonic() < deadline and not _sited_config_sent(server):
         time.sleep(0.02)
     service.shutdown()
     thread.join(timeout=5)
 
     assert server.received("register")
+    assert _sited_config_sent(server), "the new position never reached the server"
+
+
+def _sited_config_sent(server):
+    return any(
+        request.endpoint == "config" and request.body.get("rx_lat") is not None
+        for request in server.requests
+    )
+
+
+# ── the contact document ─────────────────────────────────────────────
+#
+# Optional throughout. The spec says a node with nothing to report never calls
+# the endpoint at all, so the silence cases matter more than the sending one.
+
+CONTACT = {
+    "first_name": "Ada",
+    "last_name": "Lovelace",
+    "email": "ada@example.com",
+    "phone": "+441234567890",
+    "country": "GB",
+}
+
+
+def write_contact(node, document):
+    (node / "contact.json").write_text(json.dumps(document))
+
+
+def test_a_node_with_no_contact_details_never_calls_the_endpoint(node, server):
+    """Not "sends an empty document": an empty document is a valid payload
+    that clears whatever the server holds, and a node that has never had any
+    details must not volunteer to clear a record it never wrote."""
+    service = Service(settings_for(node, server))
+
+    run_briefly(service, until=lambda: server.received("config"))
+
+    assert not server.received("contact")
+
+
+def test_contact_details_are_sent_once_registered(node, server):
+    write_contact(node, CONTACT)
+    service = Service(settings_for(node, server))
+
+    run_briefly(service, until=lambda: server.received("contact"))
+
+    sent = [r for r in server.requests if r.endpoint == "contact"][0]
+    assert sent.body == CONTACT
+
+
+def test_the_same_details_are_not_sent_twice(node, server):
+    """On local change only. Nothing on the server asks for this and no
+    response marks it stale, so a repeat would be pure noise."""
+    write_contact(node, CONTACT)
+    service = Service(settings_for(node, server))
+
+    run_briefly(service, seconds=1.2)
+
+    assert len(server.received("contact")) == 1
+
+
+def test_editing_the_details_sends_them_again(node, server):
+    write_contact(node, CONTACT)
+    service = Service(settings_for(node, server))
+
+    thread = threading.Thread(target=service.run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and not server.received("contact"):
+        time.sleep(0.02)
+
+    write_contact(node, {**CONTACT, "phone": "+15551234567"})
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and len(server.received("contact")) < 2:
+        time.sleep(0.02)
+    service.shutdown()
+    thread.join(timeout=5)
+
+    assert len(server.received("contact")) == 2
+    assert server.received("contact")[-1].body["phone"] == "+15551234567"
+
+
+def test_clearing_the_details_reaches_the_server(node, server):
+    """The endpoint replaces wholesale, so an empty document is how a removal
+    travels. This is the one case where sending empty is right."""
+    write_contact(node, CONTACT)
+    service = Service(settings_for(node, server))
+
+    thread = threading.Thread(target=service.run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and not server.received("contact"):
+        time.sleep(0.02)
+
+    write_contact(node, {})
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and len(server.received("contact")) < 2:
+        time.sleep(0.02)
+    service.shutdown()
+    thread.join(timeout=5)
+
+    assert server.received("contact")[-1].body == {}
+
+
+def test_a_rejected_contact_document_reaches_errors_and_not_the_detail(node, server):
+    """A refused contact breaks nothing: the node registers, streams and beats
+    exactly as before, and the only loss is a way to ring the owner. `detail`
+    is for what stops a node working."""
+    write_contact(node, CONTACT)
+    server.enqueue("contact", 400, body={"error": "invalid_contact", "detail": "email"})
+    service = Service(settings_for(node, server))
+
+    def reported():
+        return any(
+            any("contact" in e for e in (r.body.get("errors") or []))
+            for r in server.requests
+            if r.endpoint == "heartbeat"
+        )
+
+    run_briefly(service, until=reported)
+
+    assert reported(), "the refusal has to reach the server through errors[]"
+    assert "contact" not in (status(node)["detail"] or "")
+
+
+def test_a_rejected_contact_document_does_not_stop_the_configuration(node, server):
+    """The two ride the same loop, so a refusal on one must not cost the other."""
+    write_contact(node, CONTACT)
+    server.enqueue("contact", 400, body={"error": "invalid_contact", "detail": "email"})
+    service = Service(settings_for(node, server))
+
+    run_briefly(service, until=lambda: server.received("config"))
+
+    assert server.received("config")
+
+
+def test_an_unreadable_config_does_not_stop_the_contact_details(node, server):
+    """A node whose config.yml is broken can still say who owns it, and that
+    is exactly the node somebody needs to ring."""
+    write_contact(node, CONTACT)
+    service = Service(settings_for(node, server))
+    thread = threading.Thread(target=service.run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and not server.received("register"):
+        time.sleep(0.02)
+    (node / "config.yml").write_text("this is not: [valid yaml")
+
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and not server.received("contact"):
+        time.sleep(0.02)
+    service.shutdown()
+    thread.join(timeout=5)
+
+    assert server.received("contact")
 
 
 # ── the server pushing back ──────────────────────────────────────────
@@ -364,6 +558,79 @@ def test_a_refused_registration_backs_off_rather_than_hot_looping(node, server):
     run_briefly(Service(settings_for(node, server)), seconds=1.5)
 
     assert len(server.received("register")) <= 2
+
+
+# ── a refused registration has to reach the operator ─────────────────
+#
+# It did not, for as long as this service has existed. `errors[]` carried the
+# refusal and nothing reads that list: retina-gui renders `detail` and ignores
+# the rest, so owl-ded9 showed its owner a blank line while being refused 232
+# times over nine days with a 400 that named the broken field.
+
+
+def test_a_rejected_registration_names_the_field_in_the_detail(node, server):
+    """The actionable refusal. A 400 cannot clear until somebody edits the
+    configuration, so the field it names must reach the one line an operator
+    reads."""
+    server.enqueue("register", 400, body={"error": "invalid_config", "detail": "tx_lat"}, count=5)
+    service = Service(settings_for(node, server))
+
+    run_briefly(service, until=lambda: status(node).get("detail"))
+
+    detail = status(node)["detail"]
+    assert "tx_lat" in detail
+    # Named page, not the app: this sentence is rendered by retina-gui itself,
+    # so "fix it in retina-gui" is advice to somebody already looking at it.
+    assert "Configuration page" in detail
+
+
+def test_a_refused_registration_says_so_from_the_first_refusal(node, server):
+    """No threshold. The 403 wording carries "this is normal on a new node"
+    itself, rather than a delay doing that job and leaving a stuck node
+    looking healthy in the meantime."""
+    server.enqueue("register", 403, retry_after=1, count=10)
+    service = Service(settings_for(node, server))
+
+    run_briefly(service, until=lambda: status(node).get("detail"))
+
+    detail = status(node)["detail"]
+    assert "refused" in detail
+    assert "normal" in detail, "a newly flashed node is refused as a matter of course"
+
+
+def test_an_unreachable_server_is_reported_as_the_network_rather_than_the_node(node, server):
+    """Nothing is wrong with the node, and telling an owner to check their
+    configuration would send them after the wrong thing."""
+    unreachable = dataclasses.replace(settings_for(node, server), api_url="http://127.0.0.1:1/v1")
+    service = Service(unreachable)
+
+    run_briefly(service, until=lambda: status(node).get("detail"))
+
+    assert "cannot reach the server" in status(node)["detail"]
+
+
+def test_a_registration_refusal_clears_once_the_node_registers(node, server):
+    """A stale refusal on a working node is worse than none."""
+    server.enqueue("register", 403, retry_after=1)
+    service = Service(settings_for(node, server))
+
+    run_briefly(
+        service, until=lambda: server.received("register") and service.state.snapshot().token
+    )
+
+    assert service._registration_refused is None
+    assert "refused" not in (status(node)["detail"] or "")
+
+
+def test_an_unregistered_node_says_something_even_before_a_refusal(node, server):
+    """`unregistered` had no sentence at all, so the window before the first
+    attempt was blank too."""
+    (node / "consent.json").unlink()
+    service = Service(settings_for(node, server))
+
+    run_briefly(service, seconds=0.6)
+
+    assert status(node)["detail"]
 
 
 def test_a_config_rejection_reaches_the_operator(node, server):

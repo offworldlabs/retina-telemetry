@@ -50,7 +50,7 @@ def main() -> int:
         print()
 
     counts = Counter(r["endpoint"] for r in requests)
-    for endpoint in ("register", "config", "heartbeat", "detection"):
+    for endpoint in ("register", "config", "contact", "heartbeat", "detection"):
         if counts[endpoint]:
             print(f"  {GREEN}✓{RESET} {endpoint:10} {counts[endpoint]:>4}")
 
@@ -116,15 +116,42 @@ def main() -> int:
         print(f"\n  {BOLD}last heartbeat{RESET}")
         print(f"    {DIM}{json.dumps(last, indent=2)[:700]}{RESET}")
 
+    contact = [r for r in requests if r["endpoint"] == "contact"]
+    if contact:
+        body = contact[-1]["body"]
+        print(f"\n  {BOLD}contact{RESET}")
+        if body:
+            for key in ("first_name", "last_name", "email", "phone", "country"):
+                if body.get(key):
+                    print(f"    {DIM}{key:<13} {body[key]}{RESET}")
+        else:
+            print(f"    {DIM}empty document: the owner's details were cleared{RESET}")
+        print(f"    {DIM}sent {len(contact)}x  (on local change only){RESET}")
+
     registration = next((r for r in requests if r["endpoint"] == "register"), None)
     if registration:
         body = registration["body"]
         print(f"\n  {BOLD}registration{RESET}")
         print(f"    {DIM}node_id       {body['node_id']}{RESET}")
         print(f"    {DIM}board_model   {body['board_model']}{RESET}")
-        print(f"    {DIM}rx_alt_ft     {body['config']['rx_alt_ft']}  (from metres){RESET}")
-        print(f"    {DIM}max_range_km  {body['config']['max_range_km']}  (derived){RESET}")
         cfg = body["config"]
+        # The geometry is the point since v1.2.0: an unsited node sends seven
+        # nulls, and that has to be visible here rather than inferred from
+        # rx_alt_ft alone.
+        sited = cfg["rx_lat"] is not None
+        print(
+            f"    {DIM}rx            {cfg['rx_lat']}, {cfg['rx_lon']} @ {cfg['rx_alt_ft']} ft{RESET}"
+        )
+        print(
+            f"    {DIM}tx            {cfg['tx_lat']}, {cfg['tx_lon']} @ {cfg['tx_alt_ft']} ft{RESET}"
+        )
+        print(f"    {DIM}tx_callsign   {cfg['tx_callsign']!r}{RESET}")
+        if not sited:
+            print(
+                f"    {DIM}              unsited: seven explicit nulls, "
+                f"nothing placed on the map{RESET}"
+            )
+        print(f"    {DIM}max_range_km  {cfg['max_range_km']}  (derived){RESET}")
         print(f"    {DIM}beam_width    {cfg['beam_width_deg']}  (null = not characterised){RESET}")
         print(f"    {DIM}beam_azimuth  {cfg['beam_azimuth_deg']}{RESET}")
         print(f"    {DIM}cpi_s         {cfg['cpi_s']}  (the window t closes){RESET}")

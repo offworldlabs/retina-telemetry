@@ -118,6 +118,14 @@ class NodeConfigRaw:
         All-or-nothing: the bistatic solution needs every one of these, and a
         missing value becomes NaN downstream rather than an error. `tx_name` is
         excluded because a name is a label, not a position.
+
+        **This gates nothing.** It held registration while the wire could not
+        carry a null geometry; spec v1.2.0 made the six coordinates
+        required-and-nullable, so an unsited node registers and streams like any
+        other and is simply not placed on the map. What is left is reporting: an
+        unsited node looks entirely healthy from outside, and the status
+        document's detail is the only thing that says why nothing of the
+        owner's appears.
         """
         return all(
             value is not None
@@ -197,13 +205,6 @@ def _walk(document: dict[str, Any], dotted: str) -> Any:
             return None
         node = node[part]
     return node
-
-
-def _optional(document: dict[str, Any], dotted: str, kind: type) -> Any:
-    value = _walk(document, dotted)
-    if value is None:
-        return None
-    return _coerce(value, dotted, kind)
 
 
 def _optional(document: dict[str, Any], dotted: str, kind: type) -> Any:

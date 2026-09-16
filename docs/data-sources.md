@@ -260,18 +260,69 @@ Source of truth on the node: `/data/retina-node/config/config.yml`, produced by
 
 | Spec field | Node source | Conversion |
 |---|---|---|
-| `rx_lat` | `location.rx.latitude` | — |
-| `rx_lon` | `location.rx.longitude` | — |
-| `rx_alt_ft` | `location.rx.altitude` | **metres → feet**, × 3.28084 |
-| `tx_lat` | `location.tx.latitude` | — |
-| `tx_lon` | `location.tx.longitude` | — |
-| `tx_alt_ft` | `location.tx.altitude` | **metres → feet**, × 3.28084 |
-| `tx_callsign` | `location.tx.name` | free-text display name, not a regulatory callsign |
+| `rx_lat` | `location.rx.latitude` | none; required and nullable, `null` when unsited |
+| `rx_lon` | `location.rx.longitude` | none; required and nullable, `null` when unsited |
+| `rx_alt_ft` | `location.rx.altitude` | **metres → feet**, × 3.28084; `null` when unsited |
+| `tx_lat` | `location.tx.latitude` | none; required and nullable, `null` when unsited |
+| `tx_lon` | `location.tx.longitude` | none; required and nullable, `null` when unsited |
+| `tx_alt_ft` | `location.tx.altitude` | **metres → feet**, × 3.28084; `null` when unsited |
+| `tx_callsign` | `location.tx.name` | free-text display name, not a regulatory callsign; required and nullable, `null` when unsited |
 | `fc_hz` | `capture.fc` | — |
 | `fs_hz` | `capture.fs` | — |
 | `max_range_km` | `process.ambiguity.delayMax` | `delayMax × c / fs / 1000` = 60 km at 400 bins / 2 MHz |
 | `beam_width_deg` | `location.rx.beam_width` — **not written, and not planned** | required and nullable; explicit `null` when unset |
 | `beam_azimuth_deg` | `location.rx.beam_azimuth` — **not written, and not planned** | required and nullable; explicit `null` when unset |
+
+### An unsited node: null geometry, and it still registers
+
+**`location.*` ships null.** retina-node's `default.yml` has carried
+`latitude`, `longitude`, `altitude` and `name` as `null` for both ends since
+`3fd4208` (2026-08-27). Before that it shipped Greenwich Observatory and
+Crystal Palace, and nothing downstream could tell an unconfigured node from a
+configured one, so nodes registered claiming to sit in south-east London.
+
+The keys stay, with null values, rather than being removed. Consumers need to
+tell "unset" from "absent because this configuration is malformed", and
+retina-gui's config form renders from these keys.
+
+**Read them with `_optional`, not `_require`.** An unset geometry is the
+ordinary state of a node whose owner has not reached the tower step, not a
+malformed configuration. A wrongly *typed* coordinate still raises: optional
+means "may be absent", not "may be anything". Zero is a real coordinate
+throughout, so every test is against `None` rather than for truthiness: an
+owner on the equator keeps their position.
+
+**`is_located` is all-or-nothing over the six coordinates.** The bistatic
+solution needs every one of them, and a missing value becomes NaN downstream
+rather than an error, so a partial set would look like a working node that
+silently associates nothing. `tx_name` is excluded because a name is a label,
+not a position.
+
+It no longer gates registration. Spec v1.2.0 made the six coordinates
+required-and-nullable so that an unsited node registers, streams and is counted,
+placing nothing on the map until a position arrives; under v1.1.1 the wire could
+not carry a null, registration was held, and the fleet had no sight of a node
+nobody had configured. `is_located` now feeds only the status document, which is
+the sole thing telling an operator why a node that looks entirely healthy
+contributes nothing.
+
+**The server pairs a latitude with its longitude.** From the schema's own
+description: "A latitude and its longitude are given together or both null."
+Half a pair is a `400 invalid_config` naming the null half. Altitude is not
+paired with anything, and a degenerate baseline (receiver and illuminator at
+the same point) is only checked once both ends have a position.
+
+**`tx_callsign` is nullable too, and that took two revisions.** v1.2.0 made only the
+six coordinates nullable and left `tx_callsign` at `minLength: 1`. That did not reach
+the case it was made for: a tower's name and its position are set at the same wizard
+step, so a node with no position has no name for one either and still could not build a
+`NodeConfig` at all. v1.2.2 fixed it, and the schema says why: "a node that cannot name
+its illuminator sends null, which is the only way to say so". The empty string is
+deliberately not a second way, and the server refuses it.
+
+Between the two revisions this repo briefly substituted `"unknown"`, a decision taken on
+2026-09-11 over holding registration. It never shipped, and nothing substitutes anything
+now.
 
 ### Beam geometry: scaffolded, optional, and absent everywhere
 
@@ -292,14 +343,17 @@ no antenna section), both read as optional, and landing the retina-gui work shou
 config change rather than a code change. If retina-gui puts them elsewhere, those two
 constants are the only edit.
 
-**Both are optional, and absent is the normal case.** The 2026-08-11 revision removed
-them from `NodeConfig.required` with the server author's agreement, and retina-gui is not
-collecting the geometry from owners for the foreseeable future. So every node in the
+**Both are required and nullable, and null is the normal case.** The 2026-08-11 revision
+briefly made them optional; v1.1.1 put them back in `NodeConfig.required` as nullable,
+with the server author's agreement, and v1.2.0 keeps them that way. retina-gui is not
+collecting the geometry from owners for the foreseeable future, so every node in the
 fleet sends two explicit nulls, and that is the steady state rather than a gap awaiting
-cleanup.
+cleanup. The key is always present: `null` says "not characterised" where an absent key
+would say nothing at all, which is why payloads go out through `wire.to_wire`.
 
 Nothing is substituted for a missing value — no value the node did not give us reaches
-the server, the same discipline as the consent records.
+the server, the same discipline as the consent records. That holds without exception
+across the whole of stage 2.
 
 Two superseded designs, recorded so they are not re-derived. The first raised, on the
 grounds that a guessed beam width is worse than a node that will not register; correct
@@ -315,6 +369,44 @@ second becomes expressible with no change to `collect/` or `wire/`.
 
 `beam_width_deg` and `beam_azimuth_deg` returned zero hits across owl-os, retina-node,
 retina-gui and blah2-arm. These are new config fields plus GUI plumbing, not a mapping.
+
+### The owner's contact details
+
+`/data/retina-gui/telemetry-contact.json`, written by retina-gui since 2026-09-16 and
+read-only to us. Five fields, mirroring the wire's `NodeContact` one-for-one:
+
+| Spec field | Node source | Notes |
+|---|---|---|
+| `first_name` / `last_name` | the contact step, or the Configuration page | optional |
+| `email` | as above | optional |
+| `phone` | as above | optional |
+| `country` | as above | ISO 3166-1 alpha-2, and it belongs to the **phone number** rather than to the owner |
+
+`country` is easy to get wrong. The server added it as "record which country a contact's
+phone number is in", so it is dialling context. Asking an owner where they live and
+storing the answer here would put a wrong country against a real person.
+
+**Absent is the ordinary state, not a gap.** Every field is optional and so is the whole
+document. The spec says a node with nothing to report never calls the contact endpoint
+at all, so a missing file is a complete answer: the owner skipped the step, or cleared
+their details, and those mean the same thing. Nothing about it blocks registration,
+streaming or the heartbeat, and nothing ever should.
+
+**Sent on local change only.** Nothing on the server asks for it and no response marks it
+stale, so a change in the file is the only thing that sends it. Change detection is
+frozen-dataclass equality, the same mechanism as `NodeConfigRaw`.
+
+**An empty document is not the same as no document.** Empty is a valid payload that
+*clears* what the server holds, because the endpoint replaces wholesale. That is right
+for an owner who deleted their details and wrong for one who never gave any, so the two
+are told apart by whether anything has been sent this process.
+
+**A refusal goes to `errors[]` and never to the status document's `detail`.** Unlike a
+refused registration, a rejected contact document breaks nothing: the node registers,
+streams and beats exactly as before, and the only loss is a way to ring the owner.
+
+Nothing is ever substituted, the same discipline as the consent records and the beam
+geometry. These reach a person.
 
 ### The agreements, and the publication choice
 

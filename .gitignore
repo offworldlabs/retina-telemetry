@@ -23,3 +23,9 @@ token
 docs/for-server-author.*
 docs/node-ingest-v1.annotated.yml
 tools/annotate-spec.py
+
+# Scratch files tools/generate-models.sh writes inside the repo so that ruff
+# resolves line-length from pyproject.toml. Both are removed on exit; ignored so
+# a crashed run cannot leak one into `check.sh --tracked`.
+.spec-normalised.yml
+.models-check.py

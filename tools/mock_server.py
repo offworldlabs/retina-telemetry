@@ -66,6 +66,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import secrets
 import threading
 import time
@@ -96,6 +97,10 @@ BODY_CAPS = {
     "heartbeat": 8 * 1024,
     "config": 8 * 1024,
     "detection": 64 * 1024,
+    # 2 KiB, the smallest cap on any path. Five short strings cannot approach
+    # it, so this is the server declaring how little it expects rather than a
+    # limit a node can reach.
+    "contact": 2 * 1024,
 }
 MAX_BODY_BYTES = 64 * 1024
 
@@ -126,6 +131,9 @@ ENDPOINTS: dict[str, tuple[str, str, type[pydantic.BaseModel] | None]] = {
     "detection": ("POST", f"{BASE_PATH}/nodes/detection", DetectionFrame),
     "heartbeat": ("POST", f"{BASE_PATH}/nodes/heartbeat", HeartbeatRequest),
     "config": ("PUT", f"{BASE_PATH}/nodes/config", None),
+    # Read by hand for the same reason as config: a body-shaped refusal
+    # must not be able to precede the 401.
+    "contact": ("PUT", f"{BASE_PATH}/nodes/contact", None),
 }
 
 
@@ -300,6 +308,18 @@ _NUMERIC_BOUNDS: dict[str, tuple[float, float, bool, bool]] = {
 
 _REQUIRED = set(_NUMERIC_BOUNDS) | {"tx_callsign", "beam_width_deg", "beam_azimuth_deg"}
 
+#: Required, but accepting ``null``, since spec v1.2.0. A node whose owner has
+#: not picked a tower registers and streams with these six null and simply
+#: places nothing on the map. ``tx_callsign`` joined them in v1.2.2 and is
+#: handled below, because it is a string rather than a bounded number.
+_NULLABLE_COORDS = frozenset({"rx_lat", "rx_lon", "rx_alt_ft", "tx_lat", "tx_lon", "tx_alt_ft"})
+
+#: "A latitude and its longitude are given together or both null", from the
+#: schema's own description. Altitude is deliberately not in a pair: the
+#: contract says nothing about it, so a node with a position and no altitude is
+#: accepted here rather than refused on a rule the server never stated.
+_COORD_PAIRS = (("rx_lat", "rx_lon"), ("tx_lat", "tx_lon"))
+
 #: The fifteen fields a configuration version consists of, which is exactly
 #: ``validate_config``'s output. Two versions are the same version when these
 #: fifteen agree.
@@ -322,6 +342,56 @@ def _number(field_name: str, value: Any) -> float:
     if not math.isfinite(number):
         raise ConfigInvalid(field_name, "not a finite number")
     return number
+
+
+#: The contact document's caps, from `NodeContact`. Every field is optional and
+#: nullable, so the only refusals available here are a value too long, a country
+#: that is not two letters, and a field the schema does not declare.
+_CONTACT_LENGTHS = {
+    "first_name": 64,
+    "last_name": 64,
+    "email": 255,
+    "phone": 32,
+    "country": 2,
+}
+
+_COUNTRY_RE = re.compile(r"^[A-Za-z]{2}$")
+
+
+def validate_contact(payload: Any) -> dict[str, Any]:
+    """Return the normalised contact document, or raise naming one field.
+
+    Absent and null are the same thing here, unlike on `NodeConfig`, where a
+    required-and-nullable field's null is a value the server expects. Nothing
+    in this document is required, so the two collapse and the stored result
+    carries only what was given.
+    """
+    if not isinstance(payload, dict):
+        raise ConfigInvalid("contact", "not an object")
+
+    unknown = sorted(set(payload) - set(_CONTACT_LENGTHS))
+    if unknown:
+        raise ConfigInvalid(unknown[0], "unknown field")
+
+    out: dict[str, Any] = {}
+    for field_name, cap in _CONTACT_LENGTHS.items():
+        value = payload.get(field_name)
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            raise ConfigInvalid(field_name, "not a string")
+        # The empty string is deliberately not a second way to say "nothing":
+        # the schema spells that out, and a node that cannot name something
+        # sends null.
+        if not value or len(value) > cap:
+            raise ConfigInvalid(field_name)
+        out[field_name] = value
+
+    country = out.get("country")
+    if country is not None and not _COUNTRY_RE.match(country):
+        raise ConfigInvalid("country")
+
+    return out
 
 
 def validate_config(payload: Any) -> dict[str, Any]:
@@ -355,15 +425,30 @@ def validate_config(payload: Any) -> dict[str, Any]:
 
     out: dict[str, Any] = {}
     for field_name, (low, high, low_inclusive, high_inclusive) in _NUMERIC_BOUNDS.items():
-        value = _number(field_name, payload[field_name])
+        raw = payload[field_name]
+        # Required and present, but null is a value rather than an absence.
+        if raw is None and field_name in _NULLABLE_COORDS:
+            out[field_name] = None
+            continue
+        value = _number(field_name, raw)
         below = value < low if low_inclusive else value <= low
         above = value > high if high_inclusive else value >= high
         if below or above:
             raise ConfigInvalid(field_name)
         out[field_name] = value
 
+    # Reported in _NUMERIC_BOUNDS order like the bounds above, and naming the
+    # null half: that is the field an operator has to fill in.
+    for pair in _COORD_PAIRS:
+        if len([name for name in pair if out[name] is None]) == 1:
+            missing = next(name for name in pair if out[name] is None)
+            raise ConfigInvalid(missing, "a latitude and its longitude go together")
+
+    # Nullable since v1.2.2, and the empty string deliberately is not: a node
+    # that cannot name its illuminator sends null, which is the only way to say
+    # so. Accepting "" as well would give it two.
     callsign = payload["tx_callsign"]
-    if not isinstance(callsign, str) or not 1 <= len(callsign) <= 32:
+    if callsign is not None and (not isinstance(callsign, str) or not 1 <= len(callsign) <= 32):
         raise ConfigInvalid("tx_callsign")
     out["tx_callsign"] = callsign
 
@@ -389,8 +474,13 @@ def validate_config(payload: Any) -> dict[str, Any]:
             raise ConfigInvalid("beam_azimuth_deg")
         out["beam_azimuth_deg"] = azimuth
 
+    # Only once both ends have a position. An unsited node has no baseline to be
+    # degenerate, and subtracting a null here is how this check would turn the
+    # ordinary state of a new node into a 500.
+    sited = all(out[name] is not None for pair in _COORD_PAIRS for name in pair)
     if (
-        abs(out["rx_lat"] - out["tx_lat"]) < _MIN_BASELINE_DEG
+        sited
+        and abs(out["rx_lat"] - out["tx_lat"]) < _MIN_BASELINE_DEG
         and abs(out["rx_lon"] - out["tx_lon"]) < _MIN_BASELINE_DEG
     ):
         raise ConfigInvalid("tx_lat", "receiver and illuminator are at the same point")
@@ -628,6 +718,11 @@ class NodeRecord:
     status: str = "active"
     active_config_version: int | None = None
     configs: dict[int, dict[str, Any]] = field(default_factory=dict)
+    #: Replaced wholesale on every PUT, which is what the contract says the
+    #: endpoint does. Empty is a real state: an owner who cleared their details
+    #: sends an empty document, and that must not read as "never told us".
+    contact: dict[str, Any] = field(default_factory=dict)
+    contact_updated_at: str | None = None
 
     def upsert_config(self, config: dict[str, Any]) -> int:
         """Return the active version, minting one only if the values differ.
@@ -1186,6 +1281,29 @@ class _Handler(BaseHTTPRequestHandler):
         with self.state.lock:
             version = node.upsert_config(config)
         self._send(200, {"config_version": version})
+
+    def _contact(self, body: Any) -> None:
+        """``PUT /v1/nodes/contact``. Replaces the document wholesale."""
+        node = self._bearer_node(taxonomy=True)
+        if node is None:
+            return
+
+        if body is MALFORMED:
+            self._taxonomy(400, "invalid_contact", "contact")
+            return
+
+        try:
+            contact = validate_contact(body)
+        except ConfigInvalid as exc:
+            # `invalid_contact`, not `invalid_config`: the slugs split in
+            # v1.2.0 precisely so retina-gui can tell which form to mark.
+            self._taxonomy(400, "invalid_contact", exc.field)
+            return
+
+        with self.state.lock:
+            node.contact = contact
+            node.contact_updated_at = _now()
+        self._send(200, {"updated_at": node.contact_updated_at})
 
 
 class MockServer:
