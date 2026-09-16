@@ -15,20 +15,27 @@
 # Nothing is reachable from any network and the tunnel dies with the session.
 # Not port 8080 — tar1090 already holds that on the node.
 #
-# ## The one synthetic value, and why
+# ## What is real, and what is not
 #
-# Everything is real except the records that do not exist on any node yet:
+# Everything is real. The consent records are read from the node's own
+# /data/retina-gui/telemetry-consent.json, which retina-gui v0.7.0 now writes;
+# three synthetic ones are used only if that file is missing, and the run says
+# which it used. The wizard flag is the node's own too, so the gate this service
+# holds registration on is exercised rather than bypassed.
 #
-#   consent records  three of them, and the retina-gui wizard persists none
+# The antenna geometry is deliberately NOT synthesised. Both beam fields are
+# nullable, so a node without them sends explicit nulls, which is what every
+# node in the fleet does.
 #
-# The antenna geometry is deliberately NOT synthesised. Since spec v1.1.1 both
-# beam fields are nullable, so a node without them sends explicit nulls — that
-# is what every node in the fleet does, and the run should exercise it rather
-# than paper over it.
+# The configuration is copied verbatim from the node's own config.yml, so every
+# coordinate, frequency and bin count is the real one.
 #
-# The consent file is written to a scratch directory and pointed at with an env
-# var. The configuration is copied verbatim from the node's own config.yml, so
-# every coordinate, frequency and bin count is the real one.
+# ## UNSITE=1
+#
+# Nulls the geometry in the scratch copy only, to exercise the unsited path the
+# spec opened across v1.2.0 and v1.2.2: a node whose owner has not picked a
+# tower registers with seven explicit nulls rather than holding. The node's own
+# config.yml is never written to, here or anywhere in this script.
 #
 # ## Safety
 #
@@ -41,6 +48,7 @@ set -euo pipefail
 
 HOST="${1:-owl}"
 SECONDS_TO_RUN="${2:-45}"
+UNSITE="${UNSITE:-0}"
 PORT="${MOCK_PORT:-18080}"
 IMAGE="${PROBE_IMAGE:-python:3.11-slim}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -72,29 +80,49 @@ echo "→ running the service on $HOST for ${SECONDS_TO_RUN}s, against the tunne
 echo
 
 ssh -o ExitOnForwardFailure=yes -R "$PORT:127.0.0.1:$PORT" "$HOST" \
-  "REMOTE_DIR='$REMOTE_DIR' PORT='$PORT' IMAGE='$IMAGE' RUN_FOR='$SECONDS_TO_RUN' bash -s" <<'REMOTE'
+  "REMOTE_DIR='$REMOTE_DIR' PORT='$PORT' IMAGE='$IMAGE' RUN_FOR='$SECONDS_TO_RUN' UNSITE='$UNSITE' bash -s" <<'REMOTE'
 set -euo pipefail
 SCRATCH="$REMOTE_DIR/scratch"
 mkdir -p "$SCRATCH"
 
 # The node's own configuration, verbatim. Nothing substituted.
-python3 - "$SCRATCH" <<'PY'
-import json, sys, pathlib, yaml
-scratch = pathlib.Path(sys.argv[1])
+python3 - "$SCRATCH" "$UNSITE" <<'PY'
+import json, sys, pathlib, shutil, yaml
+scratch, unsite = pathlib.Path(sys.argv[1]), sys.argv[2] == "1"
 config = yaml.safe_load(pathlib.Path("/data/retina-node/config/config.yml").read_text())
+
+if unsite:
+    # The scratch copy only. This is what retina-node's default.yml ships, and
+    # what a node looks like before its owner reaches the tower step.
+    for end in ("rx", "tx"):
+        config["location"][end] = dict.fromkeys(
+            ("latitude", "longitude", "altitude", "name"), None
+        )
+    print("   UNSITE=1: geometry nulled in the scratch copy, node config untouched")
+
 (scratch / "config.yml").write_text(yaml.safe_dump(config))
-# Synthetic. Three separately versioned records since the 2026-08-10
-# revision; `publication` is a privacy decision the wizard must actually put
-# to the owner, and nothing on a node may manufacture one.
-ACCEPTED = {"version": "2026-07-01", "accepted_at": "2026-07-31T09:12:00Z"}
-(scratch / "consent.json").write_text(json.dumps({
-    "licence": ACCEPTED,
-    "remote_management": ACCEPTED,
-    "publication": {**ACCEPTED, "choice": "public"},
-}))
-print(f"   rx {config['location']['rx']['latitude']}, {config['location']['rx']['longitude']}"
-      f" @ {config['location']['rx']['altitude']} m")
-print(f"   tx {config['location']['tx']['name']!r} @ {config['location']['tx']['altitude']} m")
+
+# The node's own records, which retina-gui v0.7.0 writes. Synthesised only when
+# absent, because `publication` is a privacy decision the wizard must actually
+# put to the owner and nothing on a node may manufacture one.
+real = pathlib.Path("/data/retina-gui/telemetry-consent.json")
+if real.is_file():
+    shutil.copyfile(real, scratch / "consent.json")
+    print(f"   consent: the node's own, {len(json.loads(real.read_text()))} records")
+else:
+    ACCEPTED = {"version": "2026-07-01", "accepted_at": "2026-07-31T09:12:00Z"}
+    (scratch / "consent.json").write_text(json.dumps({
+        "licence": ACCEPTED,
+        "remote_management": ACCEPTED,
+        "publication": {**ACCEPTED, "choice": "public"},
+    }))
+    print("   consent: SYNTHETIC, the node has none")
+
+location = config["location"]
+print(f"   rx {location['rx']['latitude']}, {location['rx']['longitude']}"
+      f" @ {location['rx']['altitude']} m")
+print(f"   tx {location['tx']['name']!r} at {location['tx']['latitude']}, "
+      f"{location['tx']['longitude']} @ {location['tx']['altitude']} m")
 print(f"   fc {config['capture']['fc']}  fs {config['capture']['fs']}"
       f"  delayMax {config['process']['ambiguity']['delayMax']}")
 PY
@@ -114,11 +142,13 @@ docker run --rm --network host \
   -e TOKEN_PATH=/scratch/token \
   -e STATUS_PATH=/scratch/status.json \
   -e DISK_PATH=/data/mender \
+  -e WIZARD_FLAG_PATH=/data/retina-gui/setup-wizard-completed \
   -e HEARTBEAT_INTERVAL_S=10 \
   -e STATUS_INTERVAL_S=5 \
   -v "$REMOTE_DIR/app:/app:ro" \
   -v "$SCRATCH:/scratch" \
   -v /data/mender:/data/mender:ro \
+  -v /data/retina-gui:/data/retina-gui:ro \
   -w /app \
   "$IMAGE" \
   sh -c "pip install --quiet --no-cache-dir --timeout 60 --retries 10 requests PyYAML pydantic \
