@@ -108,7 +108,9 @@ docker run -d --name retina-stalled --network host --pull missing \
   -e CONFIG_PATH=/scratch/config.yml -e CONSENT_PATH=/scratch/consent.json \
   -e TOKEN_PATH=/scratch/token -e STATUS_PATH=/scratch/status.json \
   -e DISK_PATH=/data/mender -e HEARTBEAT_INTERVAL_S=10 -e STATUS_INTERVAL_S=5 \
+  -e WIZARD_FLAG_PATH=/data/retina-gui/setup-wizard-completed \
   -v "$REMOTE_DIR/app:/app:ro" -v "$SCRATCH:/scratch" -v /data/mender:/data/mender:ro \
+  -v /data/retina-gui:/data/retina-gui:ro \
   -w /app "$IMAGE" \
   sh -c "pip install --quiet --no-cache-dir --timeout 60 --retries 10 requests PyYAML pydantic \
          && python -m retina_telemetry" >/dev/null

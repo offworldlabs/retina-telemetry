@@ -26,6 +26,9 @@ set -euo pipefail
 HOST="${1:-owl}"
 PORT="${MOCK_PORT:-18080}"
 IMAGE="${PROBE_IMAGE:-python:3.11-slim}"
+#: Null the geometry in the scratch copy, for a node whose own config the
+#: server refuses. Never writes to the node. See tools/live-service.sh.
+UNSITE="${UNSITE:-0}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON="${PYTHON:-$REPO_ROOT/.venv/bin/python}"
 [[ -x "$PYTHON" ]] || { echo "no venv at $PYTHON — run: pip install -e '.[dev]'" >&2; exit 1; }
@@ -53,14 +56,22 @@ tar czf - -C "$REPO_ROOT" retina_telemetry \
 
 echo "→ starting the service on $HOST"
 ssh -o ExitOnForwardFailure=yes -R "$PORT:127.0.0.1:$PORT" "$HOST" \
-  "REMOTE_DIR='$REMOTE_DIR' PORT='$PORT' IMAGE='$IMAGE' bash -s" >/tmp/live-failures.log 2>&1 <<'REMOTE' &
+  "REMOTE_DIR='$REMOTE_DIR' PORT='$PORT' IMAGE='$IMAGE' UNSITE='$UNSITE' bash -s" >/tmp/live-failures.log 2>&1 <<'REMOTE' &
 set -euo pipefail
 SCRATCH="$REMOTE_DIR/scratch"
 mkdir -p "$SCRATCH"
-python3 - "$SCRATCH" <<'PY'
+python3 - "$SCRATCH" "${UNSITE:-0}" <<'PY'
 import json, sys, pathlib, yaml
-scratch = pathlib.Path(sys.argv[1])
+scratch, unsite = pathlib.Path(sys.argv[1]), sys.argv[2] == "1"
 config = yaml.safe_load(pathlib.Path("/data/retina-node/config/config.yml").read_text())
+if unsite:
+    # The scratch copy only, never the node's own config. Lets these scripts
+    # run on a node whose real geometry the server refuses.
+    for end in ("rx", "tx"):
+        config["location"][end] = dict.fromkeys(
+            ("latitude", "longitude", "altitude", "name"), None
+        )
+    print("   UNSITE=1: geometry nulled in the scratch copy")
 (scratch / "config.yml").write_text(yaml.safe_dump(config))
 ACCEPTED = {"version": "2026-07-01", "accepted_at": "2026-07-31T09:12:00Z"}
 (scratch / "consent.json").write_text(json.dumps({
@@ -78,9 +89,10 @@ docker run --rm --network host --pull missing \
   -e CONFIG_PATH=/scratch/config.yml -e CONSENT_PATH=/scratch/consent.json \
   -e TOKEN_PATH=/scratch/token -e STATUS_PATH=/scratch/status.json \
   -e DISK_PATH=/data/mender \
+  -e WIZARD_FLAG_PATH=/data/retina-gui/setup-wizard-completed \
   -e HEARTBEAT_INTERVAL_S=6 -e STATUS_INTERVAL_S=3 \
   -v "$REMOTE_DIR/app:/app:ro" -v "$SCRATCH:/scratch" \
-  -v /data/mender:/data/mender:ro -w /app \
+  -v /data/mender:/data/mender:ro -v /data/retina-gui:/data/retina-gui:ro -w /app \
   "$IMAGE" sh -c "pip install --quiet --no-cache-dir --timeout 60 --retries 10 requests PyYAML pydantic \
                   && timeout 80 python -m retina_telemetry; true"
 echo "── status document at the end ──"
