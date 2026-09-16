@@ -9,6 +9,10 @@
 # than written alongside it. When the server author revises the YAML, this shows
 # exactly which fields moved instead of someone diffing by eye.
 #
+# The spec is normalised on the way in, never in place: see tools/normalise_spec.py
+# for what that rewrites and why. docs/node-ingest-v1.yml stays byte-identical to
+# what the server author sent.
+#
 # The three flags matter:
 #
 #   --collapse-root-models   without it every scalar $ref becomes a RootModel
@@ -41,9 +45,19 @@ if ! "$PYTHON" -c "import datamodel_code_generator" 2>/dev/null; then
   exit 1
 fi
 
+# Both the normalised spec and any staged output are staged inside the repo, not
+# in /tmp: datamodel-codegen runs ruff-format on its output, and ruff resolves
+# line-length from the nearest pyproject.toml. Generating elsewhere silently
+# reformats at ruff's default 88 and every run looks stale.
+NORMALISED="$REPO_ROOT/.spec-normalised.yml"
+cleanup() { rm -f "$NORMALISED" "${STAGED:-}"; }
+trap cleanup EXIT
+
+"$PYTHON" "$REPO_ROOT/tools/normalise_spec.py" "$SPEC" "$NORMALISED"
+
 generate() {
   "$PYTHON" -m datamodel_code_generator \
-    --input "$SPEC" \
+    --input "$NORMALISED" \
     --input-file-type openapi \
     --output-model-type pydantic_v2.BaseModel \
     --target-python-version 3.11 \
@@ -62,12 +76,7 @@ EOF
 }
 
 if [[ "${1:-}" == "--check" ]]; then
-  # Staged inside the repo, not in /tmp: datamodel-codegen runs ruff-format on
-  # its output, and ruff resolves line-length from the nearest pyproject.toml.
-  # Generating elsewhere silently reformats at ruff's default 88 and every run
-  # looks stale.
   STAGED="$REPO_ROOT/.models-check.py"
-  trap 'rm -f "$STAGED"' EXIT
   generate "$STAGED"
   if diff -q "$TARGET" "$STAGED" >/dev/null; then
     echo "models.py is up to date with the spec"

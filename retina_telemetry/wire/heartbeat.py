@@ -18,14 +18,14 @@ from retina_telemetry.wire.models import (
     Blah2,
     HeartbeatRequest,
     NodeHealth,
-    NodeState,
     NodeVersions,
 )
+from retina_telemetry.wire.models import State as WireState
 
 
 def build_heartbeat(
     *,
-    state: NodeState,
+    state: WireState,
     uptime_s: int,
     config_version: int | None,
     boot_id: str,

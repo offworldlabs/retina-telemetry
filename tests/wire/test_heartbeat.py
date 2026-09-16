@@ -3,7 +3,7 @@ import pytest
 
 from retina_telemetry.collect.host import HostSnapshot
 from retina_telemetry.wire.heartbeat import build_heartbeat
-from retina_telemetry.wire.models import Blah2, NodeHealth
+from retina_telemetry.wire.models import Adsb, Blah2, NodeHealth
 from retina_telemetry.wire.serialise import to_wire
 
 OWL_HOST = HostSnapshot(cpu_pct=63.8, temp_c=70.5, disk_free_mb=15743, host_uptime_s=181569)
@@ -59,12 +59,13 @@ def test_every_health_field_traced_to_its_source():
     assert beat.health.cpu_pct == 63.8  # HostSnapshot.cpu_pct
     assert beat.health.temp_c == 70.5  # HostSnapshot.temp_c
     assert beat.health.disk_free_mb == 15743  # HostSnapshot.disk_free_mb
-    # Compared by member, not by string. Adding `null` to the enum in v1.1.1
-    # made the generator emit a plain Enum rather than a StrEnum, so
-    # `Blah2.up == "up"` is False — a silent trap for anything comparing to a
-    # literal. `adsb` has no null and is still a StrEnum, hence the difference.
+    # Compared by member, not by string. A nullable enum makes the generator
+    # emit a plain Enum rather than a StrEnum, so `Blah2.up == "up"` is False:
+    # a silent trap for anything comparing against a literal. v1.2.0 made
+    # `adsb` nullable too, so both are plain Enums and the asymmetry that used
+    # to distinguish them is gone. Neither may be compared to a string.
     assert beat.health.blah2 is Blah2.up  # Blah2Client.last_poll_ok
-    assert beat.health.adsb == "up"  # DetectionPoll.adsb is not None
+    assert beat.health.adsb is Adsb.up  # DetectionPoll.adsb is not None
 
 
 # ── blah2: up, down, or absent ───────────────────────────────────────
@@ -93,7 +94,7 @@ def test_adsb_omitted_when_association_is_switched_off():
 
 def test_adsb_is_never_reported_down():
     for present in (True, False, None):
-        assert build(host=OWL_HOST, adsb_present=present).health.adsb in ("up", None)
+        assert build(host=OWL_HOST, adsb_present=present).health.adsb in (Adsb.up, None)
 
 
 # ── partial knowledge ────────────────────────────────────────────────

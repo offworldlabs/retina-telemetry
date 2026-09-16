@@ -216,7 +216,7 @@ def test_only_states_a_node_can_report_reach_the_server():
 def test_every_state_maps_onto_the_spec_s_closed_set(state):
     """Ours is richer because the status document can report things the wire
     cannot. Everything must still land on one of their five."""
-    from retina_telemetry.wire.models import NodeState as WireState
+    from retina_telemetry.wire.models import State as WireState
 
     assert {s.wire for s in NodeState} <= set(WireState)
 

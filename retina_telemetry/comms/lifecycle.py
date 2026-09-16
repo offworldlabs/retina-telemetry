@@ -39,7 +39,7 @@ from retina_telemetry.comms.client import (
     Outcome,
 )
 from retina_telemetry.state import Snapshot, State
-from retina_telemetry.wire.models import NodeState as WireState
+from retina_telemetry.wire.models import State as WireState
 
 log = logging.getLogger(__name__)
 

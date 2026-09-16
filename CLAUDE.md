@@ -4,7 +4,7 @@ The node-side telemetry uplink for the RETINA passive radar fleet. One container
 node, owning everything sent to the server: registration, detection streaming,
 heartbeat, config sync. Nothing else on the node talks to `api.retina.fm`.
 
-**Status: built, and implementing spec v1.1.1.** Verified end to end on the Owl node
+**Status: built, and implementing spec v1.2.2.** Verified end to end on the Owl node
 against a tunnelled mock — every endpoint, every reachable state including `stalled`,
 and the refusal paths.
 
@@ -95,6 +95,7 @@ Nothing here is buildable from this repo, and the first one blocks every node:
 | Cap the tower-name field at 32 characters | shipped | `TX_NAME_MAX_LENGTH` in `config_schema.py`. The spec caps `tx_callsign` at 32 and the field was unbounded free text |
 | Read `/data/retina-telemetry/status.json` | no, but | We bind no ports, so it is the only way *no identity*, *revoked token* and *rejected config* reach an operator. `telemetry_status.py` reads it and the home page shows it |
 | Collect `location.rx.beam_width` / `beam_azimuth` | no | Deferred indefinitely. Both are nullable, so sending two nulls is correct behaviour rather than a gap |
+| Collect the owner's contact details | no | `PUT /v1/nodes/contact` arrived in spec v1.2.0 and gained a phone `country` in v1.2.2: first name, last name, email, phone, country, every field optional and nullable. Nothing on a node holds any of it, so there is nothing for us to send until retina-gui collects and persists it the way it does the consent records. Unimplemented and honestly so |
 
 `owl-os` separately owes a `mender-update show-provides` snapshot so
 `versions.retina_node` has a source. Optional field; omitted honestly until then.
@@ -123,13 +124,16 @@ Full detail and citations in `docs/data-sources.md`. The short version:
 - **Nothing in the stack pushes to us.** No event bus, no inbound ports. Every input is
   a poll or a file read, including "the user changed the config".
 - **`wire/models.py` is generated.** Regenerate with `tools/generate-models.sh`; never
-  hand-edit it, and `--check` will catch you.
-- **`stalled` is shipped ahead of the server confirming it.** Spec v1.1.1 marks it
-  "Proposed, confirm before implementing"; we send it for a radar that produced and then
-  stopped, because the alternative — `error` — raises against the node when the fault is
-  the radar's. **The risk, if the server still validates five values:** a heartbeat `400`
-  is `Kind.INVALID`, which is not retryable, so it is dropped — silencing a node whose
-  radar has just died. Worth confirming, and worth reverting in one line if they say no.
+  hand-edit it, and `--check` will catch you. The spec is normalised on the way in by
+  `tools/normalise_spec.py`, which rewrites the `anyOf: [X, null]` spelling the server's
+  FastAPI export uses into the equivalent `type: [x, "null"]` one. Without it every
+  nullable field becomes a `RootModel` wrapper needing `.root` at each read, which
+  adopting v1.2.0 turned from 3 wrappers into 19. The checked-in spec is never touched.
+- **`stalled` is confirmed.** It was shipped ahead of the server under v1.1.1, which
+  marked it "Proposed, confirm before implementing"; v1.2.0 onwards carries all six
+  values with no caveat. We send it for a radar that produced and then stopped, because
+  the alternative, `error`, raises against the node when the fault is the radar's. The
+  revert that was kept ready is no longer needed.
 - **`NodeState` on the wire is a closed set of six.** Our local vocabulary is richer
   because the status document can report things a node with no token cannot say at all;
   `NodeState.wire` maps between them. Never send a local value directly.
@@ -141,7 +145,7 @@ Full detail and citations in `docs/data-sources.md`. The short version:
   absence, so dropping the key produces a payload it rejects. `to_wire` also applies
   `mode="json"`, which is load-bearing: without it the acceptance timestamps stay as
   `datetime` objects and `json.dumps` refuses the registration payload outright.
-  **Seven fields are required-and-nullable in v1.1.1**, so payloads go out through
+  **Fourteen fields are required-and-nullable in v1.2.2**, so payloads go out through
   `wire.to_wire`, never `model_dump(exclude_none=True)` directly.
   `tests/wire/test_serialise.py` pins the inventory by name and fails if the spec grows
   or loses one.
@@ -187,6 +191,7 @@ that get re-litigated if the reasoning is not written down.
 | `uptime_s` is the device's | the heartbeat is the node's account of itself, and "the node" is the board |
 | No docker socket | liveness falls out of the detection poll; versions come from compose env vars |
 | Outward status document | three failure modes must reach the operator, and we bind no ports |
+| Normalise the spec into the generator, never in place | the server's FastAPI export spells nullable as `anyOf`, which `--collapse-root-models` cannot reach; the checked-in contract stays byte-identical to what was sent |
 | One `tools/check.sh` | CI, release and a terminal disagreeing about "green" is how the release gate silently lost two checks |
 
 ## Working agreements
@@ -195,9 +200,10 @@ that get re-litigated if the reasoning is not written down.
 - The OpenAPI spec is someone else's contract. Disagreements go to them; do not edit the
   spec to match the code. **One exception exists**, and it has already bitten once: the
   beam fields were changed with the server author's agreement, relayed by Josh, and their
-  next revision did not carry it — our edit was silently reverted on adoption. The
-  current `1.1.1` again carries a change of ours. **Check `NodeConfig.beam_width_deg`
-  when adopting any revision**, and expect to reapply it.
+  next revision did not carry it, so our edit was silently reverted on adoption. **Check
+  `NodeConfig.beam_width_deg` when adopting any revision**, and expect to reapply it.
+  Checked on adopting `1.2.2` (2026-09-16): it survived, nullable as agreed. Keep
+  checking anyway. Two revisions carrying it is not yet a habit.
 - **The spec is the scope.** If a field is not in it, we do not collect it — however
   cheap or obviously useful it looks. Wanting something new means asking the server
   author, not a field we add unilaterally. This has already removed Pi

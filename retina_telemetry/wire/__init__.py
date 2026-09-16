@@ -90,11 +90,15 @@ the seams where stage 3 and the state store plug in.
 
 ## Required nulls
 
-Seven fields are *required and nullable* since spec v1.1.1 — both beam fields,
-``HeartbeatRequest.config_version``, and ``NodeHealth``'s four core values. For
-those, ``null`` is a value the server expects rather than an absence, so
-payloads must go out through ``to_wire`` and never ``model_dump(exclude_none=
-True)``, which would drop the key and produce something the server rejects.
+Fourteen fields are *required and nullable* as of spec v1.2.2: the whole of
+``NodeConfig``'s geometry (six coordinates, ``tx_callsign``, and both beam
+fields), ``HeartbeatRequest.config_version``, and ``NodeHealth``'s four core
+values. For those, ``null`` is a value the server expects rather than an
+absence, so payloads must go out through ``to_wire`` and never
+``model_dump(exclude_none=True)``, which would drop the key and produce
+something the server rejects. ``tests/wire/test_serialise.py`` pins the
+inventory by name, so a revision that adds or removes one fails there before it
+reaches a node.
 """
 
 from retina_telemetry.wire.config import build_node_config
