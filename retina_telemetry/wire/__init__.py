@@ -94,6 +94,23 @@ absent rather than producing a payload that would misrepresent them.
 Anything marked "caller" is not collected by stage 1 and cannot be. Those are
 the seams where stage 3 and the state store plug in.
 
+### NodeContact — ``contact.build_contact``
+
+| Wire field | Source | Conversion |
+|---|---|---|
+| ``first_name`` / ``last_name`` | ``Contact.first_name`` / ``last_name`` | none |
+| ``email`` / ``phone`` | ``Contact.email`` / ``phone`` | none |
+| ``country`` | ``Contact.country`` | none, ISO 3166-1 alpha-2 for the phone |
+
+The thinnest builder here, because retina-gui stores the wire's own field names.
+Every field is optional and nullable and nothing is substituted: these reach a
+person, so a value the owner did not give travels as an absence.
+
+Whether to send at all is ``comms``' decision, not this module's. An empty
+document is a valid ``NodeContact`` that *clears* whatever the server holds,
+which is right for an owner who deleted their details and wrong for one who
+never gave any, and only stage 3 knows which happened.
+
 ## Required nulls
 
 Fourteen fields are *required and nullable* as of spec v1.2.2: the whole of

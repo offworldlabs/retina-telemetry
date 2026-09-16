@@ -762,6 +762,85 @@ def _unsited_payload():
     )
 
 
+# ── PUT /nodes/contact ───────────────────────────────────────────────
+
+CONTACT = {
+    "first_name": "Ada",
+    "last_name": "Lovelace",
+    "email": "ada@example.com",
+    "phone": "+441234567890",
+    "country": "GB",
+}
+
+
+def test_a_contact_document_is_accepted_and_timestamped(server):
+    token, _ = register(server)
+
+    status, body, _ = post(f"{server.url}/nodes/contact", CONTACT, token, "PUT")
+
+    assert status == 200
+    assert body["updated_at"].endswith("Z")
+
+
+def test_an_empty_contact_document_is_accepted(server):
+    """Every field is optional, and an empty document is how a removal
+    travels: the endpoint replaces wholesale."""
+    token, _ = register(server)
+
+    status, _, _ = post(f"{server.url}/nodes/contact", {}, token, "PUT")
+
+    assert status == 200
+
+
+def test_a_contact_document_replaces_rather_than_merges(server):
+    token, _ = register(server)
+    post(f"{server.url}/nodes/contact", CONTACT, token, "PUT")
+
+    post(f"{server.url}/nodes/contact", {"email": "grace@example.com"}, token, "PUT")
+
+    node = next(iter(server.state.nodes.values()))
+    assert node.contact == {"email": "grace@example.com"}
+
+
+def test_a_refused_contact_is_invalid_contact_not_invalid_config(server):
+    """The slugs split in v1.2.0 so retina-gui can tell which form to mark."""
+    token, _ = register(server)
+
+    status, body, _ = post(
+        f"{server.url}/nodes/contact", {**CONTACT, "country": "GBR"}, token, "PUT"
+    )
+
+    assert status == 400
+    assert body == {"error": "invalid_contact", "detail": "country"}
+
+
+def test_an_overlong_contact_value_is_refused(server):
+    token, _ = register(server)
+
+    status, body, _ = post(f"{server.url}/nodes/contact", {"email": "a" * 256}, token, "PUT")
+
+    assert status == 400
+    assert body["detail"] == "email"
+
+
+def test_an_unknown_contact_field_is_refused(server):
+    """`NodeContact` forbids extra properties."""
+    token, _ = register(server)
+
+    status, body, _ = post(
+        f"{server.url}/nodes/contact", {**CONTACT, "twitter": "@ada"}, token, "PUT"
+    )
+
+    assert status == 400
+    assert body["detail"] == "twitter"
+
+
+def test_contact_needs_a_bearer_token(server):
+    status, _, _ = post(f"{server.url}/nodes/contact", CONTACT, None, "PUT")
+
+    assert status == 401
+
+
 def test_an_unknown_field_is_named_back_and_bounded(server):
     """The rejected field is caller-supplied JSON, and `Error.detail` is capped
     at 512. Passed through whole it would fail the server's own response model

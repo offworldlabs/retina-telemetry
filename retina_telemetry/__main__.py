@@ -42,11 +42,13 @@ from typing import Any
 import pydantic
 
 from retina_telemetry.collect import consent as consent_reader
+from retina_telemetry.collect import contact as contact_reader
 from retina_telemetry.collect import identity as identity_reader
 from retina_telemetry.collect import node_config as config_reader
 from retina_telemetry.collect import wizard as wizard_reader
 from retina_telemetry.collect.blah2 import Blah2Client
 from retina_telemetry.collect.consent import Consent
+from retina_telemetry.collect.contact import Contact
 from retina_telemetry.collect.host import HostReader
 from retina_telemetry.collect.identity import IdentityUnavailable
 from retina_telemetry.collect.node_config import ConfigUnavailable, NodeConfigRaw
@@ -59,6 +61,7 @@ from retina_telemetry.settings import Settings
 from retina_telemetry.state import State, with_uptime_fallback
 from retina_telemetry.status import StatusWriter
 from retina_telemetry.wire.config import build_node_config
+from retina_telemetry.wire.contact import build_contact
 from retina_telemetry.wire.detection import build_detection_frame
 from retina_telemetry.wire.heartbeat import build_heartbeat
 from retina_telemetry.wire.registration import IncompletePayload, build_registration
@@ -131,6 +134,11 @@ class Service:
         # successful re-read wiped a rejection the operator still had to fix.
         self._config_unreadable: str | None = None
         self._config_rejected: str | None = None
+        #: The contact document as last accepted by the server, so the next
+        #: read can tell whether anything changed. Process-local like `seq`:
+        #: nothing but the token is persisted, so a restart re-sends once,
+        #: which the endpoint's wholesale replace makes idempotent.
+        self._contact_sent: Contact | None = None
         #: Why the server last refused to register this node. Separate from
         #: `_config_rejected`, which is a PUT answering about a configuration
         #: the node is already registered to send.
@@ -234,10 +242,16 @@ class Service:
             self.stop.wait(self.settings.heartbeat_interval_s)
 
     def config_loop(self) -> None:
-        """Resend on request, or when the file changes underneath us.
+        """Push what changed locally: the configuration, and the contact details.
 
         Nothing pushes at us, so a local edit is noticed by re-reading. The
         server asking arrives immediately through the resend event.
+
+        Both documents ride the same tick because both are "noticed by
+        re-reading a file retina-gui wrote" and neither has a cadence of its
+        own. The configuration can also be asked for; the contact details
+        cannot, since nothing on the server requests them and no response marks
+        them stale.
         """
         last_sent: NodeConfigRaw | None = None
         while not self.stop.is_set():
@@ -250,6 +264,11 @@ class Service:
             # first pass after a token arrives sends immediately.
             if not self.state.snapshot().registered:
                 continue
+
+            # Before the configuration, and deliberately not behind it: a node
+            # whose config.yml is unreadable can still say who owns it, and
+            # that is exactly the node somebody needs to ring.
+            self._send_contact_if_changed()
 
             config = self.node_config()
             if config is None:
@@ -386,6 +405,68 @@ class Service:
             # Only now, and only what this beat carried. The spec is explicit
             # that the list is cleared once a beat is acknowledged.
             batch.commit()
+
+    def _send_contact_if_changed(self) -> None:
+        """``PUT /nodes/contact``, on local change and never otherwise.
+
+        Nothing on the server asks for this and no response marks it stale, so
+        a change in the file is the only thing that sends it. The document is
+        compared whole, the same way ``NodeConfigRaw`` is.
+
+        **A node with nothing to report never calls the endpoint.** The spec
+        says so, and it matters: an empty document is a valid payload that
+        *clears* whatever the server holds, which is right for an owner who
+        deleted their details and wrong for one who never gave any. Those are
+        told apart by whether we have sent anything this process.
+
+        Failures are recorded in ``errors[]`` and nowhere else. A rejected or
+        undelivered contact document breaks nothing: the node registers,
+        streams and heartbeats exactly as before, and the only loss is a way to
+        ring the owner. That does not belong in the status document's `detail`,
+        which is reserved for the things stopping a node working.
+        """
+        contact = contact_reader.read_contact(self.settings.contact_path)
+        if contact == self._contact_sent:
+            return
+        if contact.is_empty and self._contact_sent is None:
+            # Never sent one and there is nothing to send. Sending an empty
+            # document here would be the node volunteering to clear a record it
+            # has never written.
+            return
+
+        try:
+            payload = to_wire(build_contact(contact))
+        except ValueError as exc:
+            # retina-gui checks the same caps at the box, so a value past them
+            # means the file was hand-edited. Dropped rather than retried: the
+            # next read is identical and would fail identically.
+            self.errors.add(f"contact: {exc}")
+            log.warning("cannot build a contact payload: %s", exc)
+            self._contact_sent = contact
+            return
+
+        outcome = send_until_delivered(
+            self.client,
+            "PUT",
+            "/nodes/contact",
+            lambda: payload,
+            state=self.state,
+            stop=self.stop,
+            token=self.state.snapshot().token,
+            max_attempts=3,
+        )
+        if outcome is None:
+            return
+        if outcome.ok:
+            self._contact_sent = contact
+            return
+
+        self.errors.add(f"contact: {outcome.describe()}")
+        if outcome.kind is Kind.INVALID:
+            # The server refused the document itself, so repeating it cannot
+            # help. Recorded as sent so the loop stops offering it every tick;
+            # editing the file produces a different document and tries again.
+            self._contact_sent = contact
 
     def _send_config(self, config: NodeConfigRaw) -> bool:
         try:

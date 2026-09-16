@@ -50,7 +50,7 @@ def main() -> int:
         print()
 
     counts = Counter(r["endpoint"] for r in requests)
-    for endpoint in ("register", "config", "heartbeat", "detection"):
+    for endpoint in ("register", "config", "contact", "heartbeat", "detection"):
         if counts[endpoint]:
             print(f"  {GREEN}✓{RESET} {endpoint:10} {counts[endpoint]:>4}")
 
@@ -115,6 +115,18 @@ def main() -> int:
             )
         print(f"\n  {BOLD}last heartbeat{RESET}")
         print(f"    {DIM}{json.dumps(last, indent=2)[:700]}{RESET}")
+
+    contact = [r for r in requests if r["endpoint"] == "contact"]
+    if contact:
+        body = contact[-1]["body"]
+        print(f"\n  {BOLD}contact{RESET}")
+        if body:
+            for key in ("first_name", "last_name", "email", "phone", "country"):
+                if body.get(key):
+                    print(f"    {DIM}{key:<13} {body[key]}{RESET}")
+        else:
+            print(f"    {DIM}empty document: the owner's details were cleared{RESET}")
+        print(f"    {DIM}sent {len(contact)}x  (on local change only){RESET}")
 
     registration = next((r for r in requests if r["endpoint"] == "register"), None)
     if registration:

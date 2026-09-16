@@ -28,7 +28,9 @@
 # node in the fleet does.
 #
 # The configuration is copied verbatim from the node's own config.yml, so every
-# coordinate, frequency and bin count is the real one.
+# coordinate, frequency and bin count is the real one. The contact document is
+# the node's own too, and absent on a node whose owner skipped that step, which
+# is the ordinary case and sends nothing.
 #
 # ## UNSITE=1
 #
@@ -49,6 +51,11 @@ set -euo pipefail
 HOST="${1:-owl}"
 SECONDS_TO_RUN="${2:-45}"
 UNSITE="${UNSITE:-0}"
+#: CONTACT=1 writes an obviously-fake contact document into the scratch
+#: directory to exercise PUT /nodes/contact. Off by default, in which case the
+#: node's own file is used and a node whose owner skipped that step correctly
+#: sends nothing at all. The node's /data is never written to either way.
+CONTACT="${CONTACT:-0}"
 PORT="${MOCK_PORT:-18080}"
 IMAGE="${PROBE_IMAGE:-python:3.11-slim}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -80,10 +87,25 @@ echo "→ running the service on $HOST for ${SECONDS_TO_RUN}s, against the tunne
 echo
 
 ssh -o ExitOnForwardFailure=yes -R "$PORT:127.0.0.1:$PORT" "$HOST" \
-  "REMOTE_DIR='$REMOTE_DIR' PORT='$PORT' IMAGE='$IMAGE' RUN_FOR='$SECONDS_TO_RUN' UNSITE='$UNSITE' bash -s" <<'REMOTE'
+  "REMOTE_DIR='$REMOTE_DIR' PORT='$PORT' IMAGE='$IMAGE' RUN_FOR='$SECONDS_TO_RUN' UNSITE='$UNSITE' CONTACT='$CONTACT' bash -s" <<'REMOTE'
 set -euo pipefail
 SCRATCH="$REMOTE_DIR/scratch"
 mkdir -p "$SCRATCH"
+
+# The node's own document by default. Absent on a node whose owner skipped the
+# step, which is the ordinary case and must send nothing.
+# Container paths, not host paths: the scratch directory is mounted at /scratch,
+# the same way the consent file is handed over below.
+CONTACT_FILE=/data/retina-gui/telemetry-contact.json
+if [ "${CONTACT:-0}" = "1" ]; then
+  cat > "$SCRATCH/contact.json" <<'JSON'
+{"first_name": "Test", "last_name": "Owner",
+ "email": "not-a-real-address@example.com", "phone": "+441234567890",
+ "country": "GB"}
+JSON
+  CONTACT_FILE=/scratch/contact.json
+  echo "   CONTACT=1: a fake contact document in the scratch directory"
+fi
 
 # The node's own configuration, verbatim. Nothing substituted.
 python3 - "$SCRATCH" "$UNSITE" <<'PY'
@@ -128,6 +150,8 @@ print(f"   fc {config['capture']['fc']}  fs {config['capture']['fs']}"
 PY
 echo
 
+# CONFIG_POLL_S: the default 30 s is longer than a short run, and that loop is
+# also what notices a changed contact document, so it has to tick at least once.
 docker run --rm --network host \
   --pull missing \
   -e PYTHONDONTWRITEBYTECODE=1 \
@@ -139,11 +163,13 @@ docker run --rm --network host \
   -e DEVICE_TYPE_PATH=/data/mender/device_type \
   -e CONFIG_PATH=/scratch/config.yml \
   -e CONSENT_PATH=/scratch/consent.json \
+  -e CONTACT_PATH="$CONTACT_FILE" \
   -e TOKEN_PATH=/scratch/token \
   -e STATUS_PATH=/scratch/status.json \
   -e DISK_PATH=/data/mender \
   -e WIZARD_FLAG_PATH=/data/retina-gui/setup-wizard-completed \
   -e HEARTBEAT_INTERVAL_S=10 \
+  -e CONFIG_POLL_S=5 \
   -e STATUS_INTERVAL_S=5 \
   -v "$REMOTE_DIR/app:/app:ro" \
   -v "$SCRATCH:/scratch" \

@@ -50,6 +50,7 @@ def settings_for(node, server, **overrides):
         node_id_path=node / "node_id",
         device_type_path=node / "device_type",
         consent_path=node / "consent.json",
+        contact_path=node / "contact.json",
         wizard_flag_path=node / "setup-wizard-completed",
         config_path=node / "config.yml",
         disk_path=node,
@@ -377,6 +378,152 @@ def _sited_config_sent(server):
         request.endpoint == "config" and request.body.get("rx_lat") is not None
         for request in server.requests
     )
+
+
+# ── the contact document ─────────────────────────────────────────────
+#
+# Optional throughout. The spec says a node with nothing to report never calls
+# the endpoint at all, so the silence cases matter more than the sending one.
+
+CONTACT = {
+    "first_name": "Ada",
+    "last_name": "Lovelace",
+    "email": "ada@example.com",
+    "phone": "+441234567890",
+    "country": "GB",
+}
+
+
+def write_contact(node, document):
+    (node / "contact.json").write_text(json.dumps(document))
+
+
+def test_a_node_with_no_contact_details_never_calls_the_endpoint(node, server):
+    """Not "sends an empty document": an empty document is a valid payload
+    that clears whatever the server holds, and a node that has never had any
+    details must not volunteer to clear a record it never wrote."""
+    service = Service(settings_for(node, server))
+
+    run_briefly(service, until=lambda: server.received("config"))
+
+    assert not server.received("contact")
+
+
+def test_contact_details_are_sent_once_registered(node, server):
+    write_contact(node, CONTACT)
+    service = Service(settings_for(node, server))
+
+    run_briefly(service, until=lambda: server.received("contact"))
+
+    sent = [r for r in server.requests if r.endpoint == "contact"][0]
+    assert sent.body == CONTACT
+
+
+def test_the_same_details_are_not_sent_twice(node, server):
+    """On local change only. Nothing on the server asks for this and no
+    response marks it stale, so a repeat would be pure noise."""
+    write_contact(node, CONTACT)
+    service = Service(settings_for(node, server))
+
+    run_briefly(service, seconds=1.2)
+
+    assert len(server.received("contact")) == 1
+
+
+def test_editing_the_details_sends_them_again(node, server):
+    write_contact(node, CONTACT)
+    service = Service(settings_for(node, server))
+
+    thread = threading.Thread(target=service.run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and not server.received("contact"):
+        time.sleep(0.02)
+
+    write_contact(node, {**CONTACT, "phone": "+15551234567"})
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and len(server.received("contact")) < 2:
+        time.sleep(0.02)
+    service.shutdown()
+    thread.join(timeout=5)
+
+    assert len(server.received("contact")) == 2
+    assert server.received("contact")[-1].body["phone"] == "+15551234567"
+
+
+def test_clearing_the_details_reaches_the_server(node, server):
+    """The endpoint replaces wholesale, so an empty document is how a removal
+    travels. This is the one case where sending empty is right."""
+    write_contact(node, CONTACT)
+    service = Service(settings_for(node, server))
+
+    thread = threading.Thread(target=service.run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and not server.received("contact"):
+        time.sleep(0.02)
+
+    write_contact(node, {})
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and len(server.received("contact")) < 2:
+        time.sleep(0.02)
+    service.shutdown()
+    thread.join(timeout=5)
+
+    assert server.received("contact")[-1].body == {}
+
+
+def test_a_rejected_contact_document_reaches_errors_and_not_the_detail(node, server):
+    """A refused contact breaks nothing: the node registers, streams and beats
+    exactly as before, and the only loss is a way to ring the owner. `detail`
+    is for what stops a node working."""
+    write_contact(node, CONTACT)
+    server.enqueue("contact", 400, body={"error": "invalid_contact", "detail": "email"})
+    service = Service(settings_for(node, server))
+
+    def reported():
+        return any(
+            any("contact" in e for e in (r.body.get("errors") or []))
+            for r in server.requests
+            if r.endpoint == "heartbeat"
+        )
+
+    run_briefly(service, until=reported)
+
+    assert reported(), "the refusal has to reach the server through errors[]"
+    assert "contact" not in (status(node)["detail"] or "")
+
+
+def test_a_rejected_contact_document_does_not_stop_the_configuration(node, server):
+    """The two ride the same loop, so a refusal on one must not cost the other."""
+    write_contact(node, CONTACT)
+    server.enqueue("contact", 400, body={"error": "invalid_contact", "detail": "email"})
+    service = Service(settings_for(node, server))
+
+    run_briefly(service, until=lambda: server.received("config"))
+
+    assert server.received("config")
+
+
+def test_an_unreadable_config_does_not_stop_the_contact_details(node, server):
+    """A node whose config.yml is broken can still say who owns it, and that
+    is exactly the node somebody needs to ring."""
+    write_contact(node, CONTACT)
+    service = Service(settings_for(node, server))
+    thread = threading.Thread(target=service.run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and not server.received("register"):
+        time.sleep(0.02)
+    (node / "config.yml").write_text("this is not: [valid yaml")
+
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and not server.received("contact"):
+        time.sleep(0.02)
+    service.shutdown()
+    thread.join(timeout=5)
+
+    assert server.received("contact")
 
 
 # ── the server pushing back ──────────────────────────────────────────

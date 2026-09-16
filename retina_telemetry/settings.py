@@ -14,6 +14,7 @@ from pathlib import Path
 
 from retina_telemetry.collect.blah2 import DEFAULT_BASE_URL as BLAH2_URL
 from retina_telemetry.collect.consent import DEFAULT_CONSENT_PATH
+from retina_telemetry.collect.contact import DEFAULT_CONTACT_PATH
 from retina_telemetry.collect.host import DEFAULT_DISK_PATH
 from retina_telemetry.collect.identity import DEFAULT_DEVICE_TYPE_PATH, DEFAULT_NODE_ID_PATH
 from retina_telemetry.collect.node_config import DEFAULT_CONFIG_PATH
@@ -46,6 +47,8 @@ class Settings:
         default_factory=lambda: _path("DEVICE_TYPE_PATH", DEFAULT_DEVICE_TYPE_PATH)
     )
     consent_path: Path = field(default_factory=lambda: _path("CONSENT_PATH", DEFAULT_CONSENT_PATH))
+    #: Optional throughout, and an absent file is a complete answer.
+    contact_path: Path = field(default_factory=lambda: _path("CONTACT_PATH", DEFAULT_CONTACT_PATH))
     #: retina-gui's setup-wizard-completed flag. Registration waits for it,
     #: so that a node cannot report the shipped Greenwich/Crystal Palace
     #: default as though the owner had chosen it.

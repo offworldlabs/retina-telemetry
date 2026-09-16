@@ -370,6 +370,44 @@ second becomes expressible with no change to `collect/` or `wire/`.
 `beam_width_deg` and `beam_azimuth_deg` returned zero hits across owl-os, retina-node,
 retina-gui and blah2-arm. These are new config fields plus GUI plumbing, not a mapping.
 
+### The owner's contact details
+
+`/data/retina-gui/telemetry-contact.json`, written by retina-gui since 2026-09-16 and
+read-only to us. Five fields, mirroring the wire's `NodeContact` one-for-one:
+
+| Spec field | Node source | Notes |
+|---|---|---|
+| `first_name` / `last_name` | the contact step, or the Configuration page | optional |
+| `email` | as above | optional |
+| `phone` | as above | optional |
+| `country` | as above | ISO 3166-1 alpha-2, and it belongs to the **phone number** rather than to the owner |
+
+`country` is easy to get wrong. The server added it as "record which country a contact's
+phone number is in", so it is dialling context. Asking an owner where they live and
+storing the answer here would put a wrong country against a real person.
+
+**Absent is the ordinary state, not a gap.** Every field is optional and so is the whole
+document. The spec says a node with nothing to report never calls the contact endpoint
+at all, so a missing file is a complete answer: the owner skipped the step, or cleared
+their details, and those mean the same thing. Nothing about it blocks registration,
+streaming or the heartbeat, and nothing ever should.
+
+**Sent on local change only.** Nothing on the server asks for it and no response marks it
+stale, so a change in the file is the only thing that sends it. Change detection is
+frozen-dataclass equality, the same mechanism as `NodeConfigRaw`.
+
+**An empty document is not the same as no document.** Empty is a valid payload that
+*clears* what the server holds, because the endpoint replaces wholesale. That is right
+for an owner who deleted their details and wrong for one who never gave any, so the two
+are told apart by whether anything has been sent this process.
+
+**A refusal goes to `errors[]` and never to the status document's `detail`.** Unlike a
+refused registration, a rejected contact document breaks nothing: the node registers,
+streams and beats exactly as before, and the only loss is a way to ring the owner.
+
+Nothing is ever substituted, the same discipline as the consent records and the beam
+geometry. These reach a person.
+
 ### The agreements, and the publication choice
 
 `RegisterRequest.agreements` requires three records. Today:

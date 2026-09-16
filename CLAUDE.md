@@ -50,16 +50,25 @@ Corollary: **all unit conversion happens in stage 2.** Stage 1 hands over source
 under names that say so — `delay_km`, `timestamp_ms`, `rx_alt_m` — and stage 2 emits the
 spec's names and units. A missing conversion is then visible at the call site.
 
-## Registration waits on two files retina-gui writes
+## Three files retina-gui writes, two of which gate registration
 
-Both live under `/data/retina-gui`, mounted read-only, and neither is ever synthesised
-here. A node missing either refuses to register and says which in its status document.
+All three live under `/data/retina-gui`, mounted read-only, and nothing in any of them
+is ever synthesised here. **`telemetry-consent.json` and `setup-wizard-completed` gate
+registration**: a node missing either refuses to register and says which in its status
+document. `telemetry-contact.json` gates nothing and is optional throughout.
 
 **`telemetry-consent.json`** carries the three records `RegisterRequest.agreements`
 needs: `licence`, `remote_management` and `publication`. `publication` is a privacy
 decision rather than a form field: it governs whether a dwelling's position reaches a
 public archive, and its `version` records which disclosure wording the owner saw. A
 missing record means the owner was not shown that text. Shipped in retina-gui v0.7.0.
+
+**`telemetry-contact.json`** carries the owner's contact details for
+`PUT /nodes/contact`: first name, last name, email, phone and a two-letter
+`country` for the phone number. Every field is optional and so is the file. A
+node that has none never calls the endpoint, which the spec states explicitly,
+so an absent file is a complete answer rather than a gap and nothing here
+blocks on it. See `collect/contact.py`.
 
 **`setup-wizard-completed`** proves the config is the owner's rather than the shipped
 default. `retina-node/config/default.yml` ships a *working* configuration (Greenwich
@@ -95,7 +104,7 @@ Nothing here is buildable from this repo, and the first one blocks every node:
 | Cap the tower-name field at 32 characters | shipped | `TX_NAME_MAX_LENGTH` in `config_schema.py`. The spec caps `tx_callsign` at 32 and the field was unbounded free text |
 | Read `/data/retina-telemetry/status.json` | no, but | We bind no ports, so it is the only way *no identity*, *revoked token* and *rejected config* reach an operator. `telemetry_status.py` reads it and the home page shows it |
 | Collect `location.rx.beam_width` / `beam_azimuth` | no | Deferred indefinitely. Both are nullable, so sending two nulls is correct behaviour rather than a gap |
-| Collect the owner's contact details | no | `PUT /v1/nodes/contact` arrived in spec v1.2.0 and gained a phone `country` in v1.2.2: first name, last name, email, phone, country, every field optional and nullable. Nothing on a node holds any of it, so there is nothing for us to send until retina-gui collects and persists it the way it does the consent records. Unimplemented and honestly so |
+| Collect the owner's contact details | shipped | Landed 2026-09-16. A skippable wizard step after the agreements step, plus a block under Remote support on the Configuration page, writing `/data/retina-gui/telemetry-contact.json` |
 
 `owl-os` separately owes a `mender-update show-provides` snapshot so
 `versions.retina_node` has a source. Optional field; omitted honestly until then.
@@ -121,6 +130,17 @@ Full detail and citations in `docs/data-sources.md`. The short version:
 - **"Cloud services" in retina-gui means Mender, not telemetry.** The
   `cloud-services-disabled` flag toggles OTA. It is not a telemetry opt-in and there
   isn't one yet — but read it anyway: no Mender means registration sits in `403` forever.
+- **The contact document is sent on local change only.** Nothing on the server
+  asks for it and no response marks it stale, so a change in the file is the
+  only thing that sends it. It rides the config loop's tick because both are
+  noticed by re-reading a file retina-gui wrote. **A node with nothing to
+  report never calls the endpoint**: an empty document is a valid payload that
+  *clears* what the server holds, which is right for an owner who deleted their
+  details and wrong for one who never gave any.
+- **A refused contact document goes to `errors[]` and never to `detail`.**
+  Unlike a refused registration, it breaks nothing: the node registers, streams
+  and beats exactly as before, and the only loss is a way to ring the owner.
+  `detail` is for what stops a node working.
 - **Nothing in the stack pushes to us.** No event bus, no inbound ports. Every input is
   a poll or a file read, including "the user changed the config".
 - **`wire/models.py` is generated.** Regenerate with `tools/generate-models.sh`; never

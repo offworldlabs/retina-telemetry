@@ -99,12 +99,13 @@ protocol_version
 
 # _Handler dispatches endpoint handlers by name at mock_server.py:438 —
 #   getattr(self, f"_{endpoint}")(body)
-# so vulture sees four definitions and no callers. Reviewed 2026-08-14: all four
-# are reachable, and the UNREVIEWED backlog that used to list them said "no
-# reference found anywhere in the estate", which was simply untrue. The fifth
-# entry, probe_report.failures(), *was* dead and is deleted rather than
-# whitelisted.
+# so vulture sees a definition per endpoint and no callers. Reviewed 2026-08-14:
+# every one of them is reachable, and the UNREVIEWED backlog that used to list
+# them said "no reference found anywhere in the estate", which was simply
+# untrue. One entry alongside them, probe_report.failures(), *was* dead and is
+# deleted rather than whitelisted. `_contact` joined them with spec v1.2.0.
 _._config
+_._contact
 _._detection
 _._heartbeat
 _._register

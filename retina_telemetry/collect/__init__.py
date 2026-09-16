@@ -8,4 +8,8 @@ and the spec's units, so a conversion that goes missing is visible at the call
 site rather than on the wire.
 
 Nothing in the node stack pushes to us. Every module here polls or reads.
+
+Most of it is required. :mod:`contact` is the exception: every field is
+optional and so is the whole document, because the spec says a node with
+nothing to report never calls that endpoint at all.
 """

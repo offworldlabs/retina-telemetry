@@ -66,6 +66,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import secrets
 import threading
 import time
@@ -96,6 +97,10 @@ BODY_CAPS = {
     "heartbeat": 8 * 1024,
     "config": 8 * 1024,
     "detection": 64 * 1024,
+    # 2 KiB, the smallest cap on any path. Five short strings cannot approach
+    # it, so this is the server declaring how little it expects rather than a
+    # limit a node can reach.
+    "contact": 2 * 1024,
 }
 MAX_BODY_BYTES = 64 * 1024
 
@@ -126,6 +131,9 @@ ENDPOINTS: dict[str, tuple[str, str, type[pydantic.BaseModel] | None]] = {
     "detection": ("POST", f"{BASE_PATH}/nodes/detection", DetectionFrame),
     "heartbeat": ("POST", f"{BASE_PATH}/nodes/heartbeat", HeartbeatRequest),
     "config": ("PUT", f"{BASE_PATH}/nodes/config", None),
+    # Read by hand for the same reason as config: a body-shaped refusal
+    # must not be able to precede the 401.
+    "contact": ("PUT", f"{BASE_PATH}/nodes/contact", None),
 }
 
 
@@ -334,6 +342,56 @@ def _number(field_name: str, value: Any) -> float:
     if not math.isfinite(number):
         raise ConfigInvalid(field_name, "not a finite number")
     return number
+
+
+#: The contact document's caps, from `NodeContact`. Every field is optional and
+#: nullable, so the only refusals available here are a value too long, a country
+#: that is not two letters, and a field the schema does not declare.
+_CONTACT_LENGTHS = {
+    "first_name": 64,
+    "last_name": 64,
+    "email": 255,
+    "phone": 32,
+    "country": 2,
+}
+
+_COUNTRY_RE = re.compile(r"^[A-Za-z]{2}$")
+
+
+def validate_contact(payload: Any) -> dict[str, Any]:
+    """Return the normalised contact document, or raise naming one field.
+
+    Absent and null are the same thing here, unlike on `NodeConfig`, where a
+    required-and-nullable field's null is a value the server expects. Nothing
+    in this document is required, so the two collapse and the stored result
+    carries only what was given.
+    """
+    if not isinstance(payload, dict):
+        raise ConfigInvalid("contact", "not an object")
+
+    unknown = sorted(set(payload) - set(_CONTACT_LENGTHS))
+    if unknown:
+        raise ConfigInvalid(unknown[0], "unknown field")
+
+    out: dict[str, Any] = {}
+    for field_name, cap in _CONTACT_LENGTHS.items():
+        value = payload.get(field_name)
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            raise ConfigInvalid(field_name, "not a string")
+        # The empty string is deliberately not a second way to say "nothing":
+        # the schema spells that out, and a node that cannot name something
+        # sends null.
+        if not value or len(value) > cap:
+            raise ConfigInvalid(field_name)
+        out[field_name] = value
+
+    country = out.get("country")
+    if country is not None and not _COUNTRY_RE.match(country):
+        raise ConfigInvalid("country")
+
+    return out
 
 
 def validate_config(payload: Any) -> dict[str, Any]:
@@ -660,6 +718,11 @@ class NodeRecord:
     status: str = "active"
     active_config_version: int | None = None
     configs: dict[int, dict[str, Any]] = field(default_factory=dict)
+    #: Replaced wholesale on every PUT, which is what the contract says the
+    #: endpoint does. Empty is a real state: an owner who cleared their details
+    #: sends an empty document, and that must not read as "never told us".
+    contact: dict[str, Any] = field(default_factory=dict)
+    contact_updated_at: str | None = None
 
     def upsert_config(self, config: dict[str, Any]) -> int:
         """Return the active version, minting one only if the values differ.
@@ -1218,6 +1281,29 @@ class _Handler(BaseHTTPRequestHandler):
         with self.state.lock:
             version = node.upsert_config(config)
         self._send(200, {"config_version": version})
+
+    def _contact(self, body: Any) -> None:
+        """``PUT /v1/nodes/contact``. Replaces the document wholesale."""
+        node = self._bearer_node(taxonomy=True)
+        if node is None:
+            return
+
+        if body is MALFORMED:
+            self._taxonomy(400, "invalid_contact", "contact")
+            return
+
+        try:
+            contact = validate_contact(body)
+        except ConfigInvalid as exc:
+            # `invalid_contact`, not `invalid_config`: the slugs split in
+            # v1.2.0 precisely so retina-gui can tell which form to mark.
+            self._taxonomy(400, "invalid_contact", exc.field)
+            return
+
+        with self.state.lock:
+            node.contact = contact
+            node.contact_updated_at = _now()
+        self._send(200, {"updated_at": node.contact_updated_at})
 
 
 class MockServer:
