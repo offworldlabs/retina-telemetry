@@ -50,7 +50,7 @@ from retina_telemetry.collect.consent import Consent
 from retina_telemetry.collect.host import HostReader
 from retina_telemetry.collect.identity import IdentityUnavailable
 from retina_telemetry.collect.node_config import ConfigUnavailable, NodeConfigRaw
-from retina_telemetry.comms.client import Client
+from retina_telemetry.comms.client import Client, Kind, Outcome
 from retina_telemetry.comms.lifecycle import NodeState, Registrar, derive_state, explain
 from retina_telemetry.comms.reliable import is_fatal_for_config, send_until_delivered
 from retina_telemetry.comms.stream import DetectionStream, Slot
@@ -65,6 +65,40 @@ from retina_telemetry.wire.registration import IncompletePayload, build_registra
 from retina_telemetry.wire.serialise import to_wire
 
 log = logging.getLogger("retina_telemetry")
+
+
+def _refusal_detail(outcome: Outcome) -> str:
+    """A sentence for the status document when registration is refused.
+
+    The two refusals mean opposite things and point at different people, so
+    they do not share wording. A ``400`` names a field and cannot clear without
+    somebody editing the configuration. A ``403`` is deliberately opaque and is
+    the *normal* answer while Mender acceptance propagates, so it has to carry
+    that reassurance itself: it is shown from the first refusal, and a newly
+    flashed node will show it for a while without anything being wrong.
+    """
+    if outcome.kind is Kind.INVALID:
+        field = (outcome.body or {}).get("detail")
+        named = f": {field}" if isinstance(field, str) and field else ""
+        return (
+            f"the server rejected this node's registration{named}. It names one field at a "
+            "time, so there may be more behind this one. Correct it on the Configuration "
+            "page; the node keeps trying and will register on its own once the value is "
+            "accepted."
+        )
+    if outcome.kind in (Kind.REFUSED, Kind.RATE_LIMITED):
+        return (
+            "the server has refused to register this node, without saying why. This is normal "
+            "on a newly flashed node and clears on its own once Mender has accepted it, so it "
+            "is worth leaving alone for an hour or so. If it persists beyond that, the node is "
+            "probably not accepted in Mender, or is waiting on an operator to open the "
+            "24-hour window a reflashed board needs."
+        )
+    return (
+        f"cannot reach the server to register: {outcome.describe()}. Nothing is wrong with "
+        "this node and it keeps trying; if it persists, check the node's own connectivity "
+        "before anything else."
+    )
 
 
 class Service:
@@ -97,6 +131,10 @@ class Service:
         # successful re-read wiped a rejection the operator still had to fix.
         self._config_unreadable: str | None = None
         self._config_rejected: str | None = None
+        #: Why the server last refused to register this node. Separate from
+        #: `_config_rejected`, which is a PUT answering about a configuration
+        #: the node is already registered to send.
+        self._registration_refused: str | None = None
 
     # ── node facts, re-read rather than cached ───────────────────────
     #
@@ -253,8 +291,15 @@ class Service:
                 self._registering.clear()
 
             if outcome.ok:
+                self._registration_refused = None
                 return
             self.errors.add(outcome.describe())
+            # From the first refusal, not after a threshold. `errors[]` already
+            # carried this and nothing reads it: retina-gui renders `detail` and
+            # ignores the list, so a node refused for days showed its owner a
+            # blank line. The 403 wording carries its own "this is normal on a
+            # new node" rather than the delay doing that job.
+            self._registration_refused = _refusal_detail(outcome)
             if self.stop.wait(self.registrar.delay_before_retry(outcome)):
                 return
 
@@ -394,6 +439,10 @@ class Service:
             detail=self._dead_loop_detail()
             or self._config_rejected
             or self._config_unreadable
+            # Above the unsited line, because a node the server will not accept
+            # has a more urgent thing to say than one it would accept but
+            # cannot place.
+            or self._registration_refused
             or self._unsited_detail()
             or explain(state),
             errors=self.errors.snapshot(),

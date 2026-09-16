@@ -217,6 +217,10 @@ def explain(state: NodeState) -> str | None:
             "default configuration and has nothing true to report. Finish it in "
             "retina-gui, including the tower step. Registration follows on its own."
         ),
+        NodeState.UNREGISTERED: (
+            "not registered yet. Normal at first boot: the node registers on its own once "
+            "Mender has accepted it, and reports here if the server refuses."
+        ),
         NodeState.REGISTERING: (
             "registering. A refusal here is deliberately opaque and is the normal "
             "answer while Mender acceptance propagates; a reflashed board waits until "

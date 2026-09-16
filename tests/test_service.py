@@ -4,6 +4,7 @@ These are the only tests that exercise all three layers together, which makes
 them the ones that catch a payload the pieces each considered fine.
 """
 
+import dataclasses
 import json
 import threading
 import time
@@ -410,6 +411,79 @@ def test_a_refused_registration_backs_off_rather_than_hot_looping(node, server):
     run_briefly(Service(settings_for(node, server)), seconds=1.5)
 
     assert len(server.received("register")) <= 2
+
+
+# ── a refused registration has to reach the operator ─────────────────
+#
+# It did not, for as long as this service has existed. `errors[]` carried the
+# refusal and nothing reads that list: retina-gui renders `detail` and ignores
+# the rest, so owl-ded9 showed its owner a blank line while being refused 232
+# times over nine days with a 400 that named the broken field.
+
+
+def test_a_rejected_registration_names_the_field_in_the_detail(node, server):
+    """The actionable refusal. A 400 cannot clear until somebody edits the
+    configuration, so the field it names must reach the one line an operator
+    reads."""
+    server.enqueue("register", 400, body={"error": "invalid_config", "detail": "tx_lat"}, count=5)
+    service = Service(settings_for(node, server))
+
+    run_briefly(service, until=lambda: status(node).get("detail"))
+
+    detail = status(node)["detail"]
+    assert "tx_lat" in detail
+    # Named page, not the app: this sentence is rendered by retina-gui itself,
+    # so "fix it in retina-gui" is advice to somebody already looking at it.
+    assert "Configuration page" in detail
+
+
+def test_a_refused_registration_says_so_from_the_first_refusal(node, server):
+    """No threshold. The 403 wording carries "this is normal on a new node"
+    itself, rather than a delay doing that job and leaving a stuck node
+    looking healthy in the meantime."""
+    server.enqueue("register", 403, retry_after=1, count=10)
+    service = Service(settings_for(node, server))
+
+    run_briefly(service, until=lambda: status(node).get("detail"))
+
+    detail = status(node)["detail"]
+    assert "refused" in detail
+    assert "normal" in detail, "a newly flashed node is refused as a matter of course"
+
+
+def test_an_unreachable_server_is_reported_as_the_network_rather_than_the_node(node, server):
+    """Nothing is wrong with the node, and telling an owner to check their
+    configuration would send them after the wrong thing."""
+    unreachable = dataclasses.replace(settings_for(node, server), api_url="http://127.0.0.1:1/v1")
+    service = Service(unreachable)
+
+    run_briefly(service, until=lambda: status(node).get("detail"))
+
+    assert "cannot reach the server" in status(node)["detail"]
+
+
+def test_a_registration_refusal_clears_once_the_node_registers(node, server):
+    """A stale refusal on a working node is worse than none."""
+    server.enqueue("register", 403, retry_after=1)
+    service = Service(settings_for(node, server))
+
+    run_briefly(
+        service, until=lambda: server.received("register") and service.state.snapshot().token
+    )
+
+    assert service._registration_refused is None
+    assert "refused" not in (status(node)["detail"] or "")
+
+
+def test_an_unregistered_node_says_something_even_before_a_refusal(node, server):
+    """`unregistered` had no sentence at all, so the window before the first
+    attempt was blank too."""
+    (node / "consent.json").unlink()
+    service = Service(settings_for(node, server))
+
+    run_briefly(service, seconds=0.6)
+
+    assert status(node)["detail"]
 
 
 def test_a_config_rejection_reaches_the_operator(node, server):
