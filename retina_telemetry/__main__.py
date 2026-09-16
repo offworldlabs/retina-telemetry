@@ -239,9 +239,10 @@ class Service:
 
             payload = self._registration_payload()
             if payload is None:
-                # Blocked on something local — consent, identity, or the beam
-                # fields. Re-checked rather than abandoned, so fixing it takes
-                # effect without a restart.
+                # Blocked on something local: the wizard flag, identity, a
+                # consent record, or an unreadable config. Not the geometry,
+                # which has travelled as null since v1.2.0. Re-checked rather
+                # than abandoned, so fixing it takes effect without a restart.
                 self.stop.wait(self.settings.config_poll_s)
                 continue
 
@@ -271,11 +272,11 @@ class Service:
         config = self.node_config()
         if node_id is None or config is None:
             return None
-        # An unsited node has no geometry to register with, and the wire cannot
-        # yet carry a null one. Holding is silent and free; the status document
-        # says why. Becomes "send the nulls" once the spec allows it.
-        if not config.is_located:
-            return None
+        # No geometry gate. An unsited node registers with six explicit nulls
+        # since spec v1.2.0: the server counts it, streams from it and simply
+        # places nothing on the map until a position arrives. Holding here was
+        # the interim while the wire could not carry a null, and it cost the
+        # fleet any sight of a node nobody had configured.
         try:
             return to_wire(
                 build_registration(
@@ -402,14 +403,21 @@ class Service:
         """A node with no geometry is not broken, it just has not been sited.
 
         Reported through `detail` rather than as a NodeState because it does
-        not change what the node is doing: everything else about it is normal.
+        not change what the node is doing: everything else about it is normal,
+        and since v1.2.0 that includes registering and streaming.
+
+        Kept after the registration gate went, and worth keeping. An unsited
+        node now looks entirely healthy from here: registered, streaming,
+        heartbeating, while contributing nothing to the map. This sentence
+        is the only thing that tells an operator why.
         """
         config = self.node_config()
         if config is None or config.is_located:
             return None
         return (
-            "no receiver or transmitter position is configured, so this node cannot say "
-            "where it is and will not register. Choose a tower in retina-gui."
+            "no receiver or transmitter position is configured. This node registers and "
+            "streams normally, but nothing it detects can be placed until it knows where "
+            "it is. Choose a tower in retina-gui."
         )
 
     def _dead_loop_detail(self) -> str | None:

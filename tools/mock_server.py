@@ -300,6 +300,18 @@ _NUMERIC_BOUNDS: dict[str, tuple[float, float, bool, bool]] = {
 
 _REQUIRED = set(_NUMERIC_BOUNDS) | {"tx_callsign", "beam_width_deg", "beam_azimuth_deg"}
 
+#: Required, but accepting ``null``, since spec v1.2.0. A node whose owner has
+#: not picked a tower registers and streams with these six null and simply
+#: places nothing on the map. ``tx_callsign`` joined them in v1.2.2 and is
+#: handled below, because it is a string rather than a bounded number.
+_NULLABLE_COORDS = frozenset({"rx_lat", "rx_lon", "rx_alt_ft", "tx_lat", "tx_lon", "tx_alt_ft"})
+
+#: "A latitude and its longitude are given together or both null", from the
+#: schema's own description. Altitude is deliberately not in a pair: the
+#: contract says nothing about it, so a node with a position and no altitude is
+#: accepted here rather than refused on a rule the server never stated.
+_COORD_PAIRS = (("rx_lat", "rx_lon"), ("tx_lat", "tx_lon"))
+
 #: The fifteen fields a configuration version consists of, which is exactly
 #: ``validate_config``'s output. Two versions are the same version when these
 #: fifteen agree.
@@ -355,15 +367,30 @@ def validate_config(payload: Any) -> dict[str, Any]:
 
     out: dict[str, Any] = {}
     for field_name, (low, high, low_inclusive, high_inclusive) in _NUMERIC_BOUNDS.items():
-        value = _number(field_name, payload[field_name])
+        raw = payload[field_name]
+        # Required and present, but null is a value rather than an absence.
+        if raw is None and field_name in _NULLABLE_COORDS:
+            out[field_name] = None
+            continue
+        value = _number(field_name, raw)
         below = value < low if low_inclusive else value <= low
         above = value > high if high_inclusive else value >= high
         if below or above:
             raise ConfigInvalid(field_name)
         out[field_name] = value
 
+    # Reported in _NUMERIC_BOUNDS order like the bounds above, and naming the
+    # null half: that is the field an operator has to fill in.
+    for pair in _COORD_PAIRS:
+        if len([name for name in pair if out[name] is None]) == 1:
+            missing = next(name for name in pair if out[name] is None)
+            raise ConfigInvalid(missing, "a latitude and its longitude go together")
+
+    # Nullable since v1.2.2, and the empty string deliberately is not: a node
+    # that cannot name its illuminator sends null, which is the only way to say
+    # so. Accepting "" as well would give it two.
     callsign = payload["tx_callsign"]
-    if not isinstance(callsign, str) or not 1 <= len(callsign) <= 32:
+    if callsign is not None and (not isinstance(callsign, str) or not 1 <= len(callsign) <= 32):
         raise ConfigInvalid("tx_callsign")
     out["tx_callsign"] = callsign
 
@@ -389,8 +416,13 @@ def validate_config(payload: Any) -> dict[str, Any]:
             raise ConfigInvalid("beam_azimuth_deg")
         out["beam_azimuth_deg"] = azimuth
 
+    # Only once both ends have a position. An unsited node has no baseline to be
+    # degenerate, and subtracting a null here is how this check would turn the
+    # ordinary state of a new node into a 500.
+    sited = all(out[name] is not None for pair in _COORD_PAIRS for name in pair)
     if (
-        abs(out["rx_lat"] - out["tx_lat"]) < _MIN_BASELINE_DEG
+        sited
+        and abs(out["rx_lat"] - out["tx_lat"]) < _MIN_BASELINE_DEG
         and abs(out["rx_lon"] - out["tx_lon"]) < _MIN_BASELINE_DEG
     ):
         raise ConfigInvalid("tx_lat", "receiver and illuminator are at the same point")

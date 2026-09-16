@@ -64,13 +64,20 @@ def tolerance_km_to_us(tolerance_km: float) -> float:
     return round(tolerance_km * KM_TO_US, DELAY_DECIMALS)
 
 
-def m_to_ft(altitude_m: float) -> float:
-    """Metres → feet.
+def m_to_ft(altitude_m: float | None) -> float | None:
+    """Metres → feet, passing an absent altitude through.
 
     Everything else in the spec is SI, so this one conversion is the odd one
     out and the easiest to forget.
+
+    ``None`` in, ``None`` out. An unsited node has no altitude and the wire
+    field is nullable since v1.2.0, so the alternative is a guard at both call
+    sites that means "do not convert what is not there". Converting nothing
+    into nothing is not a substitution: no number is invented, and a missing
+    conversion is still visible at the call site because the argument is still
+    named ``_m`` and the field still ``_ft``.
     """
-    return round(altitude_m * M_TO_FT, ALTITUDE_DECIMALS)
+    return None if altitude_m is None else round(altitude_m * M_TO_FT, ALTITUDE_DECIMALS)
 
 
 def max_range_km(delay_max_bins: int, fs_hz: float) -> float:

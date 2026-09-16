@@ -152,6 +152,17 @@ Full detail and citations in `docs/data-sources.md`. The short version:
 - **The antenna geometry is nullable, and null is the normal case.** retina-gui is not
   collecting `beam_width_deg` / `beam_azimuth_deg` from owners for the foreseeable
   future, so every node sends two explicit nulls. Nothing is ever substituted.
+- **A node with no location registers anyway, with seven explicit nulls.** retina-node
+  ships `location.*` null until an owner picks a tower. v1.2.0 made the six coordinates
+  required-and-nullable and v1.2.2 did the same for `tx_callsign`, so such a node is
+  counted and streamed from; it just places nothing on the map. `is_located` still
+  exists but gates nothing: it feeds the status document, which is the only thing
+  telling an operator why a node that looks entirely healthy contributes nothing.
+  Registration was held under v1.1.1; that is over.
+- **The server pairs a latitude with its longitude.** Both or neither; half a pair is a
+  `400 invalid_config` naming the null half. Altitude is not paired with anything, and
+  the degenerate-baseline check (receiver and illuminator at the same point) only
+  applies once both ends have a position.
 - **Owl runs `dopplerMin/Max: ±1000`, not the standard ±200.** Five times the Doppler
   bins per CPI, so its frame rate (0.6–0.9 Hz measured) is slower than a standard node's
   and is **not** a fleet figure. Do not quote it as one.

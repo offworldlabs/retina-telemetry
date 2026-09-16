@@ -274,9 +274,10 @@ def test_the_wizard_gate_does_not_stop_the_status_document(node, server):
     assert "wizard" in document["detail"]
 
 
-def test_an_unsited_node_registers_nothing(node, server):
-    """It has no geometry to register with, and the wire cannot carry a null
-    one yet. Silence beats asserting a position nobody chose."""
+def unsite(node):
+    """Strip the geometry the way retina-node's default.yml ships it: the keys
+    present and every value null, so "unset" stays distinguishable from "this
+    configuration is malformed"."""
     document = yaml.safe_load((node / "config.yml").read_text())
     for end in ("rx", "tx"):
         document["location"][end] = {
@@ -286,20 +287,44 @@ def test_an_unsited_node_registers_nothing(node, server):
             "name": None,
         }
     (node / "config.yml").write_text(yaml.safe_dump(document))
+
+
+def test_an_unsited_node_registers_with_explicit_nulls(node, server):
+    """The whole point of phase two. Under v1.1.1 this node held registration
+    and the fleet could not see it at all; the server now counts it, streams
+    from it, and places nothing on the map until a position arrives."""
+    unsite(node)
     service = Service(settings_for(node, server))
 
-    run_briefly(service, seconds=0.6)
+    run_briefly(service, until=lambda: server.received("register"))
 
-    assert server.requests == []
+    config = server.requests[0].body["config"]
+    assert config["rx_lat"] is None
+    assert config["rx_lon"] is None
+    assert config["tx_alt_ft"] is None
+    # Present and null, never dropped: a required-and-nullable key's absence is
+    # a payload the server rejects.
+    assert {"rx_lat", "rx_lon", "rx_alt_ft", "tx_lat", "tx_lon", "tx_alt_ft"} <= set(config)
+    assert "tx_callsign" in config
+
+
+def test_an_unsited_node_names_no_illuminator(node, server):
+    """A tower's name and its position are set at the same wizard step, so the
+    node with no position has no name for one either. v1.2.2 made the field
+    nullable so that says itself, rather than a placeholder standing in."""
+    unsite(node)
+    service = Service(settings_for(node, server))
+
+    run_briefly(service, until=lambda: server.received("register"))
+
+    assert server.requests[0].body["config"]["tx_callsign"] is None
 
 
 def test_an_unsited_node_is_not_reported_as_a_broken_config(node, server):
     """The ordinary state of a new node, not a fault. Reading the geometry
     with _require made every unsited node look unreadable, which is a support
     call rather than a setup step."""
-    document = yaml.safe_load((node / "config.yml").read_text())
-    document["location"]["rx"]["latitude"] = None
-    (node / "config.yml").write_text(yaml.safe_dump(document))
+    unsite(node)
     service = Service(settings_for(node, server))
 
     run_briefly(service, seconds=0.6)
@@ -309,27 +334,48 @@ def test_an_unsited_node_is_not_reported_as_a_broken_config(node, server):
     assert not any("could not be read" in e for e in status(node).get("errors", []))
 
 
+def test_an_unsited_node_still_says_so_once_it_is_registered(node, server):
+    """It now looks entirely healthy from outside: registered, streaming and
+    heartbeating. The status detail is the only thing telling an operator why
+    nothing of theirs appears on the map."""
+    unsite(node)
+    service = Service(settings_for(node, server))
+
+    run_briefly(service, until=lambda: server.received("register"))
+
+    assert "position is configured" in status(node)["detail"]
+
+
 def test_siting_a_node_takes_effect_without_a_restart(node, server):
-    """retina-gui writes the config into a container already running."""
+    """retina-gui writes the config into a container already running. The node
+    registered while unsited, so what has to travel now is the configuration
+    change, not a held registration."""
     original = (node / "config.yml").read_text()
-    document = yaml.safe_load(original)
-    document["location"]["rx"]["latitude"] = None
-    (node / "config.yml").write_text(yaml.safe_dump(document))
+    unsite(node)
     service = Service(settings_for(node, server))
 
     thread = threading.Thread(target=service.run, daemon=True)
     thread.start()
-    time.sleep(0.3)
-    assert server.requests == []
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and not server.received("register"):
+        time.sleep(0.02)
 
     (node / "config.yml").write_text(original)
     deadline = time.monotonic() + 3.0
-    while time.monotonic() < deadline and not server.received("register"):
+    while time.monotonic() < deadline and not _sited_config_sent(server):
         time.sleep(0.02)
     service.shutdown()
     thread.join(timeout=5)
 
     assert server.received("register")
+    assert _sited_config_sent(server), "the new position never reached the server"
+
+
+def _sited_config_sent(server):
+    return any(
+        request.endpoint == "config" and request.body.get("rx_lat") is not None
+        for request in server.requests
+    )
 
 
 # ── the server pushing back ──────────────────────────────────────────

@@ -16,11 +16,11 @@ def build_node_config(config: NodeConfigRaw) -> NodeConfig:
 
     | Wire field | Source | Conversion |
     |---|---|---|
-    | ``rx_lat`` / ``rx_lon`` | ``config.rx_lat`` / ``rx_lon`` | none, degrees both sides |
-    | ``rx_alt_ft`` | ``config.rx_alt_m`` | **× 3.28084** |
-    | ``tx_lat`` / ``tx_lon`` | ``config.tx_lat`` / ``tx_lon`` | none |
-    | ``tx_alt_ft`` | ``config.tx_alt_m`` | **× 3.28084** |
-    | ``tx_callsign`` | ``config.tx_name`` | none |
+    | ``rx_lat`` / ``rx_lon`` | ``config.rx_lat`` / ``rx_lon`` | none, degrees both sides; ``null`` if unsited |
+    | ``rx_alt_ft`` | ``config.rx_alt_m`` | **× 3.28084**; ``null`` if unsited |
+    | ``tx_lat`` / ``tx_lon`` | ``config.tx_lat`` / ``tx_lon`` | none; ``null`` if unsited |
+    | ``tx_alt_ft`` | ``config.tx_alt_m`` | **× 3.28084**; ``null`` if unsited |
+    | ``tx_callsign`` | ``config.tx_name`` | none; ``null`` if unsited |
     | ``fc_hz`` / ``fs_hz`` | ``config.fc_hz`` / ``fs_hz`` | none |
     | ``max_range_km`` | ``config.delay_max_bins``, ``config.fs_hz`` | × c ÷ fs ÷ 1000 |
     | ``beam_width_deg`` | ``config.beam_width_deg`` | none — ``null`` if unset |
@@ -30,10 +30,13 @@ def build_node_config(config: NodeConfigRaw) -> NodeConfig:
     | ``doppler_tolerance_hz`` | ``config.doppler_tolerance_hz`` | none, Hz both sides |
 
     **Both beam fields are nullable and nothing is substituted for them.** They
-    are required *and* nullable in v1.1.1, so an uncharacterised antenna sends
-    two explicit nulls — ``null`` says "not characterised" where an absent key
-    would say nothing at all. No value the node did not give us reaches the
-    server, which is the same discipline as the consent records.
+    have been required *and* nullable since v1.1.1, so an uncharacterised antenna
+    sends two explicit nulls: ``null`` says "not characterised" where an absent
+    key would say nothing at all.
+
+    The same holds for every other field here: no value the node did not give us
+    reaches the server, which is the same discipline as the consent records.
+    There are no substitutions in this module at all.
 
     That is not a temporary state. retina-gui is not collecting the geometry
     from owners for the foreseeable future, so **null is the normal case on
@@ -43,6 +46,22 @@ def build_node_config(config: NodeConfigRaw) -> NodeConfig:
     ``tx_callsign`` carries ``location.tx.name``, which is free text the
     operator typed in the tower step (e.g. "Crystal Palace") rather than a
     regulatory callsign.
+
+    **An unsited node builds a configuration rather than failing to.** Spec
+    v1.2.0 made the six coordinates nullable precisely so that a node whose
+    owner has not picked a tower can register, stream and be counted; it simply
+    places nothing on the map until a position arrives. So the geometry passes
+    through as it is read, nulls included, and nothing here decides whether the
+    node is sited: ``NodeConfigRaw.is_located`` answers that for the status
+    document, and stage 3 no longer gates registration on it.
+
+    ``tx_callsign`` travels the same way. v1.2.0 made only the coordinates
+    nullable and left it at ``minLength: 1``, which meant an unsited node still
+    could not build a payload: a tower's name and its position are set at the
+    same wizard step, so a node with no position has no name for one either.
+    v1.2.2 made it nullable for exactly that reason, and the null now says "this
+    node cannot name its illuminator" rather than a placeholder saying something
+    no owner chose.
 
     Raises:
         ValueError: if ``fs_hz`` is not positive, via :func:`max_range_km`.

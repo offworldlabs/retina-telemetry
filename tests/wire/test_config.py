@@ -157,3 +157,74 @@ def test_zero_azimuth_is_not_turned_into_none():
 def test_invalid_sample_rate_surfaces_from_the_derivation():
     with pytest.raises(ValueError, match="fs_hz must be positive"):
         build_node_config(dataclasses.replace(OWL, fs_hz=0.0))
+
+
+# ── an unsited node: no tower picked yet ─────────────────────────────
+#
+# retina-node ships location.* null by default, so this is the state of every
+# node between first boot and the owner reaching the tower step.
+
+UNSITED = dataclasses.replace(
+    OWL,
+    rx_lat=None,
+    rx_lon=None,
+    rx_alt_m=None,
+    tx_lat=None,
+    tx_lon=None,
+    tx_alt_m=None,
+    tx_name=None,
+)
+
+
+def test_an_unsited_node_builds_a_configuration():
+    """Under v1.1.1 it could not, which is why registration was held. The
+    coordinates are required-and-nullable now, so the payload exists."""
+    payload = to_wire(build_node_config(UNSITED))
+
+    for field in ("rx_lat", "rx_lon", "rx_alt_ft", "tx_lat", "tx_lon", "tx_alt_ft", "tx_callsign"):
+        assert field in payload, f"{field} was dropped rather than sent as null"
+        assert payload[field] is None
+
+
+def test_an_absent_altitude_is_not_converted_to_zero():
+    """m_to_ft(None) must not become 0.0 ft: that is sea level, a real value,
+    and the server could not tell it from a node on the coast."""
+    assert build_node_config(UNSITED).rx_alt_ft is None
+
+
+def test_an_unsited_node_sends_a_null_callsign():
+    """v1.2.0 left tx_callsign at minLength 1 while making the coordinates
+    nullable, so an unsited node still could not build a payload. v1.2.2 made
+    it nullable, and null says "cannot name its illuminator" where a
+    placeholder would say something no owner chose."""
+    payload = to_wire(build_node_config(UNSITED))
+
+    assert "tx_callsign" in payload
+    assert payload["tx_callsign"] is None
+
+
+def test_a_real_tower_name_is_carried_unchanged():
+    assert build_node_config(OWL).tx_callsign == "Crystal Palace"
+
+
+def test_the_rest_of_an_unsited_configuration_is_intact():
+    """Losing a position must not cost the radio parameters: an unsited node
+    still streams, and the server needs these to interpret what it sends."""
+    payload = to_wire(build_node_config(UNSITED))
+
+    assert payload["fc_hz"] == 503000000.0
+    assert payload["fs_hz"] == 2000000.0
+    assert payload["max_range_km"] == 59.96
+    assert payload["cpi_s"] == 0.5
+
+
+def test_a_partly_sited_node_is_built_as_given():
+    """This module does not adjudicate. `is_located` is the node-side rule and
+    the server enforces its own pairing; inventing or blanking a coordinate
+    here would hide a half-filled configuration from both."""
+    half = dataclasses.replace(OWL, tx_lat=None, tx_lon=None, tx_alt_m=None)
+
+    payload = to_wire(build_node_config(half))
+
+    assert payload["rx_lat"] == 51.4769
+    assert payload["tx_lat"] is None

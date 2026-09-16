@@ -127,12 +127,16 @@ def probe_detection() -> None:
 def probe_config() -> None:
     raw = node_config.read_config()
 
-    # No longer refuses. Both beam fields are optional in the spec, and retina-gui
+    # No longer refuses. Both beam fields are nullable in the spec, and retina-gui
     # is not collecting the geometry from owners for the foreseeable future, so
     # every node in the fleet takes the "absent" path — this is the normal case
-    # rather than a gap being worked around.
+    # rather than a gap being worked around. Since v1.2.0 the same is true of the
+    # geometry itself, so an unsited node builds a payload rather than none.
     wire = build_node_config(raw)
-    ok("built from live config", "every field real, nothing substituted")
+    if raw.is_located:
+        ok("built from live config", "every field real, nothing substituted")
+    else:
+        note("built from an unsited config", "seven nulls, nothing substituted")
 
     if raw.beam_width_deg is None:
         note("beam geometry absent", "expected — both keys omitted from the payload")
@@ -142,20 +146,28 @@ def probe_config() -> None:
     print(f"\n  {BOLD}what the server would receive:{RESET}")
     _json(wire)
 
-    check(
-        "rx altitude converted metres → feet",
-        abs(wire.rx_alt_ft - raw.rx_alt_m * M_TO_FT) < 0.1,
-        f"{raw.rx_alt_m} m → {wire.rx_alt_ft} ft",
-    )
-    check(
-        "tx altitude converted metres → feet",
-        wire.tx_alt_ft > raw.tx_alt_m,
-        f"{raw.tx_alt_m} m → {wire.tx_alt_ft} ft",
-    )
+    if raw.is_located:
+        check(
+            "rx altitude converted metres → feet",
+            abs(wire.rx_alt_ft - raw.rx_alt_m * M_TO_FT) < 0.1,
+            f"{raw.rx_alt_m} m → {wire.rx_alt_ft} ft",
+        )
+        check(
+            "tx altitude converted metres → feet",
+            wire.tx_alt_ft > raw.tx_alt_m,
+            f"{raw.tx_alt_m} m → {wire.tx_alt_ft} ft",
+        )
+    else:
+        # Not "0.0 ft", which is sea level and a real place to claim to be.
+        check(
+            "absent altitudes stay absent",
+            wire.rx_alt_ft is None and wire.tx_alt_ft is None,
+            "no conversion invents a number",
+        )
     check(
         "coordinates carried unchanged",
         (wire.rx_lat, wire.rx_lon) == (raw.rx_lat, raw.rx_lon),
-        "degrees on both sides",
+        "degrees on both sides" if raw.is_located else "both null, both sides",
     )
     check(
         "max_range_km derived from bins and fs",
@@ -165,7 +177,7 @@ def probe_config() -> None:
     check(
         "tx_callsign carries the display name",
         wire.tx_callsign == raw.tx_name,
-        f"{wire.tx_callsign!r} asks whether the server wants a real callsign",
+        f"{wire.tx_callsign!r}" + ("" if raw.tx_name else " (null: no illuminator named)"),
     )
 
 

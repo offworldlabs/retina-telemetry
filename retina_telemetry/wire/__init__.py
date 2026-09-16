@@ -42,11 +42,11 @@ bad value must not cost the other detections in the frame.
 
 | Wire field | Source | Conversion |
 |---|---|---|
-| ``rx_lat`` / ``rx_lon`` | ``NodeConfigRaw.rx_lat`` / ``rx_lon`` | none |
-| ``rx_alt_ft`` | ``NodeConfigRaw.rx_alt_m`` | × 3.28084 |
-| ``tx_lat`` / ``tx_lon`` | ``NodeConfigRaw.tx_lat`` / ``tx_lon`` | none |
-| ``tx_alt_ft`` | ``NodeConfigRaw.tx_alt_m`` | × 3.28084 |
-| ``tx_callsign`` | ``NodeConfigRaw.tx_name`` | none — a display name, not a callsign |
+| ``rx_lat`` / ``rx_lon`` | ``NodeConfigRaw.rx_lat`` / ``rx_lon`` | none; ``null`` if unsited |
+| ``rx_alt_ft`` | ``NodeConfigRaw.rx_alt_m`` | × 3.28084; ``null`` if unsited |
+| ``tx_lat`` / ``tx_lon`` | ``NodeConfigRaw.tx_lat`` / ``tx_lon`` | none; ``null`` if unsited |
+| ``tx_alt_ft`` | ``NodeConfigRaw.tx_alt_m`` | × 3.28084; ``null`` if unsited |
+| ``tx_callsign`` | ``NodeConfigRaw.tx_name`` | none; a display name, not a callsign. ``null`` if unsited |
 | ``fc_hz`` / ``fs_hz`` | ``NodeConfigRaw.fc_hz`` / ``fs_hz`` | none |
 | ``max_range_km`` | ``delay_max_bins`` and ``fs_hz`` | × c ÷ fs ÷ 1000 |
 | ``beam_width_deg`` | ``NodeConfigRaw.beam_width_deg`` | none — ``null`` if unset |
@@ -54,6 +54,12 @@ bad value must not cost the other detections in the frame.
 | ``cpi_s`` | ``NodeConfigRaw.cpi_s`` | none, seconds both sides |
 | ``delay_tolerance_us`` | ``NodeConfigRaw.delay_tolerance_km`` | × 3.335641 |
 | ``doppler_tolerance_hz`` | ``NodeConfigRaw.doppler_tolerance_hz`` | none |
+
+**An unsited node sends seven nulls and registers.** The coordinates went
+nullable in v1.2.0 and ``tx_callsign`` in v1.2.2, so a node whose owner has not
+picked a tower is counted, streamed from, and simply not placed on the map.
+Nothing here decides whether a node is sited: ``NodeConfigRaw.is_located``
+answers that for the status document, and stage 3 gates nothing on it.
 
 ### RegisterRequest — ``registration.build_registration``
 

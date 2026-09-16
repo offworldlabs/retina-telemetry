@@ -93,6 +93,13 @@ def test_below_sea_level_stays_negative():
     assert m_to_ft(-10.0) < 0
 
 
+def test_an_absent_altitude_converts_to_nothing():
+    """An unsited node has no altitude and the wire field is nullable since
+    v1.2.0. Nothing is invented and nothing is defaulted to sea level, which
+    would put every unsited node's antenna on the ground."""
+    assert m_to_ft(None) is None
+
+
 # ── max range derivation ─────────────────────────────────────────────
 
 
