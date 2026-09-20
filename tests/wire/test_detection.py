@@ -276,3 +276,94 @@ def test_a_wholly_non_finite_frame_becomes_an_empty_one():
     )
 
     assert to_wire(frame)["delay"] == []
+
+
+class TestPositionTags:
+    """``adsb`` — the association said again with the position it was made at."""
+
+    def test_an_association_carries_its_position(self):
+        frame = build_detection_frame(
+            poll(adsb=[ASSOCIATION, None]), boot_id="28a156bd3f8652f4", seq=1, config_version=7
+        )
+
+        assert to_wire(frame)["adsb_hex"] == ["4ca1f2", None]
+        tag, none = frame.adsb
+        assert none is None
+        assert (tag.hex, tag.lat, tag.lon, tag.alt) == ("4ca1f2", 51.5, -0.1, 11000.0)
+        assert (tag.expected_delay, tag.expected_doppler) == (12.3, -117.5)
+        assert (tag.delay_residual, tag.doppler_residual) == (0.1, -0.5)
+        assert tag.gs is None and tag.track is None  # blah2-api did not report them
+        # Entry for entry, the two columns agree — the server refuses a frame where they do not.
+        wire = to_wire(frame)
+        assert all(
+            t is None or t["hex"] == h for t, h in zip(wire["adsb"], wire["adsb_hex"], strict=True)
+        )
+
+    def test_the_column_is_omitted_when_association_is_off(self):
+        frame = build_detection_frame(poll(), boot_id="28a156bd3f8652f4", seq=1, config_version=7)
+
+        assert frame.adsb is None
+        assert "adsb" not in to_wire(frame)
+        assert to_wire(frame)["adsb_hex"] == [None, None]
+
+    def test_the_wire_shape_matches_the_documented_frame(self):
+        frame = build_detection_frame(
+            poll(adsb=[ASSOCIATION, None]), boot_id="28a156bd3f8652f4", seq=1, config_version=7
+        )
+
+        assert to_wire(frame)["adsb"] == [
+            {
+                "hex": "4ca1f2",
+                "lat": 51.5,
+                "lon": -0.1,
+                "alt": 11000.0,
+                # to_wire prunes optional nulls at the top level only; inside a
+                # tag they ride along, and the contract admits them.
+                "gs": None,
+                "track": None,
+                "expected_delay": 12.3,
+                "expected_doppler": -117.5,
+                "delay_residual": 0.1,
+                "doppler_residual": -0.5,
+            },
+            None,
+        ]
+
+    def test_an_association_without_a_position_keeps_its_hex(self):
+        frame = build_detection_frame(
+            poll(adsb=[{"hex": "4ca1f2"}, {"hex": "abc123", "lat": 51.5, "lon": None}]),
+            boot_id="28a156bd3f8652f4",
+            seq=1,
+            config_version=7,
+        )
+
+        assert to_wire(frame)["adsb_hex"] == ["4ca1f2", "abc123"]
+        assert frame.adsb == [None, None]
+
+    @pytest.mark.parametrize(
+        "bad", [{"lat": 95.0}, {"lon": "-0.1"}, {"lat": float("nan")}, {"lat": True}]
+    )
+    def test_a_position_the_spec_refuses_costs_that_tag_only(self, bad):
+        frame = build_detection_frame(
+            poll(adsb=[ASSOCIATION | bad, ASSOCIATION]),
+            boot_id="28a156bd3f8652f4",
+            seq=1,
+            config_version=7,
+        )
+
+        assert to_wire(frame)["adsb_hex"] == ["4ca1f2", "4ca1f2"]
+        assert frame.adsb[0] is None
+        assert frame.adsb[1] is not None
+
+    def test_a_dropped_detection_takes_its_tag_with_it(self):
+        frame = build_detection_frame(
+            poll(
+                delay_km=[float("nan"), 30.1], adsb=[ASSOCIATION, ASSOCIATION | {"hex": "abc123"}]
+            ),
+            boot_id="28a156bd3f8652f4",
+            seq=1,
+            config_version=7,
+        )
+
+        assert to_wire(frame)["adsb_hex"] == ["abc123"]
+        assert [t.hex for t in frame.adsb] == ["abc123"]

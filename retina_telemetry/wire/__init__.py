@@ -33,6 +33,7 @@ of ``0`` are both rejected at construction without anyone remembering to check.
 | ``doppler`` | ``DetectionPoll.doppler_hz`` | none |
 | ``snr`` | ``DetectionPoll.snr_db`` | none |
 | ``adsb_hex`` | ``DetectionPoll.adsb`` | ``.hex`` per entry, or ``[None] * n`` |
+| ``adsb`` | ``DetectionPoll.adsb`` | ``AdsbTag`` (hex + finite ``lat``/``lon`` + the optional numbers) per entry, ``null`` where there is no usable position; omitted when association is off |
 
 Every array is truncated to the spec's ``maxItems`` of 512, and an ``adsb_hex``
 entry failing ``^[0-9a-f]{6}$`` becomes ``null``. Both are the same trade: one
