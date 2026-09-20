@@ -32,6 +32,22 @@ class DetectionAck(BaseModel):
     streaming_allowed: Annotated[bool, Field(title="Streaming Allowed")]
 
 
+class AdsbTag(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    hex: Annotated[str, Field(pattern="^[0-9a-f]{6}$", title="Hex")]
+    lat: Annotated[float, Field(ge=-90.0, le=90.0, title="Lat")]
+    lon: Annotated[float, Field(ge=-180.0, le=180.0, title="Lon")]
+    alt: Annotated[float | None, Field(title="Alt")] = None
+    gs: Annotated[float | None, Field(title="Gs")] = None
+    track: Annotated[float | None, Field(title="Track")] = None
+    expected_delay: Annotated[float | None, Field(title="Expected Delay")] = None
+    expected_doppler: Annotated[float | None, Field(title="Expected Doppler")] = None
+    delay_residual: Annotated[float | None, Field(title="Delay Residual")] = None
+    doppler_residual: Annotated[float | None, Field(title="Doppler Residual")] = None
+
+
 class AdsbHexItem(RootModel[str | None]):
     root: Annotated[str | None, Field(pattern="^[0-9a-f]{6}$")]
 
@@ -48,6 +64,7 @@ class DetectionFrame(BaseModel):
     doppler: Annotated[list[float], Field(max_length=512, title="Doppler")]
     snr: Annotated[list[float], Field(max_length=512, title="Snr")]
     adsb_hex: Annotated[list[AdsbHexItem | None], Field(max_length=512, title="Adsb Hex")]
+    adsb: Annotated[list[AdsbTag | None] | None, Field(max_length=512, title="Adsb")] = None
 
 
 class ErrorBody(BaseModel):
