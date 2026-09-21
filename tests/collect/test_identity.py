@@ -13,8 +13,22 @@ def write(tmp_path, contents):
     return path
 
 
-def test_reads_a_valid_node_id(tmp_path):
+def test_reads_a_legacy_node_id(tmp_path):
+    """Still the format on every node that has not been migrated."""
     assert read_node_id(write(tmp_path, "ret1a2b3c4d")) == "ret1a2b3c4d"
+
+
+def test_reads_a_current_node_id(tmp_path):
+    value = "retgec420d03ea4b064"
+    assert read_node_id(write(tmp_path, value)) == value
+
+
+def test_both_formats_are_read_because_a_node_only_judges_itself(tmp_path):
+    """The fleet is migrated one node at a time, so both formats are live at
+    once. A node validates its own id and nobody else's, which is what makes
+    that possible without a flag day."""
+    assert read_node_id(write(tmp_path, "ret1a2b3c4d"))
+    assert read_node_id(write(tmp_path, "retgec420d03ea4b064"))
 
 
 def test_trailing_newline_is_stripped(tmp_path):
@@ -48,6 +62,12 @@ def test_directory_instead_of_file_raises(tmp_path):
         ("mac=b8:27:eb:00:11:22", "the identity script's non-Pi fallback"),
         ("ret1a2b3c4z", "z is not hex"),
         ("RET1a2b3c4d", "prefix must be lowercase"),
+        ("retg", "the current format's prefix with no digest"),
+        ("retgec420d03ea4b06", "one hex character short of the current format"),
+        ("retgec420d03ea4b0644", "one hex character too long"),
+        ("retGEC420D03EA4B064", "the current format in uppercase"),
+        ("retg ec420d03ea4b064", "embedded space"),
+        ("retgg c420d03ea4b064", "g is not hex either"),
     ],
 )
 def test_invalid_identities_raise(tmp_path, contents, why):

@@ -7,7 +7,10 @@ this repo — both of the blocking open questions land here.
 
 from __future__ import annotations
 
+import re
+
 from retina_telemetry.collect.consent import Consent
+from retina_telemetry.collect.identity import NODE_ID_PATTERN
 from retina_telemetry.collect.node_config import NodeConfigRaw
 from retina_telemetry.wire.config import build_node_config
 from retina_telemetry.wire.models import (
@@ -25,6 +28,54 @@ class IncompletePayload(Exception):
     "there is nothing to retry with until something changes locally", so the
     caller should surface it rather than back off.
     """
+
+
+class UnsupportedNodeId(IncompletePayload):
+    """This node's identity is valid, but the ingest spec will not carry it.
+
+    A subclass so that anything already handling :class:`IncompletePayload`
+    keeps working, and separate because what has to change is different. An
+    incomplete payload waits on the owner or on retina-gui; this waits on the
+    **server's spec**, and nothing done on the node will resolve it.
+    """
+
+
+def spec_node_id_pattern() -> str | None:
+    """The ``node_id`` pattern the server's ingest spec currently enforces.
+
+    Read out of the generated model rather than written down a second time.
+    ``wire/models.py`` is derived from ``docs/node-ingest-v1.yml``, which is the
+    contract, so regenerating it against a spec that accepts the current
+    node_id format **lifts the registration gate by itself**. A copy of the
+    pattern here would be a second place to remember, and therefore the place
+    that gets forgotten.
+
+    Returns:
+        The pattern, or ``None`` if the spec stops constraining the field, in
+        which case there is nothing to gate on.
+    """
+    for constraint in RegisterRequest.model_fields["node_id"].metadata:
+        pattern = getattr(constraint, "pattern", None)
+        if pattern:
+            return str(pattern)
+    return None
+
+
+def spec_accepts_node_id(node_id: str) -> bool:
+    """Whether the server would accept this ``node_id`` as things stand.
+
+    Wider than :data:`~retina_telemetry.collect.identity.NODE_ID_PATTERN` on
+    purpose, and currently narrower in practice. A node reads and reports an id
+    in either format, but only one of them is in the spec, so a migrated node
+    is **deliberately held back from registering** rather than being allowed to
+    build a payload that the generated model would reject with a validation
+    error nobody could act on.
+
+    Held back, not broken: the node keeps running, keeps its identity, and says
+    plainly why it is waiting. It registers on its own once the spec moves.
+    """
+    pattern = spec_node_id_pattern()
+    return True if pattern is None else re.match(pattern, node_id) is not None
 
 
 def build_registration(
@@ -60,9 +111,29 @@ def build_registration(
         config: from ``collect.node_config.read_config()``.
 
     Raises:
+        UnsupportedNodeId: if the node's id is in a format the ingest spec does
+            not yet carry. Waits on the spec, not on anything here.
         IncompletePayload: if any consent record is absent. That means local work
             is outstanding, not that the server said no.
     """
+    # Checked before consent, because no amount of local work clears it. An
+    # owner who completes the wizard on a migrated node would otherwise be told
+    # their agreements were missing, fix that, and get no further.
+    #
+    # Only for an id that is genuinely one of ours. Something that is not a
+    # node_id at all - "Unknown", the config placeholder, a truncated value -
+    # is not a node waiting on the spec, and saying so would send whoever reads
+    # it looking for a migration that never happened. Those keep falling
+    # through to the generated model, whose validation error is the honest
+    # answer: this is not a node_id.
+    if NODE_ID_PATTERN.match(node_id) and not spec_accepts_node_id(node_id):
+        raise UnsupportedNodeId(
+            f"node_id {node_id!r} is valid but the ingest spec still requires "
+            f"{spec_node_id_pattern()!r}. This node has been migrated to the current "
+            "format and cannot register until the server's spec accepts it and "
+            "wire/models.py is regenerated. Nothing on the node will resolve this."
+        )
+
     if not consent.complete:
         raise IncompletePayload(
             f"missing consent records: {', '.join(consent.missing)}. Registration requires all "

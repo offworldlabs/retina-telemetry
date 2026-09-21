@@ -30,6 +30,69 @@ def ready(state, **overrides):
 # ── the state is derived, not stored ─────────────────────────────────
 
 
+def test_a_migrated_node_is_held_back_rather_than_left_to_fail(state):
+    """A node on the current node_id format, with a server whose spec still
+    pins the legacy one. Nothing is wrong with the node; the contract is behind
+    it, so registration is refused here rather than attempted and rejected."""
+    derived = derive_state(state.snapshot(), **ready(state, node_id_registrable=False))
+
+    assert derived is NodeState.NODE_ID_UNSUPPORTED
+
+
+def test_that_state_never_reaches_the_server(state):
+    """It cannot: saying so needs a token, and the whole point is that there
+    is not one."""
+    assert not NodeState.NODE_ID_UNSUPPORTED.reaches_the_server
+
+
+def test_it_is_reported_above_the_agreement_and_wizard_gates(state):
+    """Both of those are answered by the owner doing something. This one is
+    not, and telling someone to finish a wizard that cannot unblock them is
+    worse than telling them nothing."""
+    derived = derive_state(
+        state.snapshot(),
+        **ready(
+            state,
+            node_id_registrable=False,
+            all_records_present=False,
+            setup_complete=False,
+        ),
+    )
+
+    assert derived is NodeState.NODE_ID_UNSUPPORTED
+
+
+def test_an_opted_out_node_does_not_report_it_either(state):
+    """Same reasoning as the missing identity above: nothing would be done."""
+    derived = derive_state(
+        state.snapshot(),
+        **ready(state, node_id_registrable=False, licence_accepted=False),
+    )
+
+    assert derived is NodeState.OPTED_OUT
+
+
+def test_a_node_with_no_identity_reports_that_instead(state):
+    """Whether the spec would carry an id we do not have is not a question."""
+    derived = derive_state(
+        state.snapshot(), **ready(state, has_identity=False, node_id_registrable=False)
+    )
+
+    assert derived is NodeState.NO_IDENTITY
+
+
+def test_the_explanation_points_at_the_spec_not_the_board(state):
+    detail = explain(NodeState.NODE_ID_UNSUPPORTED)
+
+    assert "nothing done here will help" in detail
+    assert "otherwise healthy" in detail
+
+
+def test_registrability_defaults_to_true_so_the_ordinary_case_is_unchanged(state):
+    """Every existing caller and test omits it."""
+    assert derive_state(state.snapshot(), **ready(state)) is NodeState.UNREGISTERED
+
+
 def test_an_opted_out_node_reports_that_first(state):
     """Precedence runs from what we control least to most. A missing identity
     on an opted-out node is not worth reporting — nothing would be done."""

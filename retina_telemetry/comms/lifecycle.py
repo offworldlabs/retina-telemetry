@@ -56,7 +56,7 @@ REGISTER_BACKOFF_MAX_S = 1800.0
 class NodeState(StrEnum):
     """The node's own account of itself.
 
-    The first five never reach the server: each describes a node that cannot
+    The first six never reach the server: each describes a node that cannot
     send a heartbeat, because ``HeartbeatRequest`` needs a token and a
     ``config_version``. They exist for the status document, which is the only
     thing that can report them.
@@ -68,6 +68,11 @@ class NodeState(StrEnum):
     #: No usable /data/mender/node_id. The node has not enrolled with Mender,
     #: or has fallen back to a mac= identity. Needs an operator.
     NO_IDENTITY = "no_identity"
+    #: A perfectly good identity in a format the ingest spec does not yet
+    #: carry, i.e. a node that has been migrated to the current node_id format
+    #: while the server still pins the legacy one. Waits on the spec. Nothing
+    #: done on the node clears it, and the node is otherwise healthy.
+    NODE_ID_UNSUPPORTED = "node_id_unsupported"
     #: Opted in, but no {version, accepted_at} to send. Registration requires
     #: one, so this is as far as the node gets.
     NO_AGREEMENT = "no_agreement"
@@ -140,6 +145,7 @@ def derive_state(
     snapshot: Snapshot,
     *,
     has_identity: bool,
+    node_id_registrable: bool = True,
     licence_accepted: bool,
     all_records_present: bool,
     setup_complete: bool,
@@ -154,6 +160,11 @@ def derive_state(
     is not worth reporting, because nothing would be done about it either way.
 
     Args:
+        node_id_registrable: whether the ingest spec would carry this node's
+            id, from ``wire.registration.spec_accepts_node_id()``. Defaults to
+            True so that the ordinary case needs no argument. Sits directly
+            below ``has_identity`` because it is the same kind of fact about
+            the same value, and equally far outside local control.
         setup_complete: whether retina-gui has recorded the setup wizard as
             finished, from ``collect.wizard.setup_complete()``. Until it has,
             the node config is the shipped default rather than the owner's, so
@@ -171,6 +182,12 @@ def derive_state(
         return NodeState.OPTED_OUT
     if not has_identity:
         return NodeState.NO_IDENTITY
+    # Above the agreement and wizard gates deliberately. Both of those are
+    # answered by the owner doing something; this one is not, and telling
+    # someone to finish a wizard that cannot unblock them is worse than telling
+    # them nothing.
+    if not node_id_registrable:
+        return NodeState.NODE_ID_UNSUPPORTED
     if not all_records_present:
         return NodeState.NO_AGREEMENT
     # Last of the local gates, and deliberately below the agreement: an owner
@@ -207,6 +224,12 @@ def explain(state: NodeState) -> str | None:
             "/data/mender/node_id is missing or unreadable, so this node has no identity. "
             "It has not enrolled with Mender, or has fallen back to a MAC-based one. "
             "Nothing can be sent until that is resolved."
+        ),
+        NodeState.NODE_ID_UNSUPPORTED: (
+            "this node has been migrated to the current node_id format, which the server's "
+            "ingest spec does not carry yet. Registration is held back on purpose rather "
+            "than attempted and rejected. The node is otherwise healthy and will register "
+            "on its own once the spec accepts the format; nothing done here will help."
         ),
         NodeState.NO_AGREEMENT: (
             "no record of the terms being accepted, which registration requires. "

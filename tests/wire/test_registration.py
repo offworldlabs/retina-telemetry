@@ -4,7 +4,13 @@ import pydantic
 import pytest
 
 from retina_telemetry.collect.consent import AcceptanceRecord, Consent
-from retina_telemetry.wire.registration import IncompletePayload, build_registration
+from retina_telemetry.wire.registration import (
+    IncompletePayload,
+    UnsupportedNodeId,
+    build_registration,
+    spec_accepts_node_id,
+    spec_node_id_pattern,
+)
 from retina_telemetry.wire.serialise import to_wire
 from tests.conftest import consented
 from tests.wire.test_config import OWL
@@ -157,3 +163,65 @@ def test_board_model_is_the_mender_device_type_not_the_spec_example():
     which is what decides the software a board may receive. The field is free
     text in the schema, so nothing breaks."""
     assert build().board_model == "pi5-v3-arm64"
+
+
+# ── the registration gate ────────────────────────────────────────────
+#
+# A migrated node is deliberately held back from registering while the ingest
+# spec still pins the legacy format. Held back, not broken: it keeps running and
+# says why. These tests describe a gate that is *meant* to open on its own, so
+# they are written against the spec's own pattern rather than against a literal.
+
+
+def test_the_gate_reads_the_pattern_out_of_the_generated_model():
+    """Not a second copy of it. wire/models.py is generated from the contract,
+    so regenerating it against a newer spec lifts this gate with no code change
+    here — which is the entire point of not writing the pattern down twice."""
+    assert spec_node_id_pattern() == "^ret[0-9a-f]{8}$"
+
+
+def test_an_id_the_spec_carries_is_accepted():
+    assert spec_accepts_node_id("ret824685c9")
+
+
+def test_a_migrated_id_is_refused_while_the_spec_predates_it():
+    assert not spec_accepts_node_id("retgec420d03ea4b064")
+
+
+def test_building_a_registration_for_a_migrated_node_raises():
+    with pytest.raises(UnsupportedNodeId, match="ingest spec still requires"):
+        build(node_id="retgec420d03ea4b064")
+
+
+def test_the_refusal_names_the_spec_rather_than_the_node():
+    """The operator must not go looking for a fault on the board. There is not
+    one: the node is healthy and the contract is behind it."""
+    with pytest.raises(UnsupportedNodeId) as caught:
+        build(node_id="retgec420d03ea4b064")
+
+    message = str(caught.value)
+    assert "Nothing on the node will resolve this" in message
+    assert "wire/models.py" in message
+
+
+def test_it_is_an_incomplete_payload_so_existing_handlers_still_catch_it():
+    with pytest.raises(IncompletePayload):
+        build(node_id="retgec420d03ea4b064")
+
+
+def test_something_that_is_not_a_node_id_is_not_treated_as_migrated():
+    """A gate that claimed "Unknown" was a migrated node would send whoever
+    read it hunting for a migration that never happened. Garbage is the
+    generated model's business, and its answer is the honest one."""
+    with pytest.raises(pydantic.ValidationError):
+        build(node_id="Unknown")
+
+    with pytest.raises(pydantic.ValidationError):
+        build(node_id="ret000000000")
+
+
+def test_the_gate_is_checked_before_consent():
+    """Otherwise a migrated node with no agreements tells its owner to finish
+    the wizard, which cannot unblock them."""
+    with pytest.raises(UnsupportedNodeId):
+        build(node_id="retgec420d03ea4b064", consent=Consent(None, None, None))

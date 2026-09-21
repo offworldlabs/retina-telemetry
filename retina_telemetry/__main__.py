@@ -64,7 +64,11 @@ from retina_telemetry.wire.config import build_node_config
 from retina_telemetry.wire.contact import build_contact
 from retina_telemetry.wire.detection import build_detection_frame
 from retina_telemetry.wire.heartbeat import build_heartbeat
-from retina_telemetry.wire.registration import IncompletePayload, build_registration
+from retina_telemetry.wire.registration import (
+    IncompletePayload,
+    build_registration,
+    spec_accepts_node_id,
+)
 from retina_telemetry.wire.serialise import to_wire
 
 log = logging.getLogger("retina_telemetry")
@@ -175,9 +179,16 @@ class Service:
 
     def current_state(self) -> NodeState:
         record = self.consent()
+        # Read once. node_id() records a problem against self.errors on the way
+        # past, so calling it twice would report the same fault twice.
+        node_id = self.node_id()
         return derive_state(
             self.state.snapshot(),
-            has_identity=self.node_id() is not None,
+            has_identity=node_id is not None,
+            # A node with no identity is already reported as such; asking
+            # whether the spec would carry it is a question about a value we do
+            # not have.
+            node_id_registrable=node_id is None or spec_accepts_node_id(node_id),
             # The licence is what the spec says gates streaming; the other two
             # gate registration, and `complete` is what build_registration needs.
             licence_accepted=record.may_stream,

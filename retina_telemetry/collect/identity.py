@@ -11,9 +11,10 @@ Two landmines this module exists to avoid:
 
 * ``retina-gui``'s ``get_node_id()`` returns the string ``'Unknown'`` when the
   file is missing. It is display-only there. Do not import or imitate it.
-* ``retina-node/config/default.yml`` carries ``network.node_id: "ret000000000"``
-  — a static placeholder, identical on every node, and twelve characters, so it
-  fails the spec's pattern. Nothing here reads node config.
+* ``retina-node/config/default.yml`` carries a ``network.node_id`` placeholder,
+  identical on every node and overwritten by config-merger from this same file.
+  It used to be ``"ret000000000"``, close enough to a real id to be mistaken for
+  one; it is now ``"unset"``. Either way, nothing here reads node config.
 
 So this module raises rather than returning anything. What to *do* about that
 is the lifecycle's decision, not collection's.
@@ -27,8 +28,22 @@ from pathlib import Path
 DEFAULT_NODE_ID_PATH = Path("/data/mender/node_id")
 DEFAULT_DEVICE_TYPE_PATH = Path("/data/mender/device_type")
 
-#: ``ret`` plus eight lowercase hex characters, per the ingest spec's ``NodeId``.
-NODE_ID_PATTERN = re.compile(r"^ret[0-9a-f]{8}$")
+#: Both node_id formats the fleet carries.
+#:
+#: ``retg`` plus fifteen lowercase hex characters is current: 60 bits, derived
+#: from the whole board serial. ``ret`` plus eight is the legacy format, 32
+#: bits from the last 8 characters of that same serial, and is still held by
+#: every node that has not been migrated.
+#:
+#: Both are accepted because a node validates only **its own** id. A legacy
+#: node is therefore unaffected by the new format existing elsewhere, which is
+#: what lets the fleet be migrated one node at a time rather than at once.
+#:
+#: Deliberately wider than the ingest spec, which still pins the legacy format
+#: alone. Reading a node's identity and being allowed to register it are
+#: separate questions; see
+#: :func:`retina_telemetry.wire.registration.spec_accepts_node_id`.
+NODE_ID_PATTERN = re.compile(r"^ret(?:[0-9a-f]{8}|g[0-9a-f]{15})$")
 
 
 class IdentityUnavailable(Exception):
