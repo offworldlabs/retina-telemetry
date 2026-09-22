@@ -408,6 +408,43 @@ streams and beats exactly as before, and the only loss is a way to ring the owne
 Nothing is ever substituted, the same discipline as the consent records and the beam
 geometry. These reach a person.
 
+### The claim address, which has no source on a node
+
+Spec v1.3.0 added `PUT /v1/nodes/claim`: the node offers the address that owns it, the
+server mails a link, and clicking it binds the node to that account. **Nothing on a node
+knows that address**, so this service does not call the endpoint and will not until
+something collects one. retina-gui would have to, the way it collects the consent
+records.
+
+**The contact email is not the claim address, however convenient that looks.** They are
+different questions with different consequences:
+
+| | `telemetry-contact.json` `email` | the claim address |
+|---|---|---|
+| Asks | whom to ring about this node | who *owns* this node |
+| If wrong | a support call goes astray | a stranger is mailed a link that hands them the node |
+| Optional | yes, entirely | there is no claim without one |
+
+An owner may well give the same address for both. That is their answer to two questions,
+not a licence for us to infer the second from the first, and reusing the contact email
+would claim ownership on behalf of whoever happened to be listed. The same discipline as
+the consent records: nothing that reaches a person is ever synthesised here.
+
+The server has the account side of this open as its own question, so the shape of what
+retina-gui should collect is not settled yet either.
+
+**What a node *is* told, since v1.4.0**, is where its claim stands: `claim_state`,
+`claim_email` and `claim_undeliverable`, restated on every heartbeat and contact
+response. Those three are read (`comms/levels.py`) and written to the status document,
+which is the only way they reach an owner. None of them gates anything: an unclaimed
+node registers, streams and beats exactly as an owned one does.
+
+`claim_state` is `unclaimed`, `pending` or `owned`. **`pending` is not durable.** A
+claim link declined while a second is outstanding can leave a node reading `pending`
+against a link nobody can redeem, until the challenge expires about fifteen minutes
+later and it reads `unclaimed` again. That is a known server-side race, tracked there.
+Nothing here should wait on `pending` or treat reaching it as progress.
+
 ### The agreements, and the publication choice
 
 `RegisterRequest.agreements` requires three records. Today:

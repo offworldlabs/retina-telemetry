@@ -4,7 +4,7 @@ The node-side telemetry uplink for the RETINA passive radar fleet. One container
 node, owning everything sent to the server: registration, detection streaming,
 heartbeat, config sync. Nothing else on the node talks to `api.retina.fm`.
 
-**Status: built, and implementing spec v1.2.2.** Verified end to end on the Owl node
+**Status: built, and implementing spec v1.4.0.** Verified end to end on the Owl node
 against a tunnelled mock — every endpoint, every reachable state including `stalled`,
 and the refusal paths.
 
@@ -105,6 +105,7 @@ Nothing here is buildable from this repo, and the first one blocks every node:
 | Read `/data/retina-telemetry/status.json` | no, but | We bind no ports, so it is the only way *no identity*, *revoked token* and *rejected config* reach an operator. `telemetry_status.py` reads it and the home page shows it |
 | Collect `location.rx.beam_width` / `beam_azimuth` | no | Deferred indefinitely. Both are nullable, so sending two nulls is correct behaviour rather than a gap |
 | Collect the owner's contact details | shipped | Landed 2026-09-16. A skippable wizard step after the agreements step, plus a block under Remote support on the Configuration page, writing `/data/retina-gui/telemetry-contact.json` |
+| Collect the address that **owns** the node | no, but | v1.3.0 added `PUT /nodes/claim`, and nothing on a node knows the address, so we do not call it. Not the contact email: see `docs/data-sources.md` §4. Blocked on the server's own question about how an address relates to an account, so do not start here |
 
 `owl-os` separately owes a `mender-update show-provides` snapshot so
 `versions.retina_node` has a source. Optional field; omitted honestly until then.
@@ -141,6 +142,18 @@ Full detail and citations in `docs/data-sources.md`. The short version:
   Unlike a refused registration, it breaks nothing: the node registers, streams
   and beats exactly as before, and the only loss is a way to ring the owner.
   `detail` is for what stops a node working.
+- **The claim is read, never offered.** v1.3.0 added the endpoints that nominate an
+  owner's address and v1.4.0 put `claim_state`, `claim_email` and `claim_undeliverable`
+  on the heartbeat and contact responses. We consume those three and write them to the
+  status document; we call no claim endpoint, because **nothing on a node knows the
+  owner's address** and the contact email is a different question with a worse failure
+  (mailing a stranger a link that hands them the node). None of it gates anything: an
+  unclaimed node registers, streams and beats normally. Read the three as one block,
+  gated on `claim_state`: `claim_email` is required *and nullable*, so a field-by-field
+  read would let a detection ack, which carries none of them, blank an address the
+  heartbeat reported a second earlier. **`pending` is not durable** and nothing should
+  wait on it: a declined link can strand a node there for about fifteen minutes before
+  it falls back to `unclaimed`.
 - **Nothing in the stack pushes to us.** No event bus, no inbound ports. Every input is
   a poll or a file read, including "the user changed the config".
 - **`wire/models.py` is generated.** Regenerate with `tools/generate-models.sh`; never
@@ -165,7 +178,7 @@ Full detail and citations in `docs/data-sources.md`. The short version:
   absence, so dropping the key produces a payload it rejects. `to_wire` also applies
   `mode="json"`, which is load-bearing: without it the acceptance timestamps stay as
   `datetime` objects and `json.dumps` refuses the registration payload outright.
-  **Fourteen fields are required-and-nullable in v1.2.2**, so payloads go out through
+  **Fourteen fields are required-and-nullable in v1.4.0**, so payloads go out through
   `wire.to_wire`, never `model_dump(exclude_none=True)` directly.
   `tests/wire/test_serialise.py` pins the inventory by name and fails if the spec grows
   or loses one.
@@ -233,8 +246,8 @@ that get re-litigated if the reasoning is not written down.
   beam fields were changed with the server author's agreement, relayed by Josh, and their
   next revision did not carry it, so our edit was silently reverted on adoption. **Check
   `NodeConfig.beam_width_deg` when adopting any revision**, and expect to reapply it.
-  Checked on adopting `1.2.2` (2026-09-16): it survived, nullable as agreed. Keep
-  checking anyway. Two revisions carrying it is not yet a habit.
+  Checked on adopting `1.2.2` (2026-09-16) and `1.4.0` (2026-09-22): it survived
+  both times, nullable as agreed. Keep checking anyway.
 - **The spec is the scope.** If a field is not in it, we do not collect it — however
   cheap or obviously useful it looks. Wanting something new means asking the server
   author, not a field we add unilaterally. This has already removed Pi
