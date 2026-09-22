@@ -274,6 +274,55 @@ def test_a_refused_claim_writes_nothing(server):
     assert server.state.only_node().claim_email == "first@example.com"
 
 
+def test_the_owners_own_address_is_accepted_rather_than_refused(server):
+    """The 409 turns on the address, not on ownership alone.
+
+    The spec's wording is "a nomination names an address that is not theirs",
+    so re-offering the owner's own address is the idempotent path. Checked
+    against production on 2026-09-22, where this mock answered 409 and the real
+    server answered 200.
+    """
+    token, _ = register(server)
+    post(claim_url(server), {"email": "owner@example.com"}, token, method="PUT")
+    server.state.only_node().claim_state = "owned"
+
+    status, body, _ = post(claim_url(server), {"email": "owner@example.com"}, token, method="PUT")
+
+    assert status == 200
+    assert body["state"] == "owned"
+
+
+def test_a_declined_claim_keeps_the_address_and_cannot_be_reoffered(server):
+    """The live run's most surprising result, and a trap for retina-gui.
+
+    Declining returns the node to `unclaimed` but leaves the address on file.
+    Offering that same address again is therefore "an address the node already
+    holds", so it changes nothing and mails nothing: the node stays `unclaimed`
+    and an owner who declined by accident would sit there getting silence.
+    """
+    token, _ = register(server)
+    post(claim_url(server), {"email": "owner@example.com"}, token, method="PUT")
+    # What a decline leaves behind, as production did on 2026-09-22.
+    server.state.only_node().claim_state = "unclaimed"
+
+    status, body, _ = post(claim_url(server), {"email": "owner@example.com"}, token, method="PUT")
+
+    assert status == 200
+    assert body == {"state": "unclaimed", "email": "owner@example.com", "undeliverable": False}
+
+
+def test_a_resend_is_what_gets_a_declined_node_another_link(server):
+    """The only way forward from the previous test."""
+    token, _ = register(server)
+    post(claim_url(server), {"email": "owner@example.com"}, token, method="PUT")
+    server.state.only_node().claim_state = "unclaimed"
+
+    status, body, _ = post(f"{server.url}/nodes/claim/resend", None, token, method="POST")
+
+    assert status == 200
+    assert body["state"] == "pending"
+
+
 def test_a_resend_is_refused_on_an_owned_node(server):
     token, _ = register(server)
     post(claim_url(server), {"email": "owner@example.com"}, token, method="PUT")

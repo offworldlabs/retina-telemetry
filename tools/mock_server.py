@@ -1419,19 +1419,34 @@ class _Handler(BaseHTTPRequestHandler):
             return
 
         with self.state.lock:
-            if node.claim_state == "owned":
+            # The 409 is for a nomination that "names an address that is not
+            # theirs", so it turns on the address rather than on ownership
+            # alone. The owner's own address falls through to the idempotent
+            # path below, which is what production does: checked against it on
+            # 2026-09-22, when this returned 409 for both and was wrong.
+            if node.claim_state == "owned" and email != node.claim_email:
                 # The one refusal in the contract that does not wear `Error`.
                 # Nothing is written, and the body names the address that won
                 # so the node reconciles without a second call.
                 self._send(409, node.claim_response())
                 return
 
-            # Offering an address the node already holds is accepted and
-            # changes nothing, so this may be resent on every sync. It does
-            # not mail anything again: that is what the resend path is for.
-            if email != node.claim_email:
-                node.claim_email = email
-                node.claim_undeliverable = False
+            if email == node.claim_email:
+                # "Sending an address the node already holds is accepted and
+                # changes nothing, so this may be resent on every configuration
+                # sync. It does not mail anything again." It really does change
+                # nothing, the state included. The case that proves it is a
+                # declined claim: the address survives the decline, so a node
+                # sitting at `unclaimed` with an address on file stays there
+                # however many times it offers the same one, and `resend` is
+                # the only call that produces another link. Checked against
+                # production on 2026-09-22, where this mock had wrongly moved
+                # the node to `pending` and implied a mail that never went.
+                self._send(200, node.claim_response())
+                return
+
+            node.claim_email = email
+            node.claim_undeliverable = False
             node.claim_state = "pending"
             self._send(200, node.claim_response())
 
@@ -1449,6 +1464,11 @@ class _Handler(BaseHTTPRequestHandler):
             # second copy to an address that does not exist earns nothing but
             # a second bounce, and bounces cost a sending domain its
             # reputation. Still a 200, because nothing is wrong with the ask.
+            if node.claim_email is not None and not node.claim_undeliverable:
+                # A fresh link, so the claim is pending again. This is how a
+                # declined node gets back to `pending`, since offering the same
+                # address again does nothing at all.
+                node.claim_state = "pending"
             self._send(200, node.claim_response())
 
 
