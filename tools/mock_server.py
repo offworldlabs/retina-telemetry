@@ -101,6 +101,10 @@ BODY_CAPS = {
     # it, so this is the server declaring how little it expects rather than a
     # limit a node can reach.
     "contact": 2 * 1024,
+    # Both claim paths declare x-max-body-bytes: 2048, and the resend takes no
+    # body at all.
+    "claim": 2 * 1024,
+    "claim_resend": 2 * 1024,
 }
 MAX_BODY_BYTES = 64 * 1024
 
@@ -134,6 +138,11 @@ ENDPOINTS: dict[str, tuple[str, str, type[pydantic.BaseModel] | None]] = {
     # Read by hand for the same reason as config: a body-shaped refusal
     # must not be able to precede the 401.
     "contact": ("PUT", f"{BASE_PATH}/nodes/contact", None),
+    # The claim trio, added in v1.3.0. Read by hand for the same reason as
+    # config and contact: a body-shaped refusal must not precede the 401.
+    "claim_read": ("GET", f"{BASE_PATH}/nodes/claim", None),
+    "claim": ("PUT", f"{BASE_PATH}/nodes/claim", None),
+    "claim_resend": ("POST", f"{BASE_PATH}/nodes/claim/resend", None),
 }
 
 
@@ -392,6 +401,41 @@ def validate_contact(payload: Any) -> dict[str, Any]:
         raise ConfigInvalid("country")
 
     return out
+
+
+def validate_claim(payload: Any) -> str:
+    """Return the normalised address, or raise `invalid_claim` naming `email`.
+
+    The schema caps the address at 255 and the server states that it strips
+    surrounding whitespace and lower cases before judging, so the bound
+    describes the trimmed form rather than the bytes sent. Normalising here
+    rather than only bounding is what makes a resend of the same address with
+    different capitalisation read as unchanged, which is the behaviour the
+    contract promises.
+
+    The shape check is deliberately thin. The real server's is too: nothing
+    anywhere verifies that the address exists, and until the link is clicked it
+    grants nothing.
+    """
+    if not isinstance(payload, dict):
+        raise ConfigInvalid("claim", "not an object")
+
+    unknown = sorted(set(payload) - {"email"})
+    if unknown:
+        raise ConfigInvalid(unknown[0], "unknown field")
+
+    email = payload.get("email")
+    if not isinstance(email, str):
+        raise ConfigInvalid("email", "not a string")
+
+    email = email.strip().lower()
+    if not email or len(email) > 255:
+        raise ConfigInvalid("email")
+    # One `@`, something either side of it, and no whitespace inside.
+    local, _, domain = email.partition("@")
+    if not local or not domain or "@" in domain or any(c.isspace() for c in email):
+        raise ConfigInvalid("email")
+    return email
 
 
 def validate_config(payload: Any) -> dict[str, Any]:
@@ -724,6 +768,33 @@ class NodeRecord:
     contact: dict[str, Any] = field(default_factory=dict)
     contact_updated_at: str | None = None
 
+    #: Where the claim stands, restated on every heartbeat and contact
+    #: response. The mock holds it rather than deriving it, because the claim
+    #: endpoints that move it are not implemented here: nothing in this
+    #: service calls them yet, and a mock that answers calls nobody makes
+    #: would be asserting a shape the node has never had to parse. These are
+    #: set through the control channel, which is what the node reads them as
+    #: anyway: levels it is told and does not negotiate.
+    claim_state: str = "unclaimed"
+    claim_email: str | None = None
+    claim_undeliverable: bool = False
+
+    def claim_response(self) -> dict[str, Any]:
+        """``ClaimResponse``, which names the three without the ``claim_`` prefix."""
+        return {
+            "state": self.claim_state,
+            "email": self.claim_email,
+            "undeliverable": self.claim_undeliverable,
+        }
+
+    def claim_block(self) -> dict[str, Any]:
+        """The three claim fields, spelled as every response carrying them does."""
+        return {
+            "claim_state": self.claim_state,
+            "claim_email": self.claim_email,
+            "claim_undeliverable": self.claim_undeliverable,
+        }
+
     def upsert_config(self, config: dict[str, Any]) -> int:
         """Return the active version, minting one only if the values differ.
 
@@ -970,6 +1041,12 @@ class _Handler(BaseHTTPRequestHandler):
                     },
                 )
             return
+        # Everything else that is a declared GET endpoint goes through the
+        # ordinary path, so it is recorded, capped and rate limited like any
+        # other request. `GET /nodes/claim` is the only one today.
+        if self._endpoint_for("GET", self.path) is not None:
+            self._handle("GET")
+            return
         if self.path in ("/", "/_control/live"):
             page = LIVE_PAGE.encode()
             self.send_response(200)
@@ -1034,6 +1111,15 @@ class _Handler(BaseHTTPRequestHandler):
                         node.status = "active" if body["streaming_allowed"] else "blocked"
                     if "node_ref" in body:
                         node.node_ref = str(body["node_ref"])
+                    # The claim knobs. Unlike streaming_allowed these are held
+                    # rather than derived, so they are set straight through.
+                    if "claim_state" in body:
+                        node.claim_state = str(body["claim_state"])
+                    if "claim_email" in body:
+                        raw = body["claim_email"]
+                        node.claim_email = None if raw is None else str(raw)
+                    if "claim_undeliverable" in body:
+                        node.claim_undeliverable = bool(body["claim_undeliverable"])
                     # Likewise config_stale: the server compares the version the
                     # node reported against the active one. Moving the active
                     # version is how staleness actually arises, and it is the
@@ -1250,6 +1336,7 @@ class _Handler(BaseHTTPRequestHandler):
                     "config_stale": beat.config_version != node.active_config_version,
                     "streaming_allowed": node.status == "active",
                     "node_ref": node.node_ref,
+                    **node.claim_block(),
                 },
             )
 
@@ -1303,7 +1390,86 @@ class _Handler(BaseHTTPRequestHandler):
         with self.state.lock:
             node.contact = contact
             node.contact_updated_at = _now()
-        self._send(200, {"updated_at": node.contact_updated_at})
+        self._send(200, {"updated_at": node.contact_updated_at, **node.claim_block()})
+
+    def _claim_read(self, body: Any) -> None:
+        """``GET /v1/nodes/claim``. Cheap, and safe to poll every few seconds."""
+        node = self._bearer_node(taxonomy=False)
+        if node is None:
+            return
+        with self.state.lock:
+            self._send(200, node.claim_response())
+
+    def _claim(self, body: Any) -> None:
+        """``PUT /v1/nodes/claim``. Offers the address that owns this node."""
+        node = self._bearer_node(taxonomy=True)
+        if node is None:
+            return
+
+        if body is MALFORMED:
+            # A body that is not JSON at all lands here too, since the remedy
+            # is the same: resending it unchanged will not help.
+            self._taxonomy(400, "invalid_claim", "claim")
+            return
+
+        try:
+            email = validate_claim(body)
+        except ConfigInvalid as exc:
+            self._taxonomy(400, "invalid_claim", exc.field)
+            return
+
+        with self.state.lock:
+            # The 409 is for a nomination that "names an address that is not
+            # theirs", so it turns on the address rather than on ownership
+            # alone. The owner's own address falls through to the idempotent
+            # path below, which is what production does: checked against it on
+            # 2026-09-22, when this returned 409 for both and was wrong.
+            if node.claim_state == "owned" and email != node.claim_email:
+                # The one refusal in the contract that does not wear `Error`.
+                # Nothing is written, and the body names the address that won
+                # so the node reconciles without a second call.
+                self._send(409, node.claim_response())
+                return
+
+            if email == node.claim_email:
+                # "Sending an address the node already holds is accepted and
+                # changes nothing, so this may be resent on every configuration
+                # sync. It does not mail anything again." It really does change
+                # nothing, the state included. The case that proves it is a
+                # declined claim: the address survives the decline, so a node
+                # sitting at `unclaimed` with an address on file stays there
+                # however many times it offers the same one, and `resend` is
+                # the only call that produces another link. Checked against
+                # production on 2026-09-22, where this mock had wrongly moved
+                # the node to `pending` and implied a mail that never went.
+                self._send(200, node.claim_response())
+                return
+
+            node.claim_email = email
+            node.claim_undeliverable = False
+            node.claim_state = "pending"
+            self._send(200, node.claim_response())
+
+    def _claim_resend(self, body: Any) -> None:
+        """``POST /v1/nodes/claim/resend``. Sends the link again. No body."""
+        node = self._bearer_node(taxonomy=False)
+        if node is None:
+            return
+
+        with self.state.lock:
+            if node.claim_state == "owned":
+                self._send(409, node.claim_response())
+                return
+            # Answered without sending on an address that bounced hard: a
+            # second copy to an address that does not exist earns nothing but
+            # a second bounce, and bounces cost a sending domain its
+            # reputation. Still a 200, because nothing is wrong with the ask.
+            if node.claim_email is not None and not node.claim_undeliverable:
+                # A fresh link, so the claim is pending again. This is how a
+                # declined node gets back to `pending`, since offering the same
+                # address again does nothing at all.
+                node.claim_state = "pending"
+            self._send(200, node.claim_response())
 
 
 class MockServer:

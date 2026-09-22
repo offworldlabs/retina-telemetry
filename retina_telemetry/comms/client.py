@@ -91,6 +91,12 @@ class Outcome:
     body: dict[str, Any] | None
     retry_after_s: int | None
     error: str | None
+    #: The path that produced it. Carried because the status code alone does
+    #: not say what a refusal means: the `409` on a claim is "this node already
+    #: has an owner", which is nothing like the `409` on a frame, and answering
+    #: the first with a configuration resend would be pure noise. Last, and
+    #: defaulted, so the positional constructions in the tests still read.
+    path: str = ""
 
     @property
     def ok(self) -> bool:
@@ -225,6 +231,7 @@ class Client:
                 body=None,
                 retry_after_s=None,
                 error=f"{method} {path} unreachable: {exc}",
+                path=path,
             )
 
         return _classify(method, path, response)
@@ -236,7 +243,7 @@ def _classify(method: str, path: str, response: Any) -> Outcome:
     retry_after = _retry_after(response)
 
     if 200 <= status < 300:
-        return Outcome(Kind.OK, status, body, retry_after, None)
+        return Outcome(Kind.OK, status, body, retry_after, None, path)
 
     kind = {
         400: Kind.INVALID,
@@ -248,7 +255,7 @@ def _classify(method: str, path: str, response: Any) -> Outcome:
 
     detail = (body or {}).get("detail") or (body or {}).get("error") or ""
     error = f"{method} {path} → {status}" + (f": {detail}" if detail else "")
-    return Outcome(kind, status, body, retry_after, error)
+    return Outcome(kind, status, body, retry_after, error, path)
 
 
 def _json_or_none(response: Any) -> dict[str, Any] | None:

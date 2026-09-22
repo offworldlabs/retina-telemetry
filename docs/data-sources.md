@@ -408,6 +408,63 @@ streams and beats exactly as before, and the only loss is a way to ring the owne
 Nothing is ever substituted, the same discipline as the consent records and the beam
 geometry. These reach a person.
 
+### The claim address
+
+`/data/retina-gui/telemetry-claim.json`, written by retina-gui's Node claim section and
+read-only to us. Two keys, both optional, and so is the file:
+
+| Key | Meaning | What it makes us do |
+|---|---|---|
+| `email` | the address that owns this node | a **change** is offered with `PUT /nodes/claim`, which is the call that mails a link |
+| `send_requested_at` | when the owner last pressed "send again" | a **fresh** one triggers `POST /nodes/claim/resend` |
+
+`email` is state and `send_requested_at` is an event, and keeping them apart is what
+lets retina-gui stay ignorant of the wire: it records what the owner wants, and
+`collect/claim.py` plus the config loop decide which of the two calls achieves it. The
+rule below is why that decision cannot live on the retina-gui side.
+
+**A stale ask is ignored**, past `CLAIM_ASK_FRESH_FOR_S` (five minutes). Nothing durable
+records that we acted on one, so without an age bound every restart of this container
+would re-read whatever the file last held and mail the owner another link, for ever.
+Somebody is looking at a page when they press that button, so an ask we were not running
+to see is one they will make again.
+
+**The contact email is not the claim address, however convenient that looks.** They are
+different questions with different consequences:
+
+| | `telemetry-contact.json` `email` | the claim address |
+|---|---|---|
+| Asks | whom to ring about this node | who *owns* this node |
+| If wrong | a support call goes astray | a stranger is mailed a link that hands them the node |
+| Optional | yes, entirely | there is no claim without one |
+
+An owner may well give the same address for both. That is their answer to two questions,
+not a licence for us to infer the second from the first, and reusing the contact email
+would claim ownership on behalf of whoever happened to be listed. The same discipline as
+the consent records: nothing that reaches a person is ever synthesised here. The two
+live in separate files and neither is ever read as a fallback for the other.
+
+**Offering an address the node already holds does nothing at all.** Not "nothing
+visible": the server accepts it, writes nothing and mails nothing, and the state it
+reports is unchanged. That matters because of what a declined link leaves behind,
+verified against production on 2026-09-22: declining returns the node to `unclaimed`
+*but leaves the address on file*, so a node can sit unclaimed with an address against it
+and no number of offers will ever move it. `POST /nodes/claim/resend` is the only way
+out. This is the single most surprising thing about the claim and the reason the resend
+trigger exists at all.
+
+**What a node *is* told, since v1.4.0**, is where its claim stands: `claim_state`,
+`claim_email` and `claim_undeliverable`, restated on every heartbeat and contact
+response. Those three are read (`comms/levels.py`) and written to the status document,
+which is the only way they reach an owner. None of them gates anything: an unclaimed
+node registers, streams and beats exactly as an owned one does.
+
+`claim_state` is `unclaimed`, `pending` or `owned`. **`pending` is not durable.** A
+claim link declined while a second is outstanding can leave a node reading `pending`
+against a link nobody can redeem, until the challenge expires about fifteen minutes
+later and it reads `unclaimed` again. That is a known server-side race, tracked there.
+Nothing here should wait on `pending` or treat reaching it as progress.
+
 ### The agreements, and the publication choice
 
 `RegisterRequest.agreements` requires three records. Today:

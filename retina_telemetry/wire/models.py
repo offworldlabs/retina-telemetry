@@ -22,10 +22,6 @@ class ConfigResponse(BaseModel):
     config_version: Annotated[int, Field(ge=1, title="Config Version")]
 
 
-class ContactResponse(BaseModel):
-    updated_at: Annotated[AwareDatetime, Field(title="Updated At")]
-
-
 class DetectionAck(BaseModel):
     accepted: Annotated[int, Field(ge=0, title="Accepted")]
     config_stale: Annotated[bool, Field(title="Config Stale")]
@@ -68,11 +64,17 @@ class Error(RootModel[str]):
     root: Annotated[str, Field(max_length=512)]
 
 
-class HeartbeatResponse(BaseModel):
-    server_time: Annotated[AwareDatetime, Field(title="Server Time")]
-    config_stale: Annotated[bool, Field(title="Config Stale")]
-    streaming_allowed: Annotated[bool, Field(title="Streaming Allowed")]
-    node_ref: Annotated[str, Field(pattern="^(nde|sim)[0-9a-z]{12}$", title="Node Ref")]
+class NodeClaimRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    email: Annotated[
+        str,
+        Field(
+            description="The owner's address, lower cased and trimmed by the server.",
+            max_length=255,
+        ),
+    ]
 
 
 class NodeConfig(BaseModel):
@@ -160,6 +162,12 @@ class RegisterResponse(BaseModel):
     server_time: Annotated[AwareDatetime, Field(title="Server Time")]
 
 
+class ClaimState(StrEnum):
+    unclaimed = "unclaimed"
+    pending = "pending"
+    owned = "owned"
+
+
 class Agreements(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -167,6 +175,19 @@ class Agreements(BaseModel):
     licence: AcceptanceRecord
     remote_management: AcceptanceRecord
     publication: PublicationChoice
+
+
+class ClaimResponse(BaseModel):
+    state: ClaimState
+    email: Annotated[str | None, Field(title="Email")]
+    undeliverable: Annotated[bool, Field(title="Undeliverable")]
+
+
+class ContactResponse(BaseModel):
+    updated_at: Annotated[AwareDatetime, Field(title="Updated At")]
+    claim_state: ClaimState
+    claim_email: Annotated[str | None, Field(title="Claim Email")]
+    claim_undeliverable: Annotated[bool, Field(title="Claim Undeliverable")]
 
 
 class HeartbeatRequest(BaseModel):
@@ -180,6 +201,16 @@ class HeartbeatRequest(BaseModel):
     health: NodeHealth | None = None
     versions: NodeVersions | None = None
     errors: Annotated[list[Error] | None, Field(max_length=32, title="Errors")] = None
+
+
+class HeartbeatResponse(BaseModel):
+    server_time: Annotated[AwareDatetime, Field(title="Server Time")]
+    config_stale: Annotated[bool, Field(title="Config Stale")]
+    streaming_allowed: Annotated[bool, Field(title="Streaming Allowed")]
+    node_ref: Annotated[str, Field(pattern="^(nde|sim)[0-9a-z]{12}$", title="Node Ref")]
+    claim_state: ClaimState
+    claim_email: Annotated[str | None, Field(title="Claim Email")]
+    claim_undeliverable: Annotated[bool, Field(title="Claim Undeliverable")]
 
 
 class RegisterRequest(BaseModel):

@@ -153,7 +153,17 @@ def test_heartbeat_restates_the_levels(server):
     status, body, _ = post(f"{server.url}/nodes/heartbeat", beat(version), token)
 
     assert status == 200
-    assert set(body) == {"server_time", "config_stale", "streaming_allowed", "node_ref"}
+    assert set(body) == {
+        "server_time",
+        "config_stale",
+        "streaming_allowed",
+        "node_ref",
+        # Required on HeartbeatResponse since 1.4.0, so their absence would be
+        # the mock departing from the contract rather than a lean response.
+        "claim_state",
+        "claim_email",
+        "claim_undeliverable",
+    }
 
 
 def test_empty_frame_is_accepted(server):
@@ -165,6 +175,181 @@ def test_empty_frame_is_accepted(server):
 
     assert status == 202
     assert body["accepted"] == 0
+
+
+# ── the claim ────────────────────────────────────────────────────────
+
+
+def claim_url(server):
+    return f"{server.url}/nodes/claim"
+
+
+def test_a_fresh_node_is_unclaimed(server):
+    token, _ = register(server)
+
+    status, body, _ = post(claim_url(server), None, token, method="GET")
+
+    assert status == 200
+    assert body == {"state": "unclaimed", "email": None, "undeliverable": False}
+
+
+def test_offering_an_address_makes_the_claim_pending(server):
+    token, _ = register(server)
+
+    status, body, _ = post(claim_url(server), {"email": "owner@example.com"}, token, method="PUT")
+
+    assert status == 200
+    assert body == {"state": "pending", "email": "owner@example.com", "undeliverable": False}
+
+
+def test_the_address_is_trimmed_and_lower_cased(server):
+    """The schema says the bound describes the trimmed form, so the server
+    normalises before it judges."""
+    token, _ = register(server)
+
+    _, body, _ = post(claim_url(server), {"email": "  Owner@Example.COM  "}, token, method="PUT")
+
+    assert body["email"] == "owner@example.com"
+
+
+def test_offering_the_same_address_again_changes_nothing(server):
+    """So it may be resent on every sync. Mailing again is a separate call."""
+    token, _ = register(server)
+    post(claim_url(server), {"email": "owner@example.com"}, token, method="PUT")
+
+    status, body, _ = post(claim_url(server), {"email": "owner@example.com"}, token, method="PUT")
+
+    assert status == 200
+    assert body["state"] == "pending"
+
+
+def test_a_bad_address_is_invalid_claim(server):
+    """`invalid_claim`, not `invalid_config`: the slugs are per-document so
+    retina-gui can mark the right field."""
+    token, _ = register(server)
+
+    status, body, _ = post(claim_url(server), {"email": "not-an-address"}, token, method="PUT")
+
+    assert status == 400
+    assert body["error"] == "invalid_claim"
+    assert body["detail"] == "email"
+
+
+def test_an_unknown_field_is_refused(server):
+    """`NodeClaimRequest` is additionalProperties: false."""
+    token, _ = register(server)
+
+    status, body, _ = post(
+        claim_url(server), {"email": "owner@example.com", "name": "x"}, token, method="PUT"
+    )
+
+    assert status == 400
+    assert body["error"] == "invalid_claim"
+
+
+def test_claiming_an_owned_node_answers_409_without_an_error_body(server):
+    """The one refusal in the contract that does not wear `Error`.
+
+    The node reconciles from this rather than correcting and retrying, so it is
+    told which address won in the same response.
+    """
+    token, _ = register(server)
+    post(claim_url(server), {"email": "first@example.com"}, token, method="PUT")
+    server.state.only_node().claim_state = "owned"
+
+    status, body, _ = post(claim_url(server), {"email": "second@example.com"}, token, method="PUT")
+
+    assert status == 409
+    assert "error" not in body
+    assert body == {"state": "owned", "email": "first@example.com", "undeliverable": False}
+
+
+def test_a_refused_claim_writes_nothing(server):
+    token, _ = register(server)
+    post(claim_url(server), {"email": "first@example.com"}, token, method="PUT")
+    server.state.only_node().claim_state = "owned"
+
+    post(claim_url(server), {"email": "second@example.com"}, token, method="PUT")
+
+    assert server.state.only_node().claim_email == "first@example.com"
+
+
+def test_the_owners_own_address_is_accepted_rather_than_refused(server):
+    """The 409 turns on the address, not on ownership alone.
+
+    The spec's wording is "a nomination names an address that is not theirs",
+    so re-offering the owner's own address is the idempotent path. Checked
+    against production on 2026-09-22, where this mock answered 409 and the real
+    server answered 200.
+    """
+    token, _ = register(server)
+    post(claim_url(server), {"email": "owner@example.com"}, token, method="PUT")
+    server.state.only_node().claim_state = "owned"
+
+    status, body, _ = post(claim_url(server), {"email": "owner@example.com"}, token, method="PUT")
+
+    assert status == 200
+    assert body["state"] == "owned"
+
+
+def test_a_declined_claim_keeps_the_address_and_cannot_be_reoffered(server):
+    """The live run's most surprising result, and a trap for retina-gui.
+
+    Declining returns the node to `unclaimed` but leaves the address on file.
+    Offering that same address again is therefore "an address the node already
+    holds", so it changes nothing and mails nothing: the node stays `unclaimed`
+    and an owner who declined by accident would sit there getting silence.
+    """
+    token, _ = register(server)
+    post(claim_url(server), {"email": "owner@example.com"}, token, method="PUT")
+    # What a decline leaves behind, as production did on 2026-09-22.
+    server.state.only_node().claim_state = "unclaimed"
+
+    status, body, _ = post(claim_url(server), {"email": "owner@example.com"}, token, method="PUT")
+
+    assert status == 200
+    assert body == {"state": "unclaimed", "email": "owner@example.com", "undeliverable": False}
+
+
+def test_a_resend_is_what_gets_a_declined_node_another_link(server):
+    """The only way forward from the previous test."""
+    token, _ = register(server)
+    post(claim_url(server), {"email": "owner@example.com"}, token, method="PUT")
+    server.state.only_node().claim_state = "unclaimed"
+
+    status, body, _ = post(f"{server.url}/nodes/claim/resend", None, token, method="POST")
+
+    assert status == 200
+    assert body["state"] == "pending"
+
+
+def test_a_resend_is_refused_on_an_owned_node(server):
+    token, _ = register(server)
+    post(claim_url(server), {"email": "owner@example.com"}, token, method="PUT")
+    server.state.only_node().claim_state = "owned"
+
+    status, body, _ = post(f"{server.url}/nodes/claim/resend", None, token, method="POST")
+
+    assert status == 409
+    assert body["state"] == "owned"
+
+
+def test_a_resend_on_a_pending_claim_is_accepted(server):
+    token, _ = register(server)
+    post(claim_url(server), {"email": "owner@example.com"}, token, method="PUT")
+
+    status, body, _ = post(f"{server.url}/nodes/claim/resend", None, token, method="POST")
+
+    assert status == 200
+    assert body["state"] == "pending"
+
+
+def test_the_claim_needs_a_token(server):
+    register(server)
+
+    status, _, _ = post(claim_url(server), {"email": "owner@example.com"}, None, method="PUT")
+
+    assert status == 401
 
 
 # ── auth ─────────────────────────────────────────────────────────────

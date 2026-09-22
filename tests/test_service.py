@@ -4,15 +4,17 @@ These are the only tests that exercise all three layers together, which makes
 them the ones that catch a payload the pieces each considered fine.
 """
 
+import contextlib
 import dataclasses
 import json
 import threading
 import time
+from datetime import UTC, datetime, timedelta
 
 import pytest
 import yaml
 
-from retina_telemetry.__main__ import Service
+from retina_telemetry.__main__ import CLAIM_ASK_FRESH_FOR_S, Service
 from retina_telemetry.comms.lifecycle import NodeState
 from retina_telemetry.settings import Settings
 from tests.collect.test_node_config import DEFAULTS
@@ -51,6 +53,7 @@ def settings_for(node, server, **overrides):
         device_type_path=node / "device_type",
         consent_path=node / "consent.json",
         contact_path=node / "contact.json",
+        claim_path=node / "claim.json",
         wizard_flag_path=node / "setup-wizard-completed",
         config_path=node / "config.yml",
         disk_path=node,
@@ -524,6 +527,173 @@ def test_an_unreadable_config_does_not_stop_the_contact_details(node, server):
     thread.join(timeout=5)
 
     assert server.received("contact")
+
+
+# ── the claim ────────────────────────────────────────────────────────
+#
+# Two calls chosen here rather than by retina-gui, because this is the only
+# side that knows what the server does with each. The case that makes the
+# second call exist is a declined link: the address stays on file, so offering
+# it again is accepted, changes nothing and mails nothing.
+
+CLAIM_ADDRESS = "owner@example.com"
+
+
+def write_claim(node, **document):
+    (node / "claim.json").write_text(json.dumps({"email": CLAIM_ADDRESS, **document}))
+
+
+def just_now():
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+@contextlib.contextmanager
+def service_running(service):
+    """Run the service for the body, so a test can change a file mid-run."""
+    service.stop.clear()
+    thread = threading.Thread(target=service.run, daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        service.stop.set()
+        thread.join(timeout=5)
+
+
+def wait_for(predicate, seconds=3.0):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline and not predicate():
+        time.sleep(0.05)
+    return predicate()
+
+
+def test_a_node_nobody_claims_never_calls_the_endpoint(node, server):
+    """The ordinary state. An unclaimed node registers, streams and beats
+    exactly as a claimed one does."""
+    service = Service(settings_for(node, server))
+
+    run_briefly(service, until=lambda: server.received("config"))
+
+    assert not server.received("claim")
+
+
+def test_an_address_is_offered_once_registered(node, server):
+    write_claim(node)
+    service = Service(settings_for(node, server))
+
+    run_briefly(service, until=lambda: server.received("claim"))
+
+    assert server.received("claim")[0].body == {"email": CLAIM_ADDRESS}
+
+
+def test_the_same_address_is_not_offered_twice(node, server):
+    """On local change only, like the contact document."""
+    write_claim(node)
+    service = Service(settings_for(node, server))
+
+    run_briefly(service, seconds=1.2)
+
+    assert len(server.received("claim")) == 1
+
+
+def test_a_changed_address_is_offered_again(node, server):
+    write_claim(node)
+    service = Service(settings_for(node, server))
+
+    with service_running(service):
+        assert wait_for(lambda: server.received("claim"))
+        write_claim(node, email="someone.else@example.com")
+        assert wait_for(lambda: len(server.received("claim")) == 2)
+
+    assert server.received("claim")[-1].body == {"email": "someone.else@example.com"}
+
+
+def test_an_ask_resends_rather_than_offering_again(node, server):
+    """The declined-link case, and the whole reason the second call exists.
+
+    The address has not changed, so a PUT would be accepted, change nothing and
+    mail nothing. Only the resend produces another link.
+    """
+    write_claim(node)
+    service = Service(settings_for(node, server))
+
+    with service_running(service):
+        assert wait_for(lambda: server.received("claim"))
+        write_claim(node, send_requested_at=just_now())
+        assert wait_for(lambda: server.received("claim_resend"))
+
+    assert len(server.received("claim")) == 1  # the address never changed
+    assert len(server.received("claim_resend")) == 1
+
+
+def test_an_ask_is_acted_on_once(node, server):
+    """It stays in the file, so acting on it every tick would mail the owner
+    every tick."""
+    write_claim(node)
+    service = Service(settings_for(node, server))
+
+    with service_running(service):
+        assert wait_for(lambda: server.received("claim"))
+        write_claim(node, send_requested_at=just_now())
+        assert wait_for(lambda: server.received("claim_resend"))
+        time.sleep(0.6)  # several more ticks
+
+    assert len(server.received("claim_resend")) == 1
+
+
+def test_a_stale_ask_is_ignored(node, server):
+    """Nothing durable records that we acted, so without an age bound a
+    restart would mail the owner another link every time it came up."""
+    write_claim(node)
+    service = Service(settings_for(node, server))
+    old = datetime.now(UTC) - timedelta(seconds=CLAIM_ASK_FRESH_FOR_S + 60)
+
+    with service_running(service):
+        assert wait_for(lambda: server.received("claim"))
+        write_claim(node, send_requested_at=old.strftime("%Y-%m-%dT%H:%M:%SZ"))
+        time.sleep(0.6)
+
+    assert not server.received("claim_resend")
+
+
+def test_an_ask_stored_with_a_first_offer_does_not_mail_twice(node, server):
+    """An owner who filled the box and pressed send again in one go.
+
+    The offer is itself the call that mails, so the timestamp beside it has
+    already been answered and must not produce a second link.
+    """
+    write_claim(node, send_requested_at=just_now())
+    service = Service(settings_for(node, server))
+
+    run_briefly(service, seconds=1.2)
+
+    assert len(server.received("claim")) == 1
+    assert not server.received("claim_resend")
+
+
+def test_a_claim_failure_never_reaches_the_status_document(node, server):
+    """Nothing about the claim stops a node working, so a refusal belongs in
+    `errors[]` and never in `detail`, which is for what does."""
+    write_claim(node, email="not-an-address")
+    service = Service(settings_for(node, server))
+
+    run_briefly(service, seconds=1.2)
+
+    document = json.loads((node / "status.json").read_text())
+    # `detail` still describes the node's own state, which here is a healthy
+    # node waiting on its first frame. What must not be in it is the claim.
+    assert "claim" not in (document["detail"] or "")
+
+
+def test_a_refused_address_is_not_offered_again(node, server):
+    """`invalid_claim` means repeating it cannot help. A corrected address is
+    what tries again."""
+    write_claim(node, email="not-an-address")
+    service = Service(settings_for(node, server))
+
+    run_briefly(service, seconds=1.2)
+
+    assert len(server.received("claim")) == 1
 
 
 # ── the server pushing back ──────────────────────────────────────────

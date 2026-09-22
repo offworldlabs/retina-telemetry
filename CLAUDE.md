@@ -4,7 +4,7 @@ The node-side telemetry uplink for the RETINA passive radar fleet. One container
 node, owning everything sent to the server: registration, detection streaming,
 heartbeat, config sync. Nothing else on the node talks to `api.retina.fm`.
 
-**Status: built, and implementing spec v1.2.2.** Verified end to end on the Owl node
+**Status: built, and implementing spec v1.4.0.** Verified end to end on the Owl node
 against a tunnelled mock — every endpoint, every reachable state including `stalled`,
 and the refusal paths.
 
@@ -50,12 +50,13 @@ Corollary: **all unit conversion happens in stage 2.** Stage 1 hands over source
 under names that say so — `delay_km`, `timestamp_ms`, `rx_alt_m` — and stage 2 emits the
 spec's names and units. A missing conversion is then visible at the call site.
 
-## Three files retina-gui writes, two of which gate registration
+## Four files retina-gui writes, two of which gate registration
 
-All three live under `/data/retina-gui`, mounted read-only, and nothing in any of them
+All four live under `/data/retina-gui`, mounted read-only, and nothing in any of them
 is ever synthesised here. **`telemetry-consent.json` and `setup-wizard-completed` gate
 registration**: a node missing either refuses to register and says which in its status
-document. `telemetry-contact.json` gates nothing and is optional throughout.
+document. `telemetry-contact.json` and `telemetry-claim.json` gate nothing and are
+optional throughout.
 
 **`telemetry-consent.json`** carries the three records `RegisterRequest.agreements`
 needs: `licence`, `remote_management` and `publication`. `publication` is a privacy
@@ -69,6 +70,13 @@ missing record means the owner was not shown that text. Shipped in retina-gui v0
 node that has none never calls the endpoint, which the spec states explicitly,
 so an absent file is a complete answer rather than a gap and nothing here
 blocks on it. See `collect/contact.py`.
+
+**`telemetry-claim.json`** carries the address that *owns* the node, for
+`PUT /nodes/claim`, plus a `send_requested_at` stamp when the owner asks for their
+link again. A different question from the contact email and a worse failure: the
+server mails this one a link, and opening it binds the node to the account behind
+it. Both keys optional, the file optional, and an unclaimed node runs exactly as a
+claimed one does. See `collect/claim.py`. Shipped in retina-gui 2026-09-22.
 
 **`setup-wizard-completed`** proves the config is the owner's rather than the shipped
 default. `retina-node/config/default.yml` ships a *working* configuration (Greenwich
@@ -105,6 +113,7 @@ Nothing here is buildable from this repo, and the first one blocks every node:
 | Read `/data/retina-telemetry/status.json` | no, but | We bind no ports, so it is the only way *no identity*, *revoked token* and *rejected config* reach an operator. `telemetry_status.py` reads it and the home page shows it |
 | Collect `location.rx.beam_width` / `beam_azimuth` | no | Deferred indefinitely. Both are nullable, so sending two nulls is correct behaviour rather than a gap |
 | Collect the owner's contact details | shipped | Landed 2026-09-16. A skippable wizard step after the agreements step, plus a block under Remote support on the Configuration page, writing `/data/retina-gui/telemetry-contact.json` |
+| Collect the address that **owns** the node | shipped | Landed 2026-09-22. A Node claim section on the Configuration page writing `/data/retina-gui/telemetry-claim.json`, with Save for the address and Send again for another link. Not the contact email: see `docs/data-sources.md` §4 |
 
 `owl-os` separately owes a `mender-update show-provides` snapshot so
 `versions.retina_node` has a source. Optional field; omitted honestly until then.
@@ -141,6 +150,28 @@ Full detail and citations in `docs/data-sources.md`. The short version:
   Unlike a refused registration, it breaks nothing: the node registers, streams
   and beats exactly as before, and the only loss is a way to ring the owner.
   `detail` is for what stops a node working.
+- **The claim's address comes from retina-gui and nowhere else.** Never the contact
+  email: that answers "whom do we ring" and reusing it would mail a stranger a link that
+  hands them the node. `telemetry-claim.json` carries the address and, when the owner
+  presses send again, a timestamp. **Which call to make is decided here, not there**: a
+  changed address is a `PUT` and a fresh timestamp is a `resend`, because this is the
+  only side that knows what the server does with each.
+- **Offering an address the node already holds does nothing at all.** It is accepted,
+  writes nothing and mails nothing. A declined link leaves the node `unclaimed` *with
+  the address still on file*, so it can sit there and no number of offers will move it;
+  `POST /nodes/claim/resend` is the only way out. Checked against production on
+  2026-09-22. This is why the resend trigger exists, and why a "claim this node" button
+  that always PUTs is wrong.
+- **A stale ask for a link is ignored**, past `CLAIM_ASK_FRESH_FOR_S`. Nothing durable
+  records that we acted on one, so without an age bound every restart would mail the
+  owner another link.
+- **The three claim fields are read as one block, gated on `claim_state`.**
+  `claim_email` is required *and nullable*, so a field-by-field read would let a
+  detection ack, which carries none of them, blank an address the heartbeat reported a
+  second earlier. None of it gates anything: an unclaimed node registers, streams and
+  beats normally. **`pending` is not durable** and nothing should wait on it: a declined
+  link can strand a node there for about fifteen minutes before it falls back to
+  `unclaimed`.
 - **Nothing in the stack pushes to us.** No event bus, no inbound ports. Every input is
   a poll or a file read, including "the user changed the config".
 - **`wire/models.py` is generated.** Regenerate with `tools/generate-models.sh`; never
@@ -165,7 +196,7 @@ Full detail and citations in `docs/data-sources.md`. The short version:
   absence, so dropping the key produces a payload it rejects. `to_wire` also applies
   `mode="json"`, which is load-bearing: without it the acceptance timestamps stay as
   `datetime` objects and `json.dumps` refuses the registration payload outright.
-  **Fourteen fields are required-and-nullable in v1.2.2**, so payloads go out through
+  **Fourteen fields are required-and-nullable in v1.4.0**, so payloads go out through
   `wire.to_wire`, never `model_dump(exclude_none=True)` directly.
   `tests/wire/test_serialise.py` pins the inventory by name and fails if the spec grows
   or loses one.
@@ -233,8 +264,8 @@ that get re-litigated if the reasoning is not written down.
   beam fields were changed with the server author's agreement, relayed by Josh, and their
   next revision did not carry it, so our edit was silently reverted on adoption. **Check
   `NodeConfig.beam_width_deg` when adopting any revision**, and expect to reapply it.
-  Checked on adopting `1.2.2` (2026-09-16): it survived, nullable as agreed. Keep
-  checking anyway. Two revisions carrying it is not yet a habit.
+  Checked on adopting `1.2.2` (2026-09-16) and `1.4.0` (2026-09-22): it survived
+  both times, nullable as agreed. Keep checking anyway.
 - **The spec is the scope.** If a field is not in it, we do not collect it — however
   cheap or obviously useful it looks. Wanting something new means asking the server
   author, not a field we add unilaterally. This has already removed Pi

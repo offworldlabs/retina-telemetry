@@ -81,6 +81,19 @@ last_name
 email
 phone
 country
+# The claim endpoints, added in v1.3.0, and the enum v1.4.0 put on the
+# heartbeat and contact responses alongside them. Nothing here offers an
+# address: a node has no source for the owner's, so `PUT /v1/nodes/claim` has
+# no caller until retina-gui collects one. The state itself *is* read, in
+# comms/levels.py, but never through these members. It is passed through as
+# the string the server sent so that a value this node does not recognise
+# still reaches an operator rather than being dropped.
+NodeClaimRequest
+ClaimResponse
+unclaimed
+pending
+owned
+
 # read by socketserver.ThreadingMixIn
 #   tools/mock_server.py:392
 _.daemon_threads
@@ -109,3 +122,8 @@ _._contact
 _._detection
 _._heartbeat
 _._register
+# `_claim_read` and `_claim_resend` joined them with spec v1.3.0. `_claim`
+# itself is not listed because comms/levels.py has a function of that name and
+# vulture matches on the bare name, so listing it would whitelist that too.
+_._claim_read
+_._claim_resend
