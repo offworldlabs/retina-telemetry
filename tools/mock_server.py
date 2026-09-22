@@ -101,6 +101,10 @@ BODY_CAPS = {
     # it, so this is the server declaring how little it expects rather than a
     # limit a node can reach.
     "contact": 2 * 1024,
+    # Both claim paths declare x-max-body-bytes: 2048, and the resend takes no
+    # body at all.
+    "claim": 2 * 1024,
+    "claim_resend": 2 * 1024,
 }
 MAX_BODY_BYTES = 64 * 1024
 
@@ -134,6 +138,11 @@ ENDPOINTS: dict[str, tuple[str, str, type[pydantic.BaseModel] | None]] = {
     # Read by hand for the same reason as config: a body-shaped refusal
     # must not be able to precede the 401.
     "contact": ("PUT", f"{BASE_PATH}/nodes/contact", None),
+    # The claim trio, added in v1.3.0. Read by hand for the same reason as
+    # config and contact: a body-shaped refusal must not precede the 401.
+    "claim_read": ("GET", f"{BASE_PATH}/nodes/claim", None),
+    "claim": ("PUT", f"{BASE_PATH}/nodes/claim", None),
+    "claim_resend": ("POST", f"{BASE_PATH}/nodes/claim/resend", None),
 }
 
 
@@ -392,6 +401,41 @@ def validate_contact(payload: Any) -> dict[str, Any]:
         raise ConfigInvalid("country")
 
     return out
+
+
+def validate_claim(payload: Any) -> str:
+    """Return the normalised address, or raise `invalid_claim` naming `email`.
+
+    The schema caps the address at 255 and the server states that it strips
+    surrounding whitespace and lower cases before judging, so the bound
+    describes the trimmed form rather than the bytes sent. Normalising here
+    rather than only bounding is what makes a resend of the same address with
+    different capitalisation read as unchanged, which is the behaviour the
+    contract promises.
+
+    The shape check is deliberately thin. The real server's is too: nothing
+    anywhere verifies that the address exists, and until the link is clicked it
+    grants nothing.
+    """
+    if not isinstance(payload, dict):
+        raise ConfigInvalid("claim", "not an object")
+
+    unknown = sorted(set(payload) - {"email"})
+    if unknown:
+        raise ConfigInvalid(unknown[0], "unknown field")
+
+    email = payload.get("email")
+    if not isinstance(email, str):
+        raise ConfigInvalid("email", "not a string")
+
+    email = email.strip().lower()
+    if not email or len(email) > 255:
+        raise ConfigInvalid("email")
+    # One `@`, something either side of it, and no whitespace inside.
+    local, _, domain = email.partition("@")
+    if not local or not domain or "@" in domain or any(c.isspace() for c in email):
+        raise ConfigInvalid("email")
+    return email
 
 
 def validate_config(payload: Any) -> dict[str, Any]:
@@ -735,6 +779,14 @@ class NodeRecord:
     claim_email: str | None = None
     claim_undeliverable: bool = False
 
+    def claim_response(self) -> dict[str, Any]:
+        """``ClaimResponse``, which names the three without the ``claim_`` prefix."""
+        return {
+            "state": self.claim_state,
+            "email": self.claim_email,
+            "undeliverable": self.claim_undeliverable,
+        }
+
     def claim_block(self) -> dict[str, Any]:
         """The three claim fields, spelled as every response carrying them does."""
         return {
@@ -988,6 +1040,12 @@ class _Handler(BaseHTTPRequestHandler):
                         "scripted": {k: len(v) for k, v in self.state.scripted.items()},
                     },
                 )
+            return
+        # Everything else that is a declared GET endpoint goes through the
+        # ordinary path, so it is recorded, capped and rate limited like any
+        # other request. `GET /nodes/claim` is the only one today.
+        if self._endpoint_for("GET", self.path) is not None:
+            self._handle("GET")
             return
         if self.path in ("/", "/_control/live"):
             page = LIVE_PAGE.encode()
@@ -1333,6 +1391,65 @@ class _Handler(BaseHTTPRequestHandler):
             node.contact = contact
             node.contact_updated_at = _now()
         self._send(200, {"updated_at": node.contact_updated_at, **node.claim_block()})
+
+    def _claim_read(self, body: Any) -> None:
+        """``GET /v1/nodes/claim``. Cheap, and safe to poll every few seconds."""
+        node = self._bearer_node(taxonomy=False)
+        if node is None:
+            return
+        with self.state.lock:
+            self._send(200, node.claim_response())
+
+    def _claim(self, body: Any) -> None:
+        """``PUT /v1/nodes/claim``. Offers the address that owns this node."""
+        node = self._bearer_node(taxonomy=True)
+        if node is None:
+            return
+
+        if body is MALFORMED:
+            # A body that is not JSON at all lands here too, since the remedy
+            # is the same: resending it unchanged will not help.
+            self._taxonomy(400, "invalid_claim", "claim")
+            return
+
+        try:
+            email = validate_claim(body)
+        except ConfigInvalid as exc:
+            self._taxonomy(400, "invalid_claim", exc.field)
+            return
+
+        with self.state.lock:
+            if node.claim_state == "owned":
+                # The one refusal in the contract that does not wear `Error`.
+                # Nothing is written, and the body names the address that won
+                # so the node reconciles without a second call.
+                self._send(409, node.claim_response())
+                return
+
+            # Offering an address the node already holds is accepted and
+            # changes nothing, so this may be resent on every sync. It does
+            # not mail anything again: that is what the resend path is for.
+            if email != node.claim_email:
+                node.claim_email = email
+                node.claim_undeliverable = False
+            node.claim_state = "pending"
+            self._send(200, node.claim_response())
+
+    def _claim_resend(self, body: Any) -> None:
+        """``POST /v1/nodes/claim/resend``. Sends the link again. No body."""
+        node = self._bearer_node(taxonomy=False)
+        if node is None:
+            return
+
+        with self.state.lock:
+            if node.claim_state == "owned":
+                self._send(409, node.claim_response())
+                return
+            # Answered without sending on an address that bounced hard: a
+            # second copy to an address that does not exist earns nothing but
+            # a second bounce, and bounces cost a sending domain its
+            # reputation. Still a 200, because nothing is wrong with the ask.
+            self._send(200, node.claim_response())
 
 
 class MockServer:

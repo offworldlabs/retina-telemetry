@@ -122,3 +122,8 @@ _._contact
 _._detection
 _._heartbeat
 _._register
+# `_claim_read` and `_claim_resend` joined them with spec v1.3.0. `_claim`
+# itself is not listed because comms/levels.py has a function of that name and
+# vulture matches on the bare name, so listing it would whitelist that too.
+_._claim_read
+_._claim_resend
