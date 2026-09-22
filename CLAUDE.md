@@ -50,12 +50,13 @@ Corollary: **all unit conversion happens in stage 2.** Stage 1 hands over source
 under names that say so — `delay_km`, `timestamp_ms`, `rx_alt_m` — and stage 2 emits the
 spec's names and units. A missing conversion is then visible at the call site.
 
-## Three files retina-gui writes, two of which gate registration
+## Four files retina-gui writes, two of which gate registration
 
-All three live under `/data/retina-gui`, mounted read-only, and nothing in any of them
+All four live under `/data/retina-gui`, mounted read-only, and nothing in any of them
 is ever synthesised here. **`telemetry-consent.json` and `setup-wizard-completed` gate
 registration**: a node missing either refuses to register and says which in its status
-document. `telemetry-contact.json` gates nothing and is optional throughout.
+document. `telemetry-contact.json` and `telemetry-claim.json` gate nothing and are
+optional throughout.
 
 **`telemetry-consent.json`** carries the three records `RegisterRequest.agreements`
 needs: `licence`, `remote_management` and `publication`. `publication` is a privacy
@@ -69,6 +70,13 @@ missing record means the owner was not shown that text. Shipped in retina-gui v0
 node that has none never calls the endpoint, which the spec states explicitly,
 so an absent file is a complete answer rather than a gap and nothing here
 blocks on it. See `collect/contact.py`.
+
+**`telemetry-claim.json`** carries the address that *owns* the node, for
+`PUT /nodes/claim`, plus a `send_requested_at` stamp when the owner asks for their
+link again. A different question from the contact email and a worse failure: the
+server mails this one a link, and opening it binds the node to the account behind
+it. Both keys optional, the file optional, and an unclaimed node runs exactly as a
+claimed one does. See `collect/claim.py`. Shipped in retina-gui 2026-09-22.
 
 **`setup-wizard-completed`** proves the config is the owner's rather than the shipped
 default. `retina-node/config/default.yml` ships a *working* configuration (Greenwich
@@ -105,7 +113,7 @@ Nothing here is buildable from this repo, and the first one blocks every node:
 | Read `/data/retina-telemetry/status.json` | no, but | We bind no ports, so it is the only way *no identity*, *revoked token* and *rejected config* reach an operator. `telemetry_status.py` reads it and the home page shows it |
 | Collect `location.rx.beam_width` / `beam_azimuth` | no | Deferred indefinitely. Both are nullable, so sending two nulls is correct behaviour rather than a gap |
 | Collect the owner's contact details | shipped | Landed 2026-09-16. A skippable wizard step after the agreements step, plus a block under Remote support on the Configuration page, writing `/data/retina-gui/telemetry-contact.json` |
-| Collect the address that **owns** the node | no, but | v1.3.0 added `PUT /nodes/claim`, and nothing on a node knows the address, so we do not call it. Not the contact email: see `docs/data-sources.md` §4. Blocked on the server's own question about how an address relates to an account, so do not start here |
+| Collect the address that **owns** the node | shipped | Landed 2026-09-22. A Node claim section on the Configuration page writing `/data/retina-gui/telemetry-claim.json`, with Save for the address and Send again for another link. Not the contact email: see `docs/data-sources.md` §4 |
 
 `owl-os` separately owes a `mender-update show-provides` snapshot so
 `versions.retina_node` has a source. Optional field; omitted honestly until then.
@@ -142,18 +150,28 @@ Full detail and citations in `docs/data-sources.md`. The short version:
   Unlike a refused registration, it breaks nothing: the node registers, streams
   and beats exactly as before, and the only loss is a way to ring the owner.
   `detail` is for what stops a node working.
-- **The claim is read, never offered.** v1.3.0 added the endpoints that nominate an
-  owner's address and v1.4.0 put `claim_state`, `claim_email` and `claim_undeliverable`
-  on the heartbeat and contact responses. We consume those three and write them to the
-  status document; we call no claim endpoint, because **nothing on a node knows the
-  owner's address** and the contact email is a different question with a worse failure
-  (mailing a stranger a link that hands them the node). None of it gates anything: an
-  unclaimed node registers, streams and beats normally. Read the three as one block,
-  gated on `claim_state`: `claim_email` is required *and nullable*, so a field-by-field
-  read would let a detection ack, which carries none of them, blank an address the
-  heartbeat reported a second earlier. **`pending` is not durable** and nothing should
-  wait on it: a declined link can strand a node there for about fifteen minutes before
-  it falls back to `unclaimed`.
+- **The claim's address comes from retina-gui and nowhere else.** Never the contact
+  email: that answers "whom do we ring" and reusing it would mail a stranger a link that
+  hands them the node. `telemetry-claim.json` carries the address and, when the owner
+  presses send again, a timestamp. **Which call to make is decided here, not there**: a
+  changed address is a `PUT` and a fresh timestamp is a `resend`, because this is the
+  only side that knows what the server does with each.
+- **Offering an address the node already holds does nothing at all.** It is accepted,
+  writes nothing and mails nothing. A declined link leaves the node `unclaimed` *with
+  the address still on file*, so it can sit there and no number of offers will move it;
+  `POST /nodes/claim/resend` is the only way out. Checked against production on
+  2026-09-22. This is why the resend trigger exists, and why a "claim this node" button
+  that always PUTs is wrong.
+- **A stale ask for a link is ignored**, past `CLAIM_ASK_FRESH_FOR_S`. Nothing durable
+  records that we acted on one, so without an age bound every restart would mail the
+  owner another link.
+- **The three claim fields are read as one block, gated on `claim_state`.**
+  `claim_email` is required *and nullable*, so a field-by-field read would let a
+  detection ack, which carries none of them, blank an address the heartbeat reported a
+  second earlier. None of it gates anything: an unclaimed node registers, streams and
+  beats normally. **`pending` is not durable** and nothing should wait on it: a declined
+  link can strand a node there for about fifteen minutes before it falls back to
+  `unclaimed`.
 - **Nothing in the stack pushes to us.** No event bus, no inbound ports. Every input is
   a poll or a file read, including "the user changed the config".
 - **`wire/models.py` is generated.** Regenerate with `tools/generate-models.sh`; never

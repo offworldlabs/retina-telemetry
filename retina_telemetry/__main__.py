@@ -37,22 +37,26 @@ import random
 import signal
 import threading
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 
 import pydantic
 
+from retina_telemetry.collect import claim as claim_reader
 from retina_telemetry.collect import consent as consent_reader
 from retina_telemetry.collect import contact as contact_reader
 from retina_telemetry.collect import identity as identity_reader
 from retina_telemetry.collect import node_config as config_reader
 from retina_telemetry.collect import wizard as wizard_reader
 from retina_telemetry.collect.blah2 import Blah2Client
+from retina_telemetry.collect.claim import Nomination
 from retina_telemetry.collect.consent import Consent
 from retina_telemetry.collect.contact import Contact
 from retina_telemetry.collect.host import HostReader
 from retina_telemetry.collect.identity import IdentityUnavailable
 from retina_telemetry.collect.node_config import ConfigUnavailable, NodeConfigRaw
 from retina_telemetry.comms.client import Client, Kind, Outcome
+from retina_telemetry.comms.levels import apply_response
 from retina_telemetry.comms.lifecycle import NodeState, Registrar, derive_state, explain
 from retina_telemetry.comms.reliable import is_fatal_for_config, send_until_delivered
 from retina_telemetry.comms.stream import DetectionStream, Slot
@@ -60,6 +64,7 @@ from retina_telemetry.errors import Errors
 from retina_telemetry.settings import Settings
 from retina_telemetry.state import State, with_uptime_fallback
 from retina_telemetry.status import StatusWriter
+from retina_telemetry.wire.claim import build_claim
 from retina_telemetry.wire.config import build_node_config
 from retina_telemetry.wire.contact import build_contact
 from retina_telemetry.wire.detection import build_detection_frame
@@ -68,6 +73,19 @@ from retina_telemetry.wire.registration import IncompletePayload, build_registra
 from retina_telemetry.wire.serialise import to_wire
 
 log = logging.getLogger("retina_telemetry")
+
+#: How recent an ask for another claim link has to be before we act on it.
+#:
+#: The ask is an event left in a file we poll, and nothing records that we
+#: acted on it anywhere durable. Without a window, every restart of this
+#: container would re-read whatever the file last held and mail the owner
+#: another link, for ever.
+#:
+#: Short on purpose. Somebody is looking at a page when they press that button,
+#: so an ask this service was not running to see is one they will simply make
+#: again; acting on an hour-old press would mail a link nobody is waiting for.
+#: The cost of the window is at most one duplicate, from a restart inside it.
+CLAIM_ASK_FRESH_FOR_S = 300.0
 
 
 def _refusal_detail(outcome: Outcome) -> str:
@@ -139,6 +157,14 @@ class Service:
         #: nothing but the token is persisted, so a restart re-sends once,
         #: which the endpoint's wholesale replace makes idempotent.
         self._contact_sent: Contact | None = None
+        #: The address last offered to the server, and the last ask for another
+        #: link that was acted on. Process-local, like everything else here.
+        #: A restart re-offers the address once, which is harmless because
+        #: offering one the server already holds changes nothing and mails
+        #: nothing. The ask is guarded by CLAIM_ASK_FRESH_FOR_S instead,
+        #: because re-acting on that one *would* mail somebody.
+        self._claim_sent: str | None = None
+        self._claim_asked: datetime | None = None
         #: Why the server last refused to register this node. Separate from
         #: `_config_rejected`, which is a PUT answering about a configuration
         #: the node is already registered to send.
@@ -242,7 +268,8 @@ class Service:
             self.stop.wait(self.settings.heartbeat_interval_s)
 
     def config_loop(self) -> None:
-        """Push what changed locally: the configuration, and the contact details.
+        """Push what changed locally: the configuration, the contact details
+        and the claim.
 
         Nothing pushes at us, so a local edit is noticed by re-reading. The
         server asking arrives immediately through the resend event.
@@ -269,6 +296,7 @@ class Service:
             # whose config.yml is unreadable can still say who owns it, and
             # that is exactly the node somebody needs to ring.
             self._send_contact_if_changed()
+            self._send_claim_if_needed()
 
             config = self.node_config()
             if config is None:
@@ -405,6 +433,133 @@ class Service:
             # Only now, and only what this beat carried. The spec is explicit
             # that the list is cleared once a beat is acknowledged.
             batch.commit()
+
+    def _send_claim_if_needed(self) -> None:
+        """Offer the address that owns this node, or ask for its link again.
+
+        Two different calls, chosen here rather than by retina-gui, because
+        this is the only side that knows where the claim stands and what the
+        server does with each. The file it writes says what the owner wants,
+        not which request to make. See ``collect/claim.py``.
+
+        **A changed address is offered.** That is ``PUT /nodes/claim``, and it
+        is the call that makes the server mail a link.
+
+        **An unchanged address with a fresh ask is resent.** This is the case
+        that needs the second call to exist at all: offering an address the
+        node already holds is accepted, changes nothing and mails nothing, so a
+        node whose link was declined sits at ``unclaimed`` with the address
+        still on file and no ``PUT`` will ever move it.
+
+        Nothing here gates anything. A node nobody claims registers, streams
+        and beats exactly as a claimed one does, so every failure below goes to
+        ``errors[]`` and never to the status document's ``detail``.
+        """
+        nomination = claim_reader.read_nomination(self.settings.claim_path)
+
+        if nomination.email is None:
+            # Nobody is claiming this node, or the owner cleared the box. There
+            # is nothing to send either way: releasing an existing claim is the
+            # owner's to do from the dashboard and no endpoint here can do it.
+            # Forgetting what we sent means putting the same address back later
+            # counts as a change and is offered again.
+            self._claim_sent = None
+            return
+
+        if nomination.email != self._claim_sent:
+            self._offer_claim(nomination)
+            return
+
+        if self._ask_is_new(nomination.send_requested_at):
+            self._resend_claim(nomination.send_requested_at)
+
+    def _ask_is_new(self, asked: datetime | None) -> bool:
+        """Whether this is an ask for another link that we have not acted on.
+
+        Guarded by age as well as by novelty, because acting twice on the same
+        ask mails somebody twice. Nothing durable records what we have acted
+        on, so without the window every restart would re-send whatever the file
+        last held. See CLAIM_ASK_FRESH_FOR_S.
+        """
+        if asked is None or asked == self._claim_asked:
+            return False
+        age = (datetime.now(UTC) - asked).total_seconds()
+        if age > CLAIM_ASK_FRESH_FOR_S:
+            # Adopted without acting, so it is not reconsidered every tick.
+            self._claim_asked = asked
+            log.info("ignoring a %.0fs-old ask for another claim link", age)
+            return False
+        return True
+
+    def _offer_claim(self, nomination: Nomination) -> None:
+        """``PUT /nodes/claim``, for an address the server has not been told."""
+        try:
+            payload = to_wire(build_claim(nomination))
+        except ValueError as exc:
+            # retina-gui checks the same bound at the box, so this means the
+            # file was hand-edited. Dropped rather than retried: the next read
+            # is identical and would fail identically.
+            self.errors.add(f"claim: {exc}")
+            log.warning("cannot build a claim payload: %s", exc)
+            self._claim_sent = nomination.email
+            return
+
+        outcome = send_until_delivered(
+            self.client,
+            "PUT",
+            "/nodes/claim",
+            lambda: payload,
+            state=self.state,
+            stop=self.stop,
+            token=self.state.snapshot().token,
+            max_attempts=3,
+        )
+        if outcome is None:
+            return
+
+        if outcome.ok or outcome.kind is Kind.CONFLICT:
+            # A 409 says the node already has an owner, which is settled rather
+            # than something to keep offering; `apply_response` has already
+            # adopted the ClaimResponse it carried. Either way the address is
+            # now the server's, and any ask stored beside it has been answered
+            # by the link this call just sent, so it must not fire a resend.
+            self._claim_sent = nomination.email
+            self._claim_asked = nomination.send_requested_at
+            return
+
+        self.errors.add(f"claim: {outcome.describe()}")
+        if outcome.kind is Kind.INVALID:
+            # `invalid_claim`. Repeating it cannot help, so it is recorded as
+            # sent and a corrected address is what tries again.
+            self._claim_sent = nomination.email
+
+    def _resend_claim(self, asked: datetime | None) -> None:
+        """``POST /nodes/claim/resend``, for a link that never arrived.
+
+        Sent directly rather than through ``send_until_delivered``, for two
+        reasons. The endpoint takes no body, and that wrapper has no way to
+        make a request without one; passing an empty object instead would be a
+        shape this has never been checked against.
+
+        And the retry belongs to the owner. The spec says this happens "when
+        somebody asks for the mail again, and never automatically", so a
+        failure is reported and left: the person who pressed the button is
+        looking at the page and can press it again, which is a better retry
+        than one that might mail them while they are not.
+        """
+        outcome = self.client.request(
+            "POST", "/nodes/claim/resend", None, token=self.state.snapshot().token
+        )
+        # Not called for us, unlike the wrapper above, and it is what adopts
+        # the ClaimResponse this answers with.
+        apply_response(outcome, self.state)
+
+        # Recorded either way. A failed ask that stayed unrecorded would be
+        # retried on every tick from here on, mailing the owner once it began
+        # working.
+        self._claim_asked = asked
+        if not outcome.ok:
+            self.errors.add(f"claim resend: {outcome.describe()}")
 
     def _send_contact_if_changed(self) -> None:
         """``PUT /nodes/contact``, on local change and never otherwise.

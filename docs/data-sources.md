@@ -408,13 +408,26 @@ streams and beats exactly as before, and the only loss is a way to ring the owne
 Nothing is ever substituted, the same discipline as the consent records and the beam
 geometry. These reach a person.
 
-### The claim address, which has no source on a node
+### The claim address
 
-Spec v1.3.0 added `PUT /v1/nodes/claim`: the node offers the address that owns it, the
-server mails a link, and clicking it binds the node to that account. **Nothing on a node
-knows that address**, so this service does not call the endpoint and will not until
-something collects one. retina-gui would have to, the way it collects the consent
-records.
+`/data/retina-gui/telemetry-claim.json`, written by retina-gui's Node claim section and
+read-only to us. Two keys, both optional, and so is the file:
+
+| Key | Meaning | What it makes us do |
+|---|---|---|
+| `email` | the address that owns this node | a **change** is offered with `PUT /nodes/claim`, which is the call that mails a link |
+| `send_requested_at` | when the owner last pressed "send again" | a **fresh** one triggers `POST /nodes/claim/resend` |
+
+`email` is state and `send_requested_at` is an event, and keeping them apart is what
+lets retina-gui stay ignorant of the wire: it records what the owner wants, and
+`collect/claim.py` plus the config loop decide which of the two calls achieves it. The
+rule below is why that decision cannot live on the retina-gui side.
+
+**A stale ask is ignored**, past `CLAIM_ASK_FRESH_FOR_S` (five minutes). Nothing durable
+records that we acted on one, so without an age bound every restart of this container
+would re-read whatever the file last held and mail the owner another link, for ever.
+Somebody is looking at a page when they press that button, so an ask we were not running
+to see is one they will make again.
 
 **The contact email is not the claim address, however convenient that looks.** They are
 different questions with different consequences:
@@ -428,10 +441,17 @@ different questions with different consequences:
 An owner may well give the same address for both. That is their answer to two questions,
 not a licence for us to infer the second from the first, and reusing the contact email
 would claim ownership on behalf of whoever happened to be listed. The same discipline as
-the consent records: nothing that reaches a person is ever synthesised here.
+the consent records: nothing that reaches a person is ever synthesised here. The two
+live in separate files and neither is ever read as a fallback for the other.
 
-The server has the account side of this open as its own question, so the shape of what
-retina-gui should collect is not settled yet either.
+**Offering an address the node already holds does nothing at all.** Not "nothing
+visible": the server accepts it, writes nothing and mails nothing, and the state it
+reports is unchanged. That matters because of what a declined link leaves behind,
+verified against production on 2026-09-22: declining returns the node to `unclaimed`
+*but leaves the address on file*, so a node can sit unclaimed with an address against it
+and no number of offers will ever move it. `POST /nodes/claim/resend` is the only way
+out. This is the single most surprising thing about the claim and the reason the resend
+trigger exists at all.
 
 **What a node *is* told, since v1.4.0**, is where its claim stands: `claim_state`,
 `claim_email` and `claim_undeliverable`, restated on every heartbeat and contact
