@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from retina_telemetry.state import State, with_uptime_fallback
+from retina_telemetry.state import Claim, State, with_uptime_fallback
 
 
 @pytest.fixture
@@ -239,6 +239,35 @@ def test_the_token_never_appears_in_the_redacted_view(state):
     registered(state)
 
     assert "tok_abc123" not in json.dumps(state.snapshot().redacted())
+
+
+def test_the_owner_address_never_reaches_a_log_line(state, caplog):
+    """Same rule `collect/contact.py` follows when it logs the names of fields
+    it did not recognise rather than their values. An owner sees their own
+    address in the status document; a container log is not the place for it.
+    """
+    registered(state)
+
+    with caplog.at_level("INFO"):
+        state.apply_levels(
+            claim=Claim(state="pending", email="owner@example.com", undeliverable=False)
+        )
+
+    assert "owner@example.com" not in caplog.text
+    assert "pending" in caplog.text  # the move itself is still worth a line
+
+
+def test_a_claim_is_logged_once_rather_than_on_every_beat(state, caplog):
+    """It arrives on every heartbeat response. Logging an unchanged level once
+    a minute would bury everything else."""
+    registered(state)
+    claim = Claim(state="owned", email="owner@example.com", undeliverable=False)
+    state.apply_levels(claim=claim)
+
+    with caplog.at_level("INFO"):
+        state.apply_levels(claim=claim)
+
+    assert "claim is now" not in caplog.text
 
 
 # ── response levels ──────────────────────────────────────────────────

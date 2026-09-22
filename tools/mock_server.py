@@ -724,6 +724,25 @@ class NodeRecord:
     contact: dict[str, Any] = field(default_factory=dict)
     contact_updated_at: str | None = None
 
+    #: Where the claim stands, restated on every heartbeat and contact
+    #: response. The mock holds it rather than deriving it, because the claim
+    #: endpoints that move it are not implemented here: nothing in this
+    #: service calls them yet, and a mock that answers calls nobody makes
+    #: would be asserting a shape the node has never had to parse. These are
+    #: set through the control channel, which is what the node reads them as
+    #: anyway: levels it is told and does not negotiate.
+    claim_state: str = "unclaimed"
+    claim_email: str | None = None
+    claim_undeliverable: bool = False
+
+    def claim_block(self) -> dict[str, Any]:
+        """The three claim fields, spelled as every response carrying them does."""
+        return {
+            "claim_state": self.claim_state,
+            "claim_email": self.claim_email,
+            "claim_undeliverable": self.claim_undeliverable,
+        }
+
     def upsert_config(self, config: dict[str, Any]) -> int:
         """Return the active version, minting one only if the values differ.
 
@@ -1034,6 +1053,15 @@ class _Handler(BaseHTTPRequestHandler):
                         node.status = "active" if body["streaming_allowed"] else "blocked"
                     if "node_ref" in body:
                         node.node_ref = str(body["node_ref"])
+                    # The claim knobs. Unlike streaming_allowed these are held
+                    # rather than derived, so they are set straight through.
+                    if "claim_state" in body:
+                        node.claim_state = str(body["claim_state"])
+                    if "claim_email" in body:
+                        raw = body["claim_email"]
+                        node.claim_email = None if raw is None else str(raw)
+                    if "claim_undeliverable" in body:
+                        node.claim_undeliverable = bool(body["claim_undeliverable"])
                     # Likewise config_stale: the server compares the version the
                     # node reported against the active one. Moving the active
                     # version is how staleness actually arises, and it is the
@@ -1250,6 +1278,7 @@ class _Handler(BaseHTTPRequestHandler):
                     "config_stale": beat.config_version != node.active_config_version,
                     "streaming_allowed": node.status == "active",
                     "node_ref": node.node_ref,
+                    **node.claim_block(),
                 },
             )
 
@@ -1303,7 +1332,7 @@ class _Handler(BaseHTTPRequestHandler):
         with self.state.lock:
             node.contact = contact
             node.contact_updated_at = _now()
-        self._send(200, {"updated_at": node.contact_updated_at})
+        self._send(200, {"updated_at": node.contact_updated_at, **node.claim_block()})
 
 
 class MockServer:

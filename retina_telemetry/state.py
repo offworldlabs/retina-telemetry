@@ -61,7 +61,7 @@ import logging
 import os
 import secrets
 import threading
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic
@@ -78,6 +78,40 @@ TOKEN_MODE = 0o600
 
 
 @dataclass(frozen=True)
+class Claim:
+    """Where this node's claim stands, as the server last stated it.
+
+    One object rather than three fields on :class:`Snapshot`, because the
+    three arrive together and the distinction that matters is whether the
+    server has said anything at all. ``Snapshot.claim is None`` means it has
+    not: no response carrying the block has landed yet. That is not the same
+    as :attr:`state` being ``"unclaimed"``, which is the server positively
+    saying nobody owns this node.
+
+    Nothing here gates anything. An unclaimed node registers, streams and
+    beats exactly as an owned one does; ownership decides who sees the data on
+    the far end, not whether it is sent. This is carried so the status
+    document can show an owner where they stand.
+
+    :attr:`state` is a plain string rather than the generated ``ClaimState``.
+    A value this node does not recognise is still worth showing an operator,
+    and dropping the whole block because one field grew a fourth value would
+    lose the other two as well.
+
+    **Do not build anything that waits on ``"pending"``.** It is not durable:
+    a claim link that is declined while a second is outstanding can leave a
+    node reading ``pending`` against a link nobody can redeem, until the
+    challenge expires about fifteen minutes later and it reads ``unclaimed``
+    again. That is a known server-side race, tracked there, and the node's
+    part is simply to keep reporting whatever it was last told.
+    """
+
+    state: str
+    email: str | None
+    undeliverable: bool
+
+
+@dataclass(frozen=True)
 class Snapshot:
     """A consistent view of shared state, taken under one lock acquisition."""
 
@@ -91,6 +125,7 @@ class Snapshot:
     token_rejected: bool
     clock_offset_s: float | None
     process_uptime_s: int
+    claim: Claim | None
 
     @property
     def registered(self) -> bool:
@@ -138,6 +173,10 @@ class Snapshot:
             "token_rejected": self.token_rejected,
             "clock_offset_s": self.clock_offset_s,
             "process_uptime_s": self.process_uptime_s,
+            # Nested, and ``null`` until a response carries it. Three flat keys
+            # could not say "not yet told" without a null boolean, which reads
+            # as a bug at the other end.
+            "claim": None if self.claim is None else asdict(self.claim),
         }
 
 
@@ -171,6 +210,7 @@ class State:
         self._streaming_allowed = True
         self._token_rejected = False
         self._clock_offset_s: float | None = None
+        self._claim: Claim | None = None
 
         #: Set when a configuration resend is due — because the server said
         #: ``config_stale``, because a detection POST returned 409, or because
@@ -195,6 +235,7 @@ class State:
                 token_rejected=self._token_rejected,
                 clock_offset_s=self._clock_offset_s,
                 process_uptime_s=int(monotonic() - self._started_at),
+                claim=self._claim,
             )
 
     # ── writing ──────────────────────────────────────────────────────
@@ -240,6 +281,7 @@ class State:
         streaming_allowed: bool | None = None,
         node_ref: str | None = None,
         server_time: datetime | None = None,
+        claim: Claim | None = None,
     ) -> None:
         """Adopt what a response carried, in one atomic step.
 
@@ -251,6 +293,12 @@ class State:
         Only the values actually present are applied; ``None`` means the
         response did not carry that field, which is not the same as false.
         Nothing here touches the disk.
+
+        ``claim`` arrives on the heartbeat and contact responses only, and a
+        detection ack carries no part of it. That is why it is one argument
+        rather than three: a caller cannot half-apply it, so an endpoint that
+        says nothing about the claim cannot blank an address another endpoint
+        reported a second earlier.
         """
         with self._lock:
             if config_version is not None:
@@ -267,6 +315,23 @@ class State:
 
             if config_stale is not None:
                 self._config_stale = config_stale
+
+            if claim is not None and claim != self._claim:
+                # Worth a line each time it moves: it changes rarely, and an
+                # owner waiting on a link has no other way to see that the
+                # node heard back. Whether there is an address, never the
+                # address itself, which is the same rule collect/contact.py
+                # follows when it logs the names of fields it did not
+                # recognise rather than their values. The status document is
+                # where an owner sees their own address; a container log is
+                # not.
+                log.info(
+                    "claim is now %s (%s)%s",
+                    claim.state,
+                    "address on file" if claim.email else "no address on file",
+                    ", and the last mail bounced" if claim.undeliverable else "",
+                )
+                self._claim = claim
 
             if server_time is not None:
                 self._clock_offset_s = (

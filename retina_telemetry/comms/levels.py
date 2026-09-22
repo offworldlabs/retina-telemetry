@@ -29,7 +29,7 @@ from datetime import datetime
 from typing import Any
 
 from retina_telemetry.comms.client import Kind, Outcome
-from retina_telemetry.state import State
+from retina_telemetry.state import Claim, State
 
 log = logging.getLogger(__name__)
 
@@ -64,10 +64,40 @@ def apply_response(outcome: Outcome, state: State) -> None:
         streaming_allowed=_bool_or_none(body.get("streaming_allowed")),
         node_ref=_str_or_none(body.get("node_ref")),
         server_time=server_time,
+        claim=_claim(body),
     )
 
     if server_time is not None:
         _warn_on_clock_offset(state)
+
+
+def _claim(body: dict[str, Any]) -> Claim | None:
+    """The claim block, if this response carried one.
+
+    Read as a unit, and gated on ``claim_state`` alone, because that is the
+    field whose presence says the block is there at all: it is required and
+    non-nullable everywhere it appears, while ``claim_email`` is required and
+    *nullable*, so its ``null`` is a value (nobody has offered an address)
+    rather than an absence.
+
+    Reading the three independently would confuse those two cases in the
+    direction that loses information. A detection ack carries none of them, so
+    an absent ``claim_email`` would look exactly like a cleared one and the
+    ack would wipe an address the heartbeat reported a second earlier.
+
+    An unrecognised ``claim_state`` is passed through rather than rejected.
+    This is a display value, and a server that grows a fourth one should show
+    up in the status document as itself rather than vanish.
+    """
+    state = body.get("claim_state")
+    if not isinstance(state, str) or not state:
+        return None
+
+    return Claim(
+        state=state,
+        email=_str_or_none(body.get("claim_email")),
+        undeliverable=body.get("claim_undeliverable") is True,
+    )
 
 
 def _warn_on_clock_offset(state: State) -> None:

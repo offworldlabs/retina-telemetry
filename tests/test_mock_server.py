@@ -153,7 +153,17 @@ def test_heartbeat_restates_the_levels(server):
     status, body, _ = post(f"{server.url}/nodes/heartbeat", beat(version), token)
 
     assert status == 200
-    assert set(body) == {"server_time", "config_stale", "streaming_allowed", "node_ref"}
+    assert set(body) == {
+        "server_time",
+        "config_stale",
+        "streaming_allowed",
+        "node_ref",
+        # Required on HeartbeatResponse since 1.4.0, so their absence would be
+        # the mock departing from the contract rather than a lean response.
+        "claim_state",
+        "claim_email",
+        "claim_undeliverable",
+    }
 
 
 def test_empty_frame_is_accepted(server):

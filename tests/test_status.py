@@ -3,7 +3,7 @@ import stat
 
 import pytest
 
-from retina_telemetry.state import State
+from retina_telemetry.state import Claim, State
 from retina_telemetry.status import SCHEMA, StatusWriter
 
 
@@ -65,6 +65,32 @@ def test_node_ref_reaches_the_owner(path, state):
     StatusWriter(path).write(state="streaming", snapshot=state.snapshot())
 
     assert written(path)["node_ref"] == "nde4f2k9xq7m3b8"
+
+
+def test_the_claim_reaches_the_owner_too(path, state):
+    """The same argument as `node_ref`, and the only one there is.
+
+    This service binds no ports, so an owner waiting on a claim link, or one
+    whose address bounced, learns it here or not at all. retina-gui reads this
+    file already.
+    """
+    state.apply_levels(claim=Claim(state="pending", email="owner@example.com", undeliverable=True))
+
+    StatusWriter(path).write(state="streaming", snapshot=state.snapshot())
+
+    assert written(path)["claim"] == {
+        "state": "pending",
+        "email": "owner@example.com",
+        "undeliverable": True,
+    }
+
+
+def test_an_unasked_claim_is_null_rather_than_absent(path, state):
+    """Nested and null, not three flat keys. "The server has not told us"
+    needs saying, and a null boolean would read as a bug at the other end."""
+    StatusWriter(path).write(state="streaming", snapshot=state.snapshot())
+
+    assert written(path)["claim"] is None
 
 
 def test_a_missing_identity_is_the_headline(path, tmp_path):
