@@ -20,6 +20,15 @@ stops, the heartbeat continues so the failure stays visible.
 **A 409 is not a reason to retry the frame.** It says the server does not
 recognise our `config_version`, so the same request would fail identically
 until a configuration resend has happened.
+
+**Except on the claim paths, where a 409 means something else entirely.** There
+it says the node already has an owner, which has nothing to do with our
+configuration, and it is the one refusal in the contract that carries a
+`ClaimResponse` rather than an `Error`. The node reconciles from the body
+instead of correcting and retrying. That is why `Outcome` carries the path it
+answered: a status code alone cannot tell these two apart, and answering the
+second with a configuration resend would put a `PUT /nodes/config` on the wire
+every time somebody offered an address for a node that already has an owner.
 """
 
 from __future__ import annotations
@@ -39,6 +48,10 @@ log = logging.getLogger(__name__)
 #: settles — but a second or two of ordinary skew is not news.
 CLOCK_WARN_S = 5.0
 
+#: Matches every claim endpoint: ``PUT``/``GET /nodes/claim`` and
+#: ``POST /nodes/claim/resend``.
+CLAIM_PATH = "/nodes/claim"
+
 
 def apply_response(outcome: Outcome, state: State) -> None:
     """Adopt everything a response implies, whatever endpoint produced it.
@@ -49,6 +62,10 @@ def apply_response(outcome: Outcome, state: State) -> None:
     if outcome.kind is Kind.UNAUTHORIZED:
         # Never re-register. See the module docstring.
         state.reject_token()
+        return
+
+    if CLAIM_PATH in outcome.path:
+        _apply_claim_answer(outcome, state)
         return
 
     if outcome.kind is Kind.CONFLICT:
@@ -69,6 +86,40 @@ def apply_response(outcome: Outcome, state: State) -> None:
 
     if server_time is not None:
         _warn_on_clock_offset(state)
+
+
+def _apply_claim_answer(outcome: Outcome, state: State) -> None:
+    """Adopt what a claim endpoint answered, whatever its status.
+
+    These paths speak ``ClaimResponse``, which names the three fields without
+    the ``claim_`` prefix the heartbeat and contact responses use, and they
+    speak it on a refusal too: the 409 for a node that already has an owner is
+    the one refusal in the contract that does not wear ``Error``. It carries
+    the address that won precisely so the node can reconcile without a second
+    call, so it is adopted exactly as a 200 would be.
+
+    Nothing here ever asks for a configuration resend. A 409 on this path says
+    nothing whatever about our ``config_version``.
+
+    A refusal that does carry ``Error`` (``invalid_claim``, a 429, a 5xx) has
+    no ``state``, so it applies nothing and leaves the last known claim alone.
+    """
+    claim = _claim_response(outcome.body or {})
+    if claim is not None:
+        state.apply_levels(claim=claim)
+
+
+def _claim_response(body: dict[str, Any]) -> Claim | None:
+    """A ``ClaimResponse`` body, gated on ``state`` for the reasons in :func:`_claim`."""
+    state = body.get("state")
+    if not isinstance(state, str) or not state:
+        return None
+
+    return Claim(
+        state=state,
+        email=_str_or_none(body.get("email")),
+        undeliverable=body.get("undeliverable") is True,
+    )
 
 
 def _claim(body: dict[str, Any]) -> Claim | None:

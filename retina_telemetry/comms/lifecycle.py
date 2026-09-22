@@ -327,4 +327,5 @@ def _malformed(outcome: Outcome, message: str) -> Outcome:
         body=outcome.body,
         retry_after_s=outcome.retry_after_s,
         error=message,
+        path=outcome.path,
     )
