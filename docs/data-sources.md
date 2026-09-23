@@ -416,7 +416,19 @@ read-only to us. Two keys, both optional, and so is the file:
 | Key | Meaning | What it makes us do |
 |---|---|---|
 | `email` | the address that owns this node | a **change** is offered with `PUT /nodes/claim`, which is the call that mails a link |
-| `send_requested_at` | when the owner last pressed "send again" | a **fresh** one triggers `POST /nodes/claim/resend` |
+| `send_requested_at` | when the owner last pressed Send link | a **fresh** one with an unchanged address triggers `POST /nodes/claim/resend`, or `PUT` again if the server holds no address |
+
+The section has one button, Send link, and **every press writes both keys** (retina-gui
+#96). One press is one email. It used to have Save and Send again, and Save was a trap:
+saving an address the node already held wrote an identical file, so the press could not
+be seen and nothing was mailed. A file with an address and no stamp is still valid, since
+an older retina-gui and a hand edit both produce one.
+
+**A release clears the address.** Releasing a node from the dashboard leaves it
+`unclaimed` with `claim_email: null`, unlike a declined link, which keeps the address.
+A resend then has nothing on file to mail, so a fresh ask on a node the server holds no
+address for is answered with `PUT` instead. Nothing is sent on a release by itself: the
+owner may have released the node to hand it on. Found on jonathan-node-1 on 2026-09-23.
 
 `email` is state and `send_requested_at` is an event, and keeping them apart is what
 lets retina-gui stay ignorant of the wire: it records what the owner wants, and

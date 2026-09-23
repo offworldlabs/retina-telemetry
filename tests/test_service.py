@@ -700,7 +700,8 @@ def test_a_stale_ask_is_ignored(node, server):
 
 
 def test_an_ask_stored_with_a_first_offer_does_not_mail_twice(node, server):
-    """An owner who filled the box and pressed send again in one go.
+    """An owner who typed a new address and pressed Send link, which stamps
+    an ask beside it on every press.
 
     The offer is itself the call that mails, so the timestamp beside it has
     already been answered and must not produce a second link.

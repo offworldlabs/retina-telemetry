@@ -35,7 +35,8 @@ def test_an_absent_file_is_a_node_nobody_has_claimed(tmp_path):
 
 
 def test_an_address_with_no_ask_is_normal(tmp_path):
-    """What the file holds until somebody presses send again."""
+    """What an older retina-gui wrote for a plain Save, and a hand edit
+    still can. Valid, and a change in it is still offered."""
     path = write(tmp_path, {"email": ADDRESS})
 
     assert read_nomination(path) == Nomination(email=ADDRESS, send_requested_at=None)

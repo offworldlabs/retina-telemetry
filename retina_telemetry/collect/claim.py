@@ -24,14 +24,20 @@ read from separate files and nothing here ever falls back to the other.
 ``email`` is **state**. A change in it is a local change, which is what
 ``PUT /nodes/claim`` is for, and that call is the one that mails.
 
-``send_requested_at`` is an **event**: the owner pressed "send again". It has
-to exist separately because re-offering an address the node already holds is
-accepted, changes nothing and mails nothing, so a node whose link was declined
-sits at ``unclaimed`` with the address still on file and no ``PUT`` will ever
-move it. ``POST /nodes/claim/resend`` is the only way out, and this timestamp
-is how that ask reaches a service that binds no ports and cannot be called.
-Nothing in the stack pushes to us, so an event has to be left somewhere to be
-found by polling.
+``send_requested_at`` is an **event**: the owner pressed Send link. retina-gui
+stamps it on every press, the first included, because pressing it again for an
+unchanged address would otherwise write an identical file and the press could
+not be seen. It has to exist separately from the address because re-offering
+an address the node already holds is accepted, changes nothing and mails
+nothing, so a node whose link was declined sits at ``unclaimed`` with the
+address still on file and no ``PUT`` will ever move it.
+``POST /nodes/claim/resend`` is the only way out, and this timestamp is how
+that ask reaches a service that binds no ports and cannot be called. Nothing
+in the stack pushes to us, so an event has to be left somewhere to be found by
+polling.
+
+An address with no stamp is still a valid file. retina-gui before its single
+button wrote one for a plain Save, and so does a hand edit.
 
 Which of the two calls to make is decided in stage 3, not here. This module
 reports what the file says and nothing more.

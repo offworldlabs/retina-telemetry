@@ -443,7 +443,9 @@ class Service:
         not which request to make. See ``collect/claim.py``.
 
         **A changed address is offered.** That is ``PUT /nodes/claim``, and it
-        is the call that makes the server mail a link.
+        is the call that makes the server mail a link. retina-gui stamps an ask
+        on every press, so a changed address normally arrives with one, and
+        the offer answers it.
 
         **An unchanged address with a fresh ask is resent.** This is the case
         that needs the second call to exist at all: offering an address the
