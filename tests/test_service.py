@@ -626,13 +626,12 @@ def test_an_ask_resends_rather_than_offering_again(node, server):
     assert len(server.received("claim_resend")) == 1
 
 
-def test_a_released_node_offers_its_address_again(node, server):
-    """A release clears the address, so a resend has nothing to mail.
+def test_a_released_node_is_left_alone_until_asked(node, server):
+    """A release says the node is not the owner's any more.
 
-    Found on jonathan-node-1: claimed, released from the dashboard, and then
-    neither Save nor Send again produced a link. The node still believed its
-    address was on file, so Save counted as no change and Send again resent to
-    an address the server no longer held.
+    They may have released it to give it away, so mailing them a link to take
+    it back unasked would be the wrong answer. The address stays in the file
+    after a release, and must not count as a change.
     """
     write_claim(node)
     service = Service(settings_for(node, server))
@@ -640,11 +639,34 @@ def test_a_released_node_offers_its_address_again(node, server):
     with service_running(service):
         assert wait_for(lambda: server.received("claim"))
         server.release()
+        time.sleep(0.8)  # several heartbeats and claim ticks
+
+    assert len(server.received("claim")) == 1
+    assert not server.received("claim_resend")
+
+
+def test_an_ask_on_a_released_node_offers_the_address(node, server):
+    """Found on jonathan-node-1: claimed, released from the dashboard, and
+    then Send again produced no link.
+
+    A release clears the address, and a resend mails only the address on file,
+    so it mailed nothing. On a node the server holds no address for, an ask is
+    answered with an offer instead.
+    """
+    write_claim(node)
+    service = Service(settings_for(node, server))
+
+    with service_running(service):
+        assert wait_for(lambda: server.received("claim"))
+        server.release()
+        assert wait_for(lambda: service.state.snapshot().claim.email is None)
+        write_claim(node, send_requested_at=just_now())
         assert wait_for(lambda: len(server.received("claim")) == 2)
-        time.sleep(0.6)  # the server holds the address again, so no more offers
+        time.sleep(0.6)  # the ask is acted on once
 
     assert server.received("claim")[-1].body == {"email": CLAIM_ADDRESS}
     assert len(server.received("claim")) == 2
+    assert not server.received("claim_resend")
 
 
 def test_an_ask_is_acted_on_once(node, server):

@@ -165,9 +165,6 @@ class Service:
         #: because re-acting on that one *would* mail somebody.
         self._claim_sent: str | None = None
         self._claim_asked: datetime | None = None
-        #: The address the server last said it holds, so that a release, which
-        #: clears it, can be told apart from an address it never took.
-        self._claim_held: str | None = None
         #: Why the server last refused to register this node. Separate from
         #: `_config_rejected`, which is a PUT answering about a configuration
         #: the node is already registered to send.
@@ -454,9 +451,12 @@ class Service:
         node whose link was declined sits at ``unclaimed`` with the address
         still on file and no ``PUT`` will ever move it.
 
-        **A released node is offered its address again.** A release from the
-        dashboard clears the address as well as the owner, so there is nothing
-        on file for a resend to mail, and the address counts as changed.
+        **Except on a node that was released, where the ask is an offer.** A
+        release from the dashboard clears the address as well as the owner, so
+        a resend would have nothing on file to mail. The address has to be
+        offered again, but only when the owner asks: they may have released
+        the node to give it away, and mailing them a link to take it back
+        would be the wrong answer to that.
 
         Nothing here gates anything. A node nobody claims registers, streams
         and beats exactly as a claimed one does, so every failure below goes to
@@ -473,28 +473,24 @@ class Service:
             self._claim_sent = None
             return
 
-        held = self.state.snapshot().claim
-        if held is not None:
-            if held.email is None and self._claim_held is not None:
-                # The server held an address and now holds none, so whatever
-                # we sent is no longer on file. A release from the dashboard
-                # does this, unlike a declined link, which keeps the address.
-                # A resend mails only the address on file and so would mail
-                # nothing: the address has to be offered again.
-                #
-                # Only the change resets this. A null that was always null is
-                # an address the server refused, and offering it again every
-                # tick would earn the same 400 every tick. A different address
-                # is somebody else's claim, and would earn a 409.
-                self._claim_sent = None
-            self._claim_held = held.email
-
         if nomination.email != self._claim_sent:
             self._offer_claim(nomination)
             return
 
-        if self._ask_is_new(nomination.send_requested_at):
-            self._resend_claim(nomination.send_requested_at)
+        if not self._ask_is_new(nomination.send_requested_at):
+            return
+
+        held = self.state.snapshot().claim
+        if held is not None and held.email is None:
+            # The server holds no address, so a resend would mail nothing.
+            # A release does this, unlike a declined link, which keeps the
+            # address. Recorded either way, like a resend, so that a failed
+            # offer is left for the owner to ask again rather than repeated.
+            self._offer_claim(nomination)
+            self._claim_asked = nomination.send_requested_at
+            return
+
+        self._resend_claim(nomination.send_requested_at)
 
     def _ask_is_new(self, asked: datetime | None) -> bool:
         """Whether this is an ask for another link that we have not acted on.
@@ -548,11 +544,6 @@ class Service:
             # by the link this call just sent, so it must not fire a resend.
             self._claim_sent = nomination.email
             self._claim_asked = nomination.send_requested_at
-            if outcome.ok:
-                # Held from this moment, and recorded now rather than at the
-                # next tick: a release landing before then would otherwise
-                # read as an address that was never held, and go unnoticed.
-                self._claim_held = nomination.email
             return
 
         self.errors.add(f"claim: {outcome.describe()}")
