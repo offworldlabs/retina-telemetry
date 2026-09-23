@@ -626,6 +626,27 @@ def test_an_ask_resends_rather_than_offering_again(node, server):
     assert len(server.received("claim_resend")) == 1
 
 
+def test_a_released_node_offers_its_address_again(node, server):
+    """A release clears the address, so a resend has nothing to mail.
+
+    Found on jonathan-node-1: claimed, released from the dashboard, and then
+    neither Save nor Send again produced a link. The node still believed its
+    address was on file, so Save counted as no change and Send again resent to
+    an address the server no longer held.
+    """
+    write_claim(node)
+    service = Service(settings_for(node, server))
+
+    with service_running(service):
+        assert wait_for(lambda: server.received("claim"))
+        server.release()
+        assert wait_for(lambda: len(server.received("claim")) == 2)
+        time.sleep(0.6)  # the server holds the address again, so no more offers
+
+    assert server.received("claim")[-1].body == {"email": CLAIM_ADDRESS}
+    assert len(server.received("claim")) == 2
+
+
 def test_an_ask_is_acted_on_once(node, server):
     """It stays in the file, so acting on it every tick would mail the owner
     every tick."""
