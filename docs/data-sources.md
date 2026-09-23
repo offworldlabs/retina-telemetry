@@ -98,10 +98,17 @@ An empty frame serialises as three empty arrays. That is a normal, meaningful st
 parallel `adsb` array to the object:
 
 ```json
-"adsb": [ { "hex": "4ca1f2", "lat": …, "lon": …, "alt": …,
+"adsb": [ { "hex": "4ca1f2", "lat": …, "lon": …, "alt": …, "gs": …, "track": …,
             "expected_delay": …, "expected_doppler": …,
             "delay_residual": …, "doppler_residual": … }, null ]
 ```
+
+Ten keys, and `AdsbTag` takes all ten under the same names (`server.js:362-372`).
+`gs` and `track` are passed straight through from the aircraft and are absent when it
+did not report them. **`alt` is `alt_geom ?? alt_baro`**, so it is geometric altitude
+where the aircraft gives one and barometric otherwise. Both are feet. The contract's
+own description calls the field barometric, which is not what a node sends whenever
+`alt_geom` is present.
 
 Three consequences for us:
 

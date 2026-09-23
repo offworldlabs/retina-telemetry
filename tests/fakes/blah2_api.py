@@ -104,12 +104,21 @@ def empty_frame(timestamp_ms: int = 1753900000123) -> dict[str, Any]:
     return frame(timestamp_ms, delay=[], doppler=[], snr=[])
 
 
-#: One association as blah2-api builds it — an object, not a hex string.
+#: One association as blah2-api builds it: an object, not a hex string.
+#:
+#: All ten keys, matching `bestMatch` in blah2-arm/api/server.js:362-372 one
+#: for one, which is also `AdsbTag` one for one. `gs` and `track` were missing
+#: here and the test that read them called them unreported, which was wrong:
+#: blah2-api passes `ac.gs` and `ac.track` straight through, and since contract
+#: 1.5.0 they go on the wire. A fixture thinner than the real thing is how a
+#: mapping bug hides.
 ASSOCIATION = {
     "hex": "4ca1f2",
     "lat": 51.5,
     "lon": -0.1,
     "alt": 11000,
+    "gs": 412.0,
+    "track": 78.5,
     "expected_delay": 12.3,
     "expected_doppler": -117.5,
     "delay_residual": 0.1,

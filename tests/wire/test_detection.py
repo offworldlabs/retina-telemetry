@@ -265,7 +265,7 @@ class TestPositionTags:
         assert (tag.hex, tag.lat, tag.lon, tag.alt) == ("4ca1f2", 51.5, -0.1, 11000.0)
         assert (tag.expected_delay, tag.expected_doppler) == (12.3, -117.5)
         assert (tag.delay_residual, tag.doppler_residual) == (0.1, -0.5)
-        assert tag.gs is None and tag.track is None  # blah2-api did not report them
+        assert (tag.gs, tag.track) == (412.0, 78.5)  # passed through from the aircraft
 
     def test_the_column_is_omitted_when_association_is_off(self):
         frame = build_detection_frame(poll(), boot_id="28a156bd3f8652f4", seq=1, config_version=7)
@@ -286,10 +286,8 @@ class TestPositionTags:
                 "lat": 51.5,
                 "lon": -0.1,
                 "alt": 11000.0,
-                # to_wire prunes optional nulls at the top level only; inside a
-                # tag they ride along, and the contract admits them.
-                "gs": None,
-                "track": None,
+                "gs": 412.0,
+                "track": 78.5,
                 "expected_delay": 12.3,
                 "expected_doppler": -117.5,
                 "delay_residual": 0.1,
@@ -297,6 +295,20 @@ class TestPositionTags:
             },
             None,
         ]
+
+    def test_unreported_optionals_travel_as_nulls_inside_the_tag(self):
+        """``to_wire`` prunes optional nulls at the top level only. Inside a tag
+        they ride along, and the contract admits them: the server drops them on
+        filing. blah2-api leaves them out when the aircraft did not report
+        them, which for `gs` and `track` is common enough."""
+        spare = {k: v for k, v in ASSOCIATION.items() if k not in ("gs", "track")}
+        frame = build_detection_frame(
+            poll(adsb=[spare]), boot_id="28a156bd3f8652f4", seq=1, config_version=7
+        )
+
+        tag = to_wire(frame)["adsb"][0]
+        assert tag["gs"] is None and tag["track"] is None
+        assert tag["hex"] == "4ca1f2"  # the rest of the tag is unaffected
 
     def test_an_association_without_a_position_is_dropped(self):
         """What the deprecation costs, and the server author signed it off: a
