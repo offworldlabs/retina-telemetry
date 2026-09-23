@@ -443,13 +443,22 @@ class Service:
         not which request to make. See ``collect/claim.py``.
 
         **A changed address is offered.** That is ``PUT /nodes/claim``, and it
-        is the call that makes the server mail a link.
+        is the call that makes the server mail a link. retina-gui stamps an ask
+        on every press, so a changed address normally arrives with one, and
+        the offer answers it.
 
         **An unchanged address with a fresh ask is resent.** This is the case
         that needs the second call to exist at all: offering an address the
         node already holds is accepted, changes nothing and mails nothing, so a
         node whose link was declined sits at ``unclaimed`` with the address
         still on file and no ``PUT`` will ever move it.
+
+        **Except on a node that was released, where the ask is an offer.** A
+        release from the dashboard clears the address as well as the owner, so
+        a resend would have nothing on file to mail. The address has to be
+        offered again, but only when the owner asks: they may have released
+        the node to give it away, and mailing them a link to take it back
+        would be the wrong answer to that.
 
         Nothing here gates anything. A node nobody claims registers, streams
         and beats exactly as a claimed one does, so every failure below goes to
@@ -470,8 +479,20 @@ class Service:
             self._offer_claim(nomination)
             return
 
-        if self._ask_is_new(nomination.send_requested_at):
-            self._resend_claim(nomination.send_requested_at)
+        if not self._ask_is_new(nomination.send_requested_at):
+            return
+
+        held = self.state.snapshot().claim
+        if held is not None and held.email is None:
+            # The server holds no address, so a resend would mail nothing.
+            # A release does this, unlike a declined link, which keeps the
+            # address. Recorded either way, like a resend, so that a failed
+            # offer is left for the owner to ask again rather than repeated.
+            self._offer_claim(nomination)
+            self._claim_asked = nomination.send_requested_at
+            return
+
+        self._resend_claim(nomination.send_requested_at)
 
     def _ask_is_new(self, asked: datetime | None) -> bool:
         """Whether this is an ask for another link that we have not acted on.

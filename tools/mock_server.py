@@ -1526,6 +1526,18 @@ class MockServer:
             if node := self.state.only_node():
                 node.status = "blocked" if blocked else "active"
 
+    def release(self) -> None:
+        """Release the node from the dashboard, as its owner would.
+
+        Clears the address as well as the ownership, which is what production
+        did on jonathan-node-1 on 2026-09-23. That is what separates a release
+        from a declined link, which leaves the address on file.
+        """
+        with self.state.lock:
+            if node := self.state.only_node():
+                node.claim_state = "unclaimed"
+                node.claim_email = None
+
     def move_config_version(self, version: int) -> None:
         """Move the server's active version out from under a streaming node.
 

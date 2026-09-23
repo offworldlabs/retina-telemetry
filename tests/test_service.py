@@ -626,6 +626,49 @@ def test_an_ask_resends_rather_than_offering_again(node, server):
     assert len(server.received("claim_resend")) == 1
 
 
+def test_a_released_node_is_left_alone_until_asked(node, server):
+    """A release says the node is not the owner's any more.
+
+    They may have released it to give it away, so mailing them a link to take
+    it back unasked would be the wrong answer. The address stays in the file
+    after a release, and must not count as a change.
+    """
+    write_claim(node)
+    service = Service(settings_for(node, server))
+
+    with service_running(service):
+        assert wait_for(lambda: server.received("claim"))
+        server.release()
+        time.sleep(0.8)  # several heartbeats and claim ticks
+
+    assert len(server.received("claim")) == 1
+    assert not server.received("claim_resend")
+
+
+def test_an_ask_on_a_released_node_offers_the_address(node, server):
+    """Found on jonathan-node-1: claimed, released from the dashboard, and
+    then Send again produced no link.
+
+    A release clears the address, and a resend mails only the address on file,
+    so it mailed nothing. On a node the server holds no address for, an ask is
+    answered with an offer instead.
+    """
+    write_claim(node)
+    service = Service(settings_for(node, server))
+
+    with service_running(service):
+        assert wait_for(lambda: server.received("claim"))
+        server.release()
+        assert wait_for(lambda: service.state.snapshot().claim.email is None)
+        write_claim(node, send_requested_at=just_now())
+        assert wait_for(lambda: len(server.received("claim")) == 2)
+        time.sleep(0.6)  # the ask is acted on once
+
+    assert server.received("claim")[-1].body == {"email": CLAIM_ADDRESS}
+    assert len(server.received("claim")) == 2
+    assert not server.received("claim_resend")
+
+
 def test_an_ask_is_acted_on_once(node, server):
     """It stays in the file, so acting on it every tick would mail the owner
     every tick."""
@@ -657,7 +700,8 @@ def test_a_stale_ask_is_ignored(node, server):
 
 
 def test_an_ask_stored_with_a_first_offer_does_not_mail_twice(node, server):
-    """An owner who filled the box and pressed send again in one go.
+    """An owner who typed a new address and pressed Send link, which stamps
+    an ask beside it on every press.
 
     The offer is itself the call that mails, so the timestamp beside it has
     already been answered and must not produce a second link.

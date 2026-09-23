@@ -113,7 +113,7 @@ Nothing here is buildable from this repo, and the first one blocks every node:
 | Read `/data/retina-telemetry/status.json` | no, but | We bind no ports, so it is the only way *no identity*, *revoked token* and *rejected config* reach an operator. `telemetry_status.py` reads it and the home page shows it |
 | Collect `location.rx.beam_width` / `beam_azimuth` | no | Deferred indefinitely. Both are nullable, so sending two nulls is correct behaviour rather than a gap |
 | Collect the owner's contact details | shipped | Landed 2026-09-16. A skippable wizard step after the agreements step, plus a block under Remote support on the Configuration page, writing `/data/retina-gui/telemetry-contact.json` |
-| Collect the address that **owns** the node | shipped | Landed 2026-09-22. A Node claim section on the Configuration page writing `/data/retina-gui/telemetry-claim.json`, with Save for the address and Send again for another link. Not the contact email: see `docs/data-sources.md` §4 |
+| Collect the address that **owns** the node | shipped | Landed 2026-09-22. A Node claim section on the Configuration page writing `/data/retina-gui/telemetry-claim.json`. One Send link button since retina-gui#96: every press writes the address and a fresh `send_requested_at`. Not the contact email: see `docs/data-sources.md` §4 |
 
 `owl-os` separately owes a `mender-update show-provides` snapshot so
 `versions.retina_node` has a source. Optional field; omitted honestly until then.
@@ -152,10 +152,15 @@ Full detail and citations in `docs/data-sources.md`. The short version:
   `detail` is for what stops a node working.
 - **The claim's address comes from retina-gui and nowhere else.** Never the contact
   email: that answers "whom do we ring" and reusing it would mail a stranger a link that
-  hands them the node. `telemetry-claim.json` carries the address and, when the owner
-  presses send again, a timestamp. **Which call to make is decided here, not there**: a
-  changed address is a `PUT` and a fresh timestamp is a `resend`, because this is the
-  only side that knows what the server does with each.
+  hands them the node. `telemetry-claim.json` carries the address and a timestamp that
+  retina-gui refreshes on every press of Send link. **Which call to make is decided here,
+  not there**: a changed address is a `PUT`, and a fresh timestamp beside an unchanged
+  one is a `resend`, because this is the only side that knows what the server does with
+  each.
+- **A release clears the address; a decline does not.** Released from the dashboard, a
+  node reads `unclaimed` with `claim_email: null`, so a resend has nothing to mail and a
+  fresh ask there is a `PUT` instead. **Nothing is sent on a release by itself**: the
+  owner may have released it to hand it on. Found on jonathan-node-1 on 2026-09-23.
 - **Offering an address the node already holds does nothing at all.** It is accepted,
   writes nothing and mails nothing. A declined link leaves the node `unclaimed` *with
   the address still on file*, so it can sit there and no number of offers will move it;
