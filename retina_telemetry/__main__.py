@@ -548,6 +548,11 @@ class Service:
             # by the link this call just sent, so it must not fire a resend.
             self._claim_sent = nomination.email
             self._claim_asked = nomination.send_requested_at
+            if outcome.ok:
+                # Held from this moment, and recorded now rather than at the
+                # next tick: a release landing before then would otherwise
+                # read as an address that was never held, and go unnoticed.
+                self._claim_held = nomination.email
             return
 
         self.errors.add(f"claim: {outcome.describe()}")
