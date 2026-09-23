@@ -34,8 +34,9 @@ these needs no change here. ``tests/wire/test_serialise.py`` asserts the
 set above matches what the spec actually declares, so the two cannot drift
 apart silently.
 
-Note that ``adsb_hex``'s nullable *items* are a different thing entirely. They
-live inside a list and nothing here touches them.
+Note that a list's nullable *items* are a different thing entirely, and
+``adsb``'s are: a tag is ``null`` wherever a detection has no usable
+association. They live inside a list and nothing here touches them.
 """
 
 from __future__ import annotations
@@ -64,9 +65,15 @@ def to_wire_json(model: BaseModel, **kwargs: Any) -> str:
 
 
 def _prune(model: BaseModel, encoded: dict[str, Any]) -> dict[str, Any]:
+    # Read straight out of the instance rather than through ``getattr``. A
+    # field the contract has deprecated carries a descriptor that warns on
+    # every access, and this runs once per field per payload. On the hot path
+    # that is a warning per field per frame, for a field being pruned anyway.
+    # ``__dict__`` holds exactly the validated field values in pydantic v2.
+    values = model.__dict__
     pruned: dict[str, Any] = {}
     for name, field in type(model).model_fields.items():
-        value = getattr(model, name)
+        value = values.get(name)
         if value is None and not field.is_required():
             continue
         pruned[name] = (

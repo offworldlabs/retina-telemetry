@@ -55,6 +55,14 @@ private
 # the cost is that vulture cannot see the wire-side name being used.
 delay_tolerance_us
 
+# DetectionFrame.adsb_hex, deprecated by contract 1.5.0 and no longer sent:
+# `adsb` names the aircraft as well as placing it, so sending both put every
+# match on the wire twice. The field stays in the generated model because the
+# contract still declares it, and it is listed here rather than deleted for
+# the same reason everything else in this block is: models.py is generated and
+# is not ours to prune.
+adsb_hex
+
 # The generated schema classes. Nothing constructs the response types: the
 # client validates against them by name, which vulture does not follow.
 ConfigResponse

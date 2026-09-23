@@ -132,8 +132,12 @@ Full detail and citations in `docs/data-sources.md`. The short version:
   `get_node_id()` returns the string `'Unknown'` on failure — do not reuse it. The
   `network.node_id: "ret000000000"` in `retina-node/config/default.yml` is a
   placeholder that fails the spec's pattern; ignore it.
-- **`adsb_hex` is not blah2's.** blah2-api adds it, only when ADS-B is enabled, as
-  objects rather than hex strings.
+- **The ADS-B association is not blah2's.** blah2-api adds it, only when ADS-B is
+  enabled, as objects rather than hex strings. Since contract 1.5.0 the whole object
+  goes on the wire as an `AdsbTag`, so the server can place the detection itself;
+  **`adsb_hex` is deprecated and no longer sent**, because the tag names the aircraft
+  as well as placing it and sending both put every match on the wire twice. A node with
+  association off sends neither column, which is how it says it matched nothing.
 - **Detections are latest-wins.** No spool, no queue, at most one request in flight.
   Dropped frames are correct behaviour, not a bug to fix.
 - **"Cloud services" in retina-gui means Mender, not telemetry.** The

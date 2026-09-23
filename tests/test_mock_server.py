@@ -402,14 +402,16 @@ def test_a_schema_failure_is_422_in_fastapis_shape_not_the_taxonomy(server):
     """
     token, version = register(server)
     broken = frame(version)
-    del broken["adsb_hex"]
+    # `snr` rather than `adsb_hex`: the latter went optional and deprecated in
+    # contract 1.5.0, so a frame without it is now perfectly valid.
+    del broken["snr"]
 
     status, body, _ = post(f"{server.url}/nodes/detection", broken, token)
 
     assert status == 422
     assert "error" not in body
     assert isinstance(body["detail"], list)
-    assert ["body", "adsb_hex"] in [e["loc"] for e in body["detail"]]
+    assert ["body", "snr"] in [e["loc"] for e in body["detail"]]
 
 
 def test_mismatched_parallel_arrays_are_422(server):
@@ -421,6 +423,28 @@ def test_mismatched_parallel_arrays_are_422(server):
     status, _, _ = post(f"{server.url}/nodes/detection", lopsided, token)
 
     assert status == 422
+
+
+def test_a_mismatched_association_column_is_422(server):
+    """`adsb` joined the parallel table in contract 1.5.0. Skipping it here
+    would let a misaligned column through the one check that exists for it."""
+    token, version = register(server)
+    lopsided = frame(version) | {"adsb": [None, None, None]}
+
+    status, _, _ = post(f"{server.url}/nodes/detection", lopsided, token)
+
+    assert status == 422
+
+
+def test_neither_association_column_is_accepted(server):
+    """Sending neither is how a node says it matched nothing, and it is what
+    every frame from an unassociated node now looks like."""
+    token, version = register(server)
+    unassociated = {k: v for k, v in frame(version).items() if k != "adsb_hex"}
+
+    status, _, _ = post(f"{server.url}/nodes/detection", unassociated, token)
+
+    assert status == 202
 
 
 def test_a_frame_naming_a_node_is_refused(server):

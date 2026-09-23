@@ -875,7 +875,10 @@ def test_frames_are_sent_when_blah2_is_available(node, server, monkeypatch):
     sent = server.received("detection")[-1].body
     assert sent["delay"] == [41.362, 100.403]  # km converted to microseconds
     assert sent["seq"] >= 1
-    assert sent["adsb_hex"] == [None, None]
+    # The fake reports no association, so the frame carries neither column.
+    # That is how a node says it matched nothing, since contract 1.5.0.
+    assert "adsb" not in sent
+    assert "adsb_hex" not in sent
 
 
 def test_a_node_whose_radar_never_started_says_starting(node, server):

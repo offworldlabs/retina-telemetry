@@ -87,7 +87,12 @@ def main() -> int:
             print(f"    {DIM}delay       {sample['delay'][:4]}  (microseconds){RESET}")
             print(f"    {DIM}doppler     {sample['doppler'][:4]}  (Hz){RESET}")
             print(f"    {DIM}snr         {sample['snr'][:4]}  (dB){RESET}")
-            print(f"    {DIM}adsb_hex    {sample['adsb_hex'][:4]}{RESET}")
+            tags = sample.get("adsb")
+            if tags is None:
+                print(f"    {DIM}adsb        absent: association is off{RESET}")
+            else:
+                placed = [f"{t['hex']} @ {t['lat']},{t['lon']}" for t in tags[:4] if t]
+                print(f"    {DIM}adsb        {placed or 'nothing placed'}{RESET}")
 
     beats = [r for r in requests if r["endpoint"] == "heartbeat"]
     if beats:

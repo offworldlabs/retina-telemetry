@@ -25,9 +25,9 @@ log = logging.getLogger(__name__)
 #: rejected otherwise, and a truncated frame beats no frame.
 MAX_DETECTIONS = 512
 
-#: The spec now constrains adsb_hex items. blah2-api emits lowercase ICAO
-#: hex, but one malformed entry would cost the entire frame, so anything
-#: that does not match becomes null — the same as unassociated.
+#: ``AdsbTag.hex`` is bounded by this. blah2-api emits lowercase ICAO hex,
+#: but one malformed entry would cost the entire frame, so anything that does
+#: not match becomes null, the same as unassociated.
 ICAO_HEX = re.compile(r"^[0-9a-f]{6}$")
 
 
@@ -49,15 +49,23 @@ def build_detection_frame(
     | ``delay`` | ``poll.delay_km`` | × 3.335641 → µs |
     | ``doppler`` | ``poll.doppler_hz`` | none, already Hz |
     | ``snr`` | ``poll.snr_db`` | none, already dB |
-    | ``adsb_hex`` | ``poll.adsb`` | ``.hex`` per entry, or ``[None] * n`` |
-    | ``adsb`` | ``poll.adsb`` | ``AdsbTag`` per entry whose hex passed AND that carries a finite ``lat``/``lon``; ``null`` otherwise; the whole column omitted when association is off |
+    | ``adsb`` | ``poll.adsb`` | one ``AdsbTag`` per entry carrying an ICAO hex and a finite ``lat``/``lon``; ``null`` otherwise; the column omitted entirely when association is off |
 
-    ``adsb`` is the same association as ``adsb_hex`` said with the position
-    it was made at (contract 1.5.0).  The server files that position for the
-    detection itself, so it — and every environment it mirrors the frame to —
-    can claim the detection and calibrate the node's coverage from it without
-    a position source of its own.  An entry's hex is taken from ``adsb_hex``
-    at the same index, never re-read, so the two columns cannot disagree.
+    ``adsb`` carries the association and the position it was made at, so the
+    server can file where the aircraft actually was for this detection and
+    claim it, and calibrate the node's coverage, without a position source of
+    its own. That matters most where the server only ever sees a node
+    second-hand, through the detection mirror, since a bare hex cannot be
+    placed there at all.
+
+    **``adsb_hex`` is not sent.** Contract 1.5.0 deprecated it, because the tag
+    already says which aircraft was matched: sending both put every match on
+    the wire twice and nothing on the server read the frame's hex column.
+    Sending neither column is how a node says it matched nothing.
+
+    The one thing that costs is an association carrying a usable hex but no
+    usable position, which travels as ``null`` where it used to travel as a
+    bare hex. The server ignores bare hexes, so nothing downstream notices.
 
     Args:
         poll: from ``collect.blah2.Blah2Client.poll_detection``.
@@ -87,8 +95,7 @@ def build_detection_frame(
     delay = km_to_us(poll.delay_km[:limit])
     doppler = list(poll.doppler_hz[:limit])
     snr = list(poll.snr_db[:limit])
-    adsb_hex = _adsb_hex(poll)[:limit]
-    adsb = _adsb_tags(poll, adsb_hex) if poll.adsb is not None else None
+    adsb = _adsb_tags(poll)[:limit] if poll.adsb is not None else None
 
     keep = _finite_indices(delay, doppler, snr)
     if len(keep) != len(delay):
@@ -96,7 +103,6 @@ def build_detection_frame(
         delay = [delay[i] for i in keep]
         doppler = [doppler[i] for i in keep]
         snr = [snr[i] for i in keep]
-        adsb_hex = [adsb_hex[i] for i in keep]
         if adsb is not None:
             adsb = [adsb[i] for i in keep]
 
@@ -108,7 +114,6 @@ def build_detection_frame(
         delay=delay,
         doppler=doppler,
         snr=snr,
-        adsb_hex=adsb_hex,
         adsb=adsb,
     )
 
@@ -125,31 +130,12 @@ def _finite_indices(*arrays: list[float]) -> list[int]:
     ``-inf``. pydantic accepts it because the spec bounds these arrays' length
     and not their values.
 
-    Dropping the index across all four arrays rather than the frame, on the same
-    reasoning as a malformed ``adsb_hex``: one bad value must not cost the other
-    detections in the CPI. Dropping it from *all* of them is what keeps the four
+    Dropping the index across every array rather than the frame, on the same
+    reasoning as a malformed association: one bad value must not cost the other
+    detections in the CPI. Dropping it from *all* of them is what keeps them
     parallel, which the spec requires and the server relies on.
     """
     return [i for i in range(len(arrays[0])) if all(math.isfinite(array[i]) for array in arrays)]
-
-
-def _adsb_hex(poll: DetectionPoll) -> list[str | None]:
-    """Reduce blah2-api's association objects to the ICAO hex the spec wants.
-
-    ``poll.adsb is None`` means blah2-api sent no ``adsb`` key, which means
-    association is disabled on this node — so the spec's parallel array is
-    synthesised as all-null rather than omitted, because all four arrays must
-    be the same length.
-
-    An entry is an object or ``null``; ``.get("hex")`` rather than ``["hex"]``
-    because a malformed association should cost one detection's association,
-    not the whole frame. The same reasoning applies to the spec's
-    ``^[0-9a-f]{6}$`` — an entry that does not match becomes null rather than
-    failing validation and taking every other detection with it.
-    """
-    if poll.adsb is None:
-        return [None] * poll.n_detections
-    return [_hex(entry) for entry in poll.adsb]
 
 
 def _hex(entry: dict[str, Any] | None) -> str | None:
@@ -175,26 +161,33 @@ _TAG_FIELDS = (
 )
 
 
-def _adsb_tags(poll: DetectionPoll, hexes: list[str | None]) -> list[AdsbTag | None]:
-    """The associations again, each with the position it was made at.
+def _adsb_tags(poll: DetectionPoll) -> list[AdsbTag | None]:
+    """One entry per association, in the order blah2-api reported them.
 
-    Parallel to ``hexes`` (already truncated to the spec's limit), and keyed
-    on it: an entry gets a tag only where ``adsb_hex`` carries its hex, so the
-    server's entry-for-entry agreement rule holds by construction.
+    Called only when association is on, so ``poll.adsb`` is a list rather than
+    ``None``; stage 1 has already asserted it is as long as the other arrays.
     """
-    entries = poll.adsb or []
-    return [_tag(entries[i] if i < len(entries) else None, hexn) for i, hexn in enumerate(hexes)]
+    return [_tag(entry) for entry in poll.adsb or []]
 
 
-def _tag(entry: dict[str, Any] | None, hexn: str | None) -> AdsbTag | None:
-    """One association as an ``AdsbTag``, or ``None`` where it has no usable position.
+def _tag(entry: dict[str, Any] | None) -> AdsbTag | None:
+    """One association as an ``AdsbTag``, or ``None`` where nothing is usable.
 
-    An association without a finite ``lat``/``lon`` is still an association:
-    ``adsb_hex`` carries it and only the position is withheld.  A position the
-    spec refuses (a latitude past 90, say) costs this one tag, not the frame —
-    the same trade every other per-entry rule in this module makes.
+    The hex is read and validated here rather than taken from a parallel
+    column, because there is no longer a parallel column to take it from.
+
+    An association missing either half is dropped whole, and the halves fail
+    for different reasons worth keeping apart: a hex that is not ICAO 24-bit is
+    a malformed association, while an absent or non-finite ``lat``/``lon`` is
+    an association blah2-api could not place. Either way a tag needs both, and
+    a value the spec refuses (a latitude past 90, say) costs this one tag
+    rather than the frame. That is the same trade every other per-entry rule
+    here makes.
     """
-    if hexn is None or not isinstance(entry, dict):
+    if not isinstance(entry, dict):
+        return None
+    hexn = _hex(entry)
+    if hexn is None:
         return None
     lat = _finite(entry.get("lat"))
     lon = _finite(entry.get("lon"))

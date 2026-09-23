@@ -89,13 +89,37 @@ def test_the_spec_declares_exactly_the_fields_we_think_it_does():
     assert _required_nullable() == REQUIRED_NULLABLE
 
 
-def test_adsb_hex_is_not_a_false_positive():
-    """A list of nullable items is not a nullable field. An earlier version of
-    the check got this wrong by matching on the annotation's text."""
-    field = DetectionFrame.model_fields["adsb_hex"]
+def test_a_list_of_nullable_items_is_not_a_nullable_field():
+    """The distinction :func:`_accepts_none` exists to draw, and the one an
+    earlier version got wrong by matching on the annotation's text.
 
-    assert field.is_required()
-    assert not _accepts_none(field.annotation)
+    ``adsb_hex`` used to be the live example: its items were nullable while the
+    field was not. Contract 1.5.0 deprecated it and made the field nullable
+    too, and nothing else in the contract has that shape now, so the rule is
+    asserted directly rather than through whichever field happens to carry it.
+    """
+    assert not _accepts_none(list[str | None])
+    assert _accepts_none(list[str] | None)
+
+
+def test_nothing_is_serialised_through_a_deprecated_field(recwarn):
+    """``_prune`` reads every field of every payload. Through ``getattr`` that
+    is a DeprecationWarning per deprecated field per frame, on the hot path,
+    for a field being pruned anyway."""
+    frame = DetectionFrame(
+        t=1786014064.679,
+        seq=1,
+        boot_id="28a156bd3f8652f4",
+        config_version=1,
+        delay=[41.362],
+        doppler=[-118.0],
+        snr=[14.2],
+    )
+
+    payload = to_wire(frame)
+
+    assert "adsb_hex" not in payload
+    assert not [w for w in recwarn if issubclass(w.category, DeprecationWarning)]
 
 
 # ── required nulls survive ───────────────────────────────────────────

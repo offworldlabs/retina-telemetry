@@ -106,16 +106,22 @@ def probe_detection() -> None:
         frame.doppler == poll.doppler_hz and frame.snr == poll.snr_db,
         "already in the spec's units",
     )
+    parallel = [len(frame.delay), len(frame.doppler), len(frame.snr)]
+    if frame.adsb is not None:
+        parallel.append(len(frame.adsb))
     check(
-        "all four arrays are the same length",
-        len({len(frame.delay), len(frame.doppler), len(frame.snr), len(frame.adsb_hex)}) == 1,
+        "the parallel arrays are the same length",
+        len(set(parallel)) == 1,
         f"n={len(frame.delay)}",
     )
-    if poll.adsb is None:
-        note("adsb key absent", f"synthesised {frame.adsb_hex} — association is off")
+    if frame.adsb is None:
+        note("adsb key absent", "no association column at all: association is off")
     else:
-        associated = [h for h in frame.adsb_hex if h is not None]
-        note(f"{len(associated)}/{len(frame.adsb_hex)} associated", associated[:3] or "none")
+        placed = [t for t in frame.adsb if t is not None]
+        note(
+            f"{len(placed)}/{len(frame.adsb)} placed",
+            [f"{t.hex} @ {t.lat},{t.lon}" for t in placed[:3]] or "none",
+        )
 
     print(f"\n  {BOLD}what the server would receive:{RESET}")
     _json(frame)

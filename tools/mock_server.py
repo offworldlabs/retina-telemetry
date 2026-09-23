@@ -701,16 +701,21 @@ def _guard_failures(endpoint: str, body: Any) -> list[_GuardFailure]:
                 failures.append(failure)
 
     if endpoint == "detection":
-        arrays = ("delay", "doppler", "snr", "adsb_hex")
+        # `adsb` joined these in contract 1.5.0 and `adsb_hex` is deprecated
+        # rather than gone, so a node may still send either. Absent columns are
+        # skipped: sending neither association column is how a node says it
+        # matched nothing, and that is not a length mismatch.
+        arrays = ("delay", "doppler", "snr", "adsb_hex", "adsb")
         lengths = {len(body[a]) for a in arrays if isinstance(body.get(a), list)}
         if len(lengths) > 1:
-            # The four arrays are one table on the server's side, so a mismatch
+            # These arrays are one table on the server's side, so a mismatch
             # means the frame does not say what it appears to. A model-level
             # validator there, so the location is the body rather than a field.
             failures.append(
                 _GuardFailure(
                     ["body"],
-                    "Value error, delay, doppler, snr and adsb_hex must be the same length",
+                    "Value error, delay, doppler, snr and the association column "
+                    "must be the same length",
                 )
             )
 

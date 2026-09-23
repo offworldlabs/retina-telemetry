@@ -32,12 +32,15 @@ of ``0`` are both rejected at construction without anyone remembering to check.
 | ``delay`` | ``DetectionPoll.delay_km`` | × 3.335641 → µs |
 | ``doppler`` | ``DetectionPoll.doppler_hz`` | none |
 | ``snr`` | ``DetectionPoll.snr_db`` | none |
-| ``adsb_hex`` | ``DetectionPoll.adsb`` | ``.hex`` per entry, or ``[None] * n`` |
-| ``adsb`` | ``DetectionPoll.adsb`` | ``AdsbTag`` (hex + finite ``lat``/``lon`` + the optional numbers) per entry, ``null`` where there is no usable position; omitted when association is off |
+| ``adsb`` | ``DetectionPoll.adsb`` | ``AdsbTag`` (hex + finite ``lat``/``lon`` + the optional numbers) per entry, ``null`` where either half is unusable; the column omitted when association is off |
 
-Every array is truncated to the spec's ``maxItems`` of 512, and an ``adsb_hex``
-entry failing ``^[0-9a-f]{6}$`` becomes ``null``. Both are the same trade: one
-bad value must not cost the other detections in the frame.
+``adsb_hex`` is not sent. Contract 1.5.0 deprecated it, because the tag names
+the aircraft as well as placing it, so sending both put every match on the wire
+twice and nothing on the server read the hex column.
+
+Every array is truncated to the spec's ``maxItems`` of 512, and an entry whose
+hex fails ``^[0-9a-f]{6}$`` becomes ``null``. Both are the same trade: one bad
+value must not cost the other detections in the frame.
 
 ### NodeConfig — ``config.build_node_config``
 

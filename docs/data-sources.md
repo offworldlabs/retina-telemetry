@@ -105,8 +105,14 @@ parallel `adsb` array to the object:
 
 Three consequences for us:
 
-1. When ADS-B is disabled there is **no `adsb` key at all** — synthesise `[null] * n`.
-2. Entries are objects, not hex strings. The spec's `adsb_hex` wants `.hex`.
+1. When ADS-B is disabled there is **no `adsb` key at all**, and the frame then carries
+   no association column either. Sending neither is how a node says it matched nothing.
+2. Entries are objects, and since contract 1.5.0 the wire wants the whole object rather
+   than `.hex` alone: `AdsbTag` carries the position the match was made at, so the
+   server can place the detection without a position source of its own. `adsb_hex` is
+   deprecated and no longer sent. An entry missing a usable hex *or* a finite
+   `lat`/`lon` travels as `null`, which is the one thing the change costs: a match with
+   no position used to go as a bare hex, and the server never read those.
 3. It is a **tolerance-gated single-best match**, not truth. Both tolerances are
    per-node config (`truth.adsb.delay_tolerance: 2.0`, `doppler_tolerance: 5.0`), so
    association strictness varies node to node, which is why v1.1.1 requires both
