@@ -38,7 +38,8 @@ Package layout is `collect/` → `wire/` → `comms/`, with `state.py`, `status.
 `errors.py` at the top level. Not `build/` — it is in `.gitignore`.
 
 Verified on a node by five scripts in `tools/`: `live-probe.sh` (stages 1 and 2),
-`live-service.sh` (the whole service), `live-failures.sh` (the server's refusals),
+`live-service.sh` (the whole service; `TRACKS=synthetic` or `relay` runs a
+retina-tracker checkout beside the node's own, to see the tracks a frame carries), `live-failures.sh` (the server's refusals),
 `live-stress.sh` (restarts and a broken config) and `live-stalled.sh` (stops blah2 to
 reach `stalled` — the only one that writes to the node). Watch any of them live at
 `http://127.0.0.1:18080/`, served by the mock itself.
