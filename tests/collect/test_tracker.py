@@ -154,6 +154,24 @@ def test_an_unexpected_status_is_no_tracker():
     assert tracker.last_error == "tracker answered 500"
 
 
+def test_a_tracker_that_predates_the_route_is_no_tracker_and_no_fault(caplog):
+    """Every node until a tracker carrying /frame reaches it: the old control
+    server answers `{"error": "not found"}`. Seen live on owl-debb, where it put
+    an entry in errors[] and a warning in the log on every frame, which the
+    whole fleet would have done for the length of the rollout."""
+    old = FakeResponse({"error": "not found"}, 404)
+    tracker, _, clock = client(old)
+
+    with caplog.at_level("INFO", logger="retina_telemetry.collect.tracker"):
+        assert tracker.frame(T) is None
+        assert tracker.frame(T + 1000) is None
+
+    assert tracker.last_error is None
+    assert clock.slept == 0
+    assert len([r for r in caplog.records if "no /frame route" in r.message]) == 1
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+
 def test_an_answer_without_a_run_is_no_tracker():
     """Tracks cannot be sent without the run that scopes their ids."""
     tracker, _, _ = client({"timestamp": T, "tracks": []})

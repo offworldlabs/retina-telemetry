@@ -199,6 +199,7 @@ class TrackerClient:
             session = requests.Session()
         self._session = session
         self._last_error: str | None = None
+        self._predates_frame = False
 
     def frame(self, timestamp_ms: int) -> TrackerFrame | None:
         """The tracker's result for the frame at ``timestamp_ms``.
@@ -216,10 +217,23 @@ class TrackerClient:
                 return None
             status, body = answer
             run = body.get("run")
+            if status == 404 and "run" not in body:
+                # A tracker released before /frame existed: its control server
+                # answers any route it does not know with a bare 404. That is
+                # every node until a tracker carrying the route reaches it, so
+                # it is an expected state of the rollout rather than a fault,
+                # and it stays out of errors[], which the server keeps for its
+                # operators. Said once, in the log.
+                self._last_error = None
+                if not self._predates_frame:
+                    log.info("the tracker has no /frame route; sending frames without tracks")
+                    self._predates_frame = True
+                return None
             if not isinstance(run, str):
                 self._last_error = f"tracker answered {status} without a run"
                 log.warning("%s", self._last_error)
                 return None
+            self._predates_frame = False
 
             if status == 200:
                 try:
