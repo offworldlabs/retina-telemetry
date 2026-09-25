@@ -48,23 +48,6 @@ class AdsbHexItem(RootModel[str | None]):
     root: Annotated[str | None, Field(pattern="^[0-9a-f]{6}$")]
 
 
-class DetectionFrame(BaseModel):
-    model_config = ConfigDict(
-        extra="forbid",
-    )
-    t: Annotated[float, Field(ge=0.0, title="T")]
-    seq: Annotated[int, Field(ge=0, title="Seq")]
-    boot_id: Annotated[str, Field(pattern="^[0-9a-z]{8,32}$", title="Boot Id")]
-    config_version: Annotated[int, Field(ge=1, title="Config Version")]
-    delay: Annotated[list[float], Field(max_length=512, title="Delay")]
-    doppler: Annotated[list[float], Field(max_length=512, title="Doppler")]
-    snr: Annotated[list[float], Field(max_length=512, title="Snr")]
-    adsb_hex: Annotated[
-        list[AdsbHexItem | None] | None, Field(deprecated=True, max_length=512, title="Adsb Hex")
-    ] = None
-    adsb: Annotated[list[AdsbTag | None] | None, Field(max_length=512, title="Adsb")] = None
-
-
 class ErrorBody(BaseModel):
     error: Annotated[str, Field(max_length=64, title="Error")]
     detail: Annotated[str | None, Field(max_length=512, title="Detail")] = None
@@ -158,6 +141,7 @@ class NodeVersions(BaseModel):
     owl_os: Annotated[str | None, Field(max_length=64, title="Owl Os")] = None
     retina_node: Annotated[str | None, Field(max_length=64, title="Retina Node")] = None
     blah2_image: Annotated[str | None, Field(max_length=64, title="Blah2 Image")] = None
+    retina_tracker: Annotated[str | None, Field(max_length=64, title="Retina Tracker")] = None
 
 
 class Choice(StrEnum):
@@ -181,10 +165,27 @@ class RegisterResponse(BaseModel):
     server_time: Annotated[AwareDatetime, Field(title="Server Time")]
 
 
+class AnomalyType(RootModel[str]):
+    root: Annotated[str, Field(pattern="^[a-z][a-z0-9_]{0,47}$")]
+
+
+class TrackerRun(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    run: Annotated[str, Field(pattern="^[0-9A-Za-z._-]{1,64}$", title="Run")]
+
+
 class ClaimState(StrEnum):
     unclaimed = "unclaimed"
     pending = "pending"
     owned = "owned"
+
+
+class TrackState(StrEnum):
+    active = "active"
+    coasting = "coasting"
+    deleted = "deleted"
 
 
 class Agreements(BaseModel):
@@ -240,3 +241,43 @@ class RegisterRequest(BaseModel):
     board_model: Annotated[str, Field(max_length=64, title="Board Model")]
     agreements: Agreements
     config: NodeConfig
+
+
+class Track(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    id: Annotated[str, Field(pattern="^[0-9A-Za-z._-]{1,64}$", title="Id")]
+    state: TrackState
+    hit: Annotated[int | None, Field(ge=0, title="Hit")]
+    n_associated: Annotated[int, Field(ge=1, title="N Associated")]
+    n_missed: Annotated[int, Field(ge=0, title="N Missed")]
+    adsb_hex: Annotated[str | None, Field(pattern="^[0-9a-f]{6}$", title="Adsb Hex")]
+    is_anomalous: Annotated[bool, Field(title="Is Anomalous")]
+    anomaly_types: Annotated[list[AnomalyType], Field(max_length=16, title="Anomaly Types")]
+    max_velocity_ms: Annotated[float, Field(ge=0.0, title="Max Velocity Ms")]
+    born_t: Annotated[float | None, Field(ge=0.0, title="Born T")] = None
+    avg_snr: Annotated[float | None, Field(title="Avg Snr")] = None
+    shadow_fraction: Annotated[float | None, Field(ge=0.0, le=1.0, title="Shadow Fraction")] = None
+    interference_fraction: Annotated[
+        float | None, Field(ge=0.0, le=1.0, title="Interference Fraction")
+    ] = None
+
+
+class DetectionFrame(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    t: Annotated[float, Field(ge=0.0, title="T")]
+    seq: Annotated[int, Field(ge=0, title="Seq")]
+    boot_id: Annotated[str, Field(pattern="^[0-9a-z]{8,32}$", title="Boot Id")]
+    config_version: Annotated[int, Field(ge=1, title="Config Version")]
+    delay: Annotated[list[float], Field(max_length=512, title="Delay")]
+    doppler: Annotated[list[float], Field(max_length=512, title="Doppler")]
+    snr: Annotated[list[float], Field(max_length=512, title="Snr")]
+    adsb_hex: Annotated[
+        list[AdsbHexItem | None] | None, Field(deprecated=True, max_length=512, title="Adsb Hex")
+    ] = None
+    adsb: Annotated[list[AdsbTag | None] | None, Field(max_length=512, title="Adsb")] = None
+    tracker: TrackerRun | None = None
+    tracks: Annotated[list[Track] | None, Field(max_length=32, title="Tracks")] = None
