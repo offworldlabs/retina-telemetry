@@ -296,18 +296,20 @@ class TestPositionTags:
             None,
         ]
 
-    def test_unreported_optionals_travel_as_nulls_inside_the_tag(self):
-        """``to_wire`` prunes optional nulls at the top level only. Inside a tag
-        they ride along, and the contract admits them: the server drops them on
-        filing. blah2-api leaves them out when the aircraft did not report
-        them, which for `gs` and `track` is common enough."""
+    def test_unreported_optionals_are_left_out_of_the_tag(self):
+        """``to_wire``'s one rule reaches into lists since contract 1.6.0, so an
+        optional a tag does not carry is absent rather than ``null``, as it is
+        on every other payload. The server drops nulls on filing anyway, so
+        the two read the same to it. blah2-api leaves these out when the
+        aircraft did not report them, which for `gs` and `track` is common
+        enough."""
         spare = {k: v for k, v in ASSOCIATION.items() if k not in ("gs", "track")}
         frame = build_detection_frame(
             poll(adsb=[spare]), boot_id="28a156bd3f8652f4", seq=1, config_version=7
         )
 
         tag = to_wire(frame)["adsb"][0]
-        assert tag["gs"] is None and tag["track"] is None
+        assert "gs" not in tag and "track" not in tag
         assert tag["hex"] == "4ca1f2"  # the rest of the tag is unaffected
 
     def test_an_association_without_a_position_is_dropped(self):

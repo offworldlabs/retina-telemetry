@@ -15,6 +15,7 @@ import pytest
 import yaml
 
 from retina_telemetry.__main__ import CLAIM_ASK_FRESH_FOR_S, Service
+from retina_telemetry.collect.tracker import TrackerFrame, TrackRaw
 from retina_telemetry.comms.lifecycle import NodeState
 from retina_telemetry.settings import Settings
 from tests.collect.test_node_config import DEFAULTS
@@ -47,6 +48,7 @@ def settings_for(node, server, **overrides):
     return Settings(
         api_url=server.url,
         blah2_url="http://127.0.0.1:1",  # no blah2 unless a test provides one
+        tracker_url="http://127.0.0.1:1",  # nor a tracker
         token_path=node / "token",
         status_path=node / "status.json",
         node_id_path=node / "node_id",
@@ -879,6 +881,74 @@ def test_frames_are_sent_when_blah2_is_available(node, server, monkeypatch):
     # That is how a node says it matched nothing, since contract 1.5.0.
     assert "adsb" not in sent
     assert "adsb_hex" not in sent
+
+
+def test_frames_carry_the_trackers_tracks(node, server, monkeypatch):
+    """Contract 1.6.0, end to end: the tracker's answer for the polled frame
+    rides on that frame, and the mock, which refuses tracks that do not add up
+    exactly as the server does, accepts it."""
+    service = Service(settings_for(node, server, retina_tracker="v0.4.0"))
+    monkeypatch.setattr(
+        service.blah2, "poll_detection", lambda: _poll(frame(int(time.time() * 1000)))
+    )
+    asked = []
+
+    def tracker_frame(timestamp_ms):
+        asked.append(timestamp_ms)
+        return TrackerFrame(
+            run="20260925T101500Z-3fa9c1",
+            timestamp_ms=timestamp_ms,
+            tracks=[
+                TrackRaw(
+                    id="260925-00001A",
+                    state="active",
+                    hit=1,
+                    n_associated=9,
+                    n_missed=0,
+                    adsb_hex="4ca1f2",
+                    is_anomalous=False,
+                    anomaly_types=[],
+                    max_velocity_ms=231.4,
+                    born_timestamp_ms=timestamp_ms - 5000,
+                    avg_snr_db=16.2,
+                    shadow_fraction=0.0,
+                    interference_fraction=0.0,
+                )
+            ],
+        )
+
+    monkeypatch.setattr(service.tracker, "frame", tracker_frame)
+
+    run_briefly(
+        service,
+        until=lambda: server.received("detection") and server.received("heartbeat"),
+    )
+
+    request = server.received("detection")[-1]
+    assert request.body["tracker"] == {"run": "20260925T101500Z-3fa9c1"}
+    (track,) = request.body["tracks"]
+    assert track["hit"] == 1
+    assert track["state"] == "active"
+    # Asked for the very frame it rides on, not whatever the tracker holds now.
+    assert round(request.body["t"] * 1000) in asked
+    beat = server.received("heartbeat")[-1].body
+    assert beat["versions"]["retina_tracker"] == "v0.4.0"
+
+
+def test_a_node_without_a_tracker_streams_as_before(node, server, monkeypatch):
+    """settings_for points the tracker at a dead port. Frames go out without
+    either field, and the reason reaches errors[] once, not once per frame."""
+    service = Service(settings_for(node, server))
+    monkeypatch.setattr(
+        service.blah2, "poll_detection", lambda: _poll(frame(int(time.time() * 1000)))
+    )
+
+    run_briefly(service, until=lambda: len(server.received("detection")) >= 3)
+
+    sent = server.received("detection")[-1].body
+    assert "tracker" not in sent and "tracks" not in sent
+    batch = service.errors.take()
+    assert len([m for m in batch.messages if "tracker unreachable" in m]) == 1
 
 
 def test_a_node_whose_radar_never_started_says_starting(node, server):

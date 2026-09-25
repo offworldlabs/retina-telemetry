@@ -36,7 +36,8 @@ apart silently.
 
 Note that a list's nullable *items* are a different thing entirely, and
 ``adsb``'s are: a tag is ``null`` wherever a detection has no usable
-association. They live inside a list and nothing here touches them.
+association. An item is never dropped, only the optional fields inside a model
+that sits in a list, so ``adsb`` stays parallel to the arrays.
 """
 
 from __future__ import annotations
@@ -44,7 +45,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, RootModel
 
 
 def to_wire(model: BaseModel) -> dict[str, Any]:
@@ -76,7 +77,29 @@ def _prune(model: BaseModel, encoded: dict[str, Any]) -> dict[str, Any]:
         value = values.get(name)
         if value is None and not field.is_required():
             continue
-        pruned[name] = (
-            _prune(value, encoded[name]) if isinstance(value, BaseModel) else encoded[name]
-        )
+        pruned[name] = _pruned_value(value, encoded[name])
     return pruned
+
+
+def _pruned_value(value: Any, encoded: Any) -> Any:
+    """The rule, applied to whatever a field holds.
+
+    Into lists as well as nested models, since contract 1.6.0: ``tracks`` is a
+    list of ``Track``, and without this an optional field left unset on a
+    track went out as ``null`` while the same field on any other payload was
+    dropped. The server accepts both, but one rule should mean one rule.
+    A ``None`` item in a list is a value, as ``adsb``'s are, and is kept.
+
+    A ``RootModel`` is a leaf: it wraps one value and encodes as that value,
+    so it has no fields to prune. The heartbeat's ``errors`` are a list of them.
+    """
+    if isinstance(value, RootModel):
+        return encoded
+    if isinstance(value, BaseModel):
+        return _prune(value, encoded)
+    if isinstance(value, list):
+        return [
+            _pruned_value(item, item_encoded)
+            for item, item_encoded in zip(value, encoded, strict=True)
+        ]
+    return encoded

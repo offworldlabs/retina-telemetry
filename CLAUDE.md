@@ -4,7 +4,8 @@ The node-side telemetry uplink for the RETINA passive radar fleet. One container
 node, owning everything sent to the server: registration, detection streaming,
 heartbeat, config sync. Nothing else on the node talks to `api.retina.fm`.
 
-**Status: built, and implementing spec v1.4.0.** Verified end to end on the Owl node
+**Status: built, and implementing spec v1.6.1.** Tracks and ADS-B position tags
+(1.5.0 and 1.6.0) are built and tested against the mock but not yet run on a node. Verified end to end on the Owl node
 against a tunnelled mock — every endpoint, every reachable state including `stalled`,
 and the refusal paths.
 
@@ -25,7 +26,7 @@ between sends reads as a second, competing spec.
 
 | Stage | Owns | Knows about |
 |---|---|---|
-| **1 — Collection** | the four interfaces to the rest of the node stack | the node only |
+| **1 — Collection** | the five interfaces to the rest of the node stack | the node only |
 | **2 — Construction** | turning what we collected into wire payloads | both sides |
 | **3 — Communication** | request machinery, lifecycle, the two traffic disciplines | the server only |
 
@@ -98,7 +99,7 @@ All at `/home/joshp/retina/`, all separate git repos:
 | `blah2-arm` | The radar itself (C++) plus `api/` (Node). Source of detections |
 | `retina-node` | `docker-compose.yml` for the whole node stack, and the config defaults |
 | `retina-gui` | On-node web UI, config authority, setup wizard, Mender/device state. **Owes us four things — see below** |
-| `retina-tracker` | Tracking sidecar. Out of scope — decided, not pending. This service does not communicate tracks |
+| `retina-tracker` | Tracking sidecar. Source of the frame's `tracks` since contract 1.6.0, read from its `GET /frame` on `127.0.0.1:30101`. That route was added for this service; a tracker image without it reads as "no tracker" and frames go out untracked |
 | `owl-os` | Ansible OS build. Owns the Mender identity script |
 
 ### What retina-gui owes this service
@@ -138,6 +139,18 @@ Full detail and citations in `docs/data-sources.md`. The short version:
   **`adsb_hex` is deprecated and no longer sent**, because the tag names the aircraft
   as well as placing it and sending both put every match on the wire twice. A node with
   association off sends neither column, which is how it says it matched nothing.
+- **Tracks ride on the frame they belong to, paired by timestamp.** blah2-api forwards
+  the tracker the same frame it serves us, so the poll loop asks
+  `GET /frame?timestamp=<ms>` for the frame just polled and waits up to 0.3 s only
+  while the tracker's `latest` is behind it. No tracker reachable: neither field.
+  Tracker up with nothing for this frame: `tracker` alone. **`hit` is renumbered** from
+  blah2-api's index to this frame's, past the non-finite filter and the 512 cap, and an
+  active track whose detection did not go out is left out of that frame rather than
+  called coasting.
+- **`deleted` is sent once, even for a death latest-wins skipped.** `wire/tracks.py`'s
+  `TrackLedger` remembers which tracks this process has sent alive, and any the tracker
+  no longer holds go out as `deleted` on the next frame. A new `tracker.run` forgets
+  them instead, because the old run's ids mean something else under the new one.
 - **Detections are latest-wins.** No spool, no queue, at most one request in flight.
   Dropped frames are correct behaviour, not a bug to fix.
 - **"Cloud services" in retina-gui means Mender, not telemetry.** The
@@ -205,7 +218,8 @@ Full detail and citations in `docs/data-sources.md`. The short version:
   absence, so dropping the key produces a payload it rejects. `to_wire` also applies
   `mode="json"`, which is load-bearing: without it the acceptance timestamps stay as
   `datetime` objects and `json.dumps` refuses the registration payload outright.
-  **Fourteen fields are required-and-nullable in v1.4.0**, so payloads go out through
+  **Sixteen fields are required-and-nullable in v1.6.1** (two inside `Track`, which is
+  why `to_wire`'s rule reaches into lists), so payloads go out through
   `wire.to_wire`, never `model_dump(exclude_none=True)` directly.
   `tests/wire/test_serialise.py` pins the inventory by name and fails if the spec grows
   or loses one.
@@ -255,6 +269,8 @@ that get re-litigated if the reasoning is not written down.
 | No spool for detections | the spec's transport model forbids it |
 | Own `node_id` reader | retina-gui's returns `'Unknown'` on failure; that must never reach a payload |
 | Assert array lengths in `collect/`, not `wire/` | blah2 guarantees it by construction but validates nothing, and a malformed frame should never reach the slot |
+| Tracks from the tracker's `/frame`, not `events.jsonl` | the file writes nothing for a coasting track and nothing at all when one dies, and cannot name the detection a track took by index |
+| Track lifecycle remembered in `wire/`, not asked of the tracker | latest-wins skips frames, so "deleted once" has to survive the frame the death happened on being skipped |
 | Liveness derived from the detection poll | the wedged case is invisible to anything watching container state |
 | Payload models generated from the spec | drift is the failure mode; generation brings the spec's own constraints along, so `node_id="Unknown"` is rejected at construction without anyone remembering |
 | A written mock, not a generated one | a generated mock always cooperates, and every behaviour worth testing in stage 3 is the server refusing |
@@ -273,8 +289,8 @@ that get re-litigated if the reasoning is not written down.
   beam fields were changed with the server author's agreement, relayed by Josh, and their
   next revision did not carry it, so our edit was silently reverted on adoption. **Check
   `NodeConfig.beam_width_deg` when adopting any revision**, and expect to reapply it.
-  Checked on adopting `1.2.2` (2026-09-16) and `1.4.0` (2026-09-22): it survived
-  both times, nullable as agreed. Keep checking anyway.
+  Checked on adopting `1.2.2` (2026-09-16), `1.4.0` (2026-09-22) and `1.6.1`
+  (2026-09-25): it survived every time, nullable as agreed. Keep checking anyway.
 - **The spec is the scope.** If a field is not in it, we do not collect it — however
   cheap or obviously useful it looks. Wanting something new means asking the server
   author, not a field we add unilaterally. This has already removed Pi

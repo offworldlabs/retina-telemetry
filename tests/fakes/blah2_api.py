@@ -63,10 +63,14 @@ class FakeSession:
     def __init__(self, *responses: Any) -> None:
         self._responses = list(responses) or [None]
         self.calls: list[str] = []
+        self.params: list[dict[str, Any] | None] = []
         self.closed = False
 
-    def get(self, url: str, timeout: float | None = None) -> FakeResponse:
+    def get(
+        self, url: str, params: dict[str, Any] | None = None, timeout: float | None = None
+    ) -> FakeResponse:
         self.calls.append(url)
+        self.params.append(params)
         item = self._responses.pop(0) if len(self._responses) > 1 else self._responses[0]
         if isinstance(item, Exception):
             raise item

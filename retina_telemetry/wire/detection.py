@@ -15,7 +15,9 @@ from typing import Any
 from pydantic import ValidationError
 
 from retina_telemetry.collect.blah2 import DetectionPoll
+from retina_telemetry.collect.tracker import TrackerFrame
 from retina_telemetry.wire.models import AdsbTag, DetectionFrame
+from retina_telemetry.wire.tracks import TrackLedger
 from retina_telemetry.wire.units import km_to_us, ms_to_s
 
 log = logging.getLogger(__name__)
@@ -37,6 +39,8 @@ def build_detection_frame(
     seq: int,
     boot_id: str,
     config_version: int,
+    tracker: TrackerFrame | None = None,
+    ledger: TrackLedger | None = None,
 ) -> DetectionFrame:
     """Convert one polled frame into the wire payload.
 
@@ -50,6 +54,7 @@ def build_detection_frame(
     | ``doppler`` | ``poll.doppler_hz`` | none, already Hz |
     | ``snr`` | ``poll.snr_db`` | none, already dB |
     | ``adsb`` | ``poll.adsb`` | one ``AdsbTag`` per entry carrying an ICAO hex and a finite ``lat``/``lon``; ``null`` otherwise; the column omitted entirely when association is off |
+    | ``tracker`` / ``tracks`` | ``tracker``, through ``ledger`` | see ``wire/tracks.py``; both omitted with no tracker |
 
     ``adsb`` carries the association and the position it was made at, so the
     server can file where the aircraft actually was for this detection and
@@ -83,6 +88,11 @@ def build_detection_frame(
             required and non-null here even though the heartbeat's became
             nullable, because a frame cannot be filed without the geometry it
             was measured against.
+        tracker: from ``collect.tracker.TrackerClient.frame``, for this
+            frame's timestamp. ``None`` when no tracker answered.
+        ledger: the caller's ``TrackLedger``, one per process, which remembers
+            what earlier frames said about each track. Built after the arrays
+            because a track's ``hit`` has to name an index this frame sends.
     """
     if poll.n_detections > MAX_DETECTIONS:
         log.warning(
@@ -98,6 +108,9 @@ def build_detection_frame(
     adsb = _adsb_tags(poll)[:limit] if poll.adsb is not None else None
 
     keep = _finite_indices(delay, doppler, snr)
+    run, tracks = (ledger or TrackLedger()).settle(
+        tracker, {original: sent for sent, original in enumerate(keep)}
+    )
     if len(keep) != len(delay):
         log.warning("dropping %d detection(s) carrying a non-finite value", len(delay) - len(keep))
         delay = [delay[i] for i in keep]
@@ -115,6 +128,8 @@ def build_detection_frame(
         doppler=doppler,
         snr=snr,
         adsb=adsb,
+        tracker=run,
+        tracks=tracks,
     )
 
 

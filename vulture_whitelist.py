@@ -54,6 +54,12 @@ private
 # rename across the unit conversion is the point of the naming convention, and
 # the cost is that vulture cannot see the wire-side name being used.
 delay_tolerance_us
+# Track.born_t / Track.avg_snr: the same rename across a conversion, in
+# wire/tracks.py. The tracker reports `born_timestamp` in milliseconds and
+# `avg_snr` in dB, and stage 1 hands them over as `born_timestamp_ms` and
+# `avg_snr_db`, so the wire-side names only ever appear as keywords.
+born_t
+avg_snr
 
 # DetectionFrame.adsb_hex, deprecated by contract 1.5.0 and no longer sent:
 # `adsb` names the aircraft as well as placing it, so sending both put every

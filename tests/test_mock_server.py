@@ -447,6 +447,70 @@ def test_neither_association_column_is_accepted(server):
     assert status == 202
 
 
+#: One track per state, hand-built like `frame`, against a one-detection frame.
+def track(state="active", track_id="260925-00001A", hit=0):
+    return {
+        "id": track_id,
+        "state": state,
+        "hit": hit,
+        "n_associated": 5,
+        "n_missed": 0,
+        "adsb_hex": None,
+        "is_anomalous": False,
+        "anomaly_types": [],
+        "max_velocity_ms": 210.0,
+    }
+
+
+RUN = {"run": "20260925T101500Z-3fa9c1"}
+
+
+def test_a_frame_with_tracks_is_accepted(server):
+    token, version = register(server)
+    tracked = frame(version) | {
+        "tracker": RUN,
+        "tracks": [track(), track("coasting", "260925-00001B", None)],
+    }
+
+    status, _, _ = post(f"{server.url}/nodes/detection", tracked, token)
+
+    assert status == 202
+
+
+def test_a_tracker_with_no_output_is_accepted(server):
+    """`tracks` null beside a `tracker`: it had nothing for this frame."""
+    token, version = register(server)
+
+    status, _, _ = post(f"{server.url}/nodes/detection", frame(version) | {"tracker": RUN}, token)
+
+    assert status == 202
+
+
+@pytest.mark.parametrize(
+    ("tracks", "tracker", "message"),
+    [
+        ([track()], None, "tracks need a tracker"),
+        ([track(), track(hit=None, state="coasting")], RUN, "repeats an earlier track's id"),
+        ([track(hit=None)], RUN, "is active and must name its hit"),
+        ([track("deleted", hit=0)], RUN, "is deleted and must not name a hit"),
+        ([track(hit=1)], RUN, "outside this frame's 1 detections"),
+        ([track(), track(track_id="260925-00001B")], RUN, "already another track's hit"),
+    ],
+)
+def test_tracks_that_do_not_add_up_refuse_the_whole_frame(server, tracks, tracker, message):
+    """Contract 1.6.0: the frame and its tracks are one unit. Each of the
+    server's rules, with its own words, since those are what reach errors[]."""
+    token, version = register(server)
+    body = frame(version) | {"tracks": tracks}
+    if tracker is not None:
+        body["tracker"] = tracker
+
+    status, answer, _ = post(f"{server.url}/nodes/detection", body, token)
+
+    assert status == 422
+    assert message in answer["detail"][0]["msg"]
+
+
 def test_a_frame_naming_a_node_is_refused(server):
     """Attribution comes from the token, so a body that names a node is a
     refusal rather than a question about which of the two to believe."""

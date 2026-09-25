@@ -33,10 +33,16 @@ of ``0`` are both rejected at construction without anyone remembering to check.
 | ``doppler`` | ``DetectionPoll.doppler_hz`` | none |
 | ``snr`` | ``DetectionPoll.snr_db`` | none |
 | ``adsb`` | ``DetectionPoll.adsb`` | ``AdsbTag`` (hex + finite ``lat``/``lon`` + the optional numbers) per entry, ``null`` where either half is unusable; the column omitted when association is off |
+| ``tracker`` | ``TrackerFrame.run`` | none; omitted when no tracker answered |
+| ``tracks`` | ``TrackerFrame.tracks``, through ``tracks.TrackLedger`` | ``hit`` renumbered to this frame's arrays, ``born_t`` ÷ 1000; ``deleted`` added for a remembered track the tracker no longer holds |
 
 ``adsb_hex`` is not sent. Contract 1.5.0 deprecated it, because the tag names
 the aircraft as well as placing it, so sending both put every match on the wire
 twice and nothing on the server read the hex column.
+
+The tracks are built after the arrays, because a track's ``hit`` has to name an
+index this frame actually sends. The field map and the reasons the ledger keeps
+state are in ``tracks.py``.
 
 Every array is truncated to the spec's ``maxItems`` of 512, and an entry whose
 hex fails ``^[0-9a-f]{6}$`` becomes ``null``. Both are the same trade: one bad
@@ -92,7 +98,7 @@ absent rather than producing a payload that would misrepresent them.
 | ``health.temp_c`` | ``HostSnapshot.temp_c`` |
 | ``health.blah2`` | ``Blah2Client.last_poll_ok`` → ``"up"`` / ``"down"`` / ``null`` |
 | ``health.adsb`` | ``DetectionPoll.adsb is not None`` → ``"up"`` / omitted |
-| ``versions.*`` | caller (compose env vars) |
+| ``versions.*`` | caller (compose env vars, ``RETINA_TRACKER_V`` among them) |
 | ``errors`` | caller (``errors.py``) |
 
 Anything marked "caller" is not collected by stage 1 and cannot be. Those are
@@ -117,10 +123,11 @@ never gave any, and only stage 3 knows which happened.
 
 ## Required nulls
 
-Fourteen fields are *required and nullable* as of spec v1.2.2: the whole of
+Sixteen fields are *required and nullable* as of spec v1.6.1: the whole of
 ``NodeConfig``'s geometry (six coordinates, ``tx_callsign``, and both beam
-fields), ``HeartbeatRequest.config_version``, and ``NodeHealth``'s four core
-values. For those, ``null`` is a value the server expects rather than an
+fields), ``HeartbeatRequest.config_version``, ``NodeHealth``'s four core
+values, and ``Track.hit`` and ``Track.adsb_hex``. The last two sit inside a
+list, which ``to_wire`` reaches into for exactly this reason. For those, ``null`` is a value the server expects rather than an
 absence, so payloads must go out through ``to_wire`` and never
 ``model_dump(exclude_none=True)``, which would drop the key and produce
 something the server rejects. ``tests/wire/test_serialise.py`` pins the

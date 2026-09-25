@@ -125,6 +125,50 @@ Three consequences for us:
    association strictness varies node to node, which is why v1.1.1 requires both
    tolerances on the wire.
 
+### Tracks come from retina-tracker, through a route added for us
+
+Read from the code on retina-tracker branch `20260925-serve-each-frames-tracks`
+(2026-09-25). **Not yet verified on a node**, unlike most of this document.
+
+retina-tracker receives the same bytes blah2-api serves at `/api/detection`:
+`forwardToTracker(detection)` sends the very string it just stored
+(`blah2-arm/api/server.js`). Forwarding is on by default
+(`network.tracker_forward.enabled: true` to `127.0.0.1:30100` in
+`retina-node/config/default.yml`), so on a standard node the two sets of arrays are
+identical and in identical order, which is what lets a track's index into one name a
+detection in the other.
+
+The tracker's older outputs cannot carry a frame's tracks. `events.jsonl` writes nothing
+for a coasting track and nothing at all when one is deleted, and names detections by
+timestamp rather than by index. So `GET /frame?timestamp=<ms>` was added on its control
+port (`127.0.0.1:30101`):
+
+| Field | Meaning |
+|---|---|
+| `run` | minted once per tracker process, e.g. `20260925T101500Z-3fa9c1`; survives `/reset` |
+| `timestamp` | the frame's own, epoch ms |
+| `tracks[].state` | `active` if it took a detection this frame, `coasting` if not, `deleted` on the frame it was removed |
+| `tracks[].hit` | that detection's index in the arrays **as received**, before any rejection or SNR gate |
+| `tracks[].born_timestamp` | epoch ms |
+| everything else | the tracker's own counters and fractions, unconverted |
+
+It holds the last 32 frames. A frame it does not hold is a `404` carrying `run` and
+`latest`, the newest frame it does hold (`null` when it holds none). Only confirmed
+tracks appear; tentative ones have no id.
+
+Three things that are easy to get wrong:
+
+- **Track ids repeat across a restart.** They are `YYMMDD-` plus a hex counter that is
+  per process and resets daily, so a restarted tracker reissues ids it already used
+  that day. `run` is what separates them, and it changes only on a process restart.
+- **`avg_snr` reads high on a young track.** It is `total_snr / n_associated`, and
+  `total_snr` includes the detection that started the track while `n_associated` does
+  not count it. A steady 15 dB reads 20.0 at three associations. Sent as reported,
+  since it is the tracker's figure, and identical to what its `to_dict` has always said.
+- **A track can first appear as `coasting`.** M-of-N promotion fires on the frame
+  count, so a track can be confirmed on a frame it missed. It then has no hit for that
+  frame, and the state follows the hit, not the tracker's internal state.
+
 ### Rate
 
 `process.data.cpi: 0.5` sets the **ceiling** at 2 Hz — one frame per CPI is the most a

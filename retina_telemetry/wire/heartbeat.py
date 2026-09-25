@@ -35,6 +35,7 @@ def build_heartbeat(
     owl_os: str | None = None,
     retina_node: str | None = None,
     blah2_image: str | None = None,
+    retina_tracker: str | None = None,
     errors: list[str] | None = None,
 ) -> HeartbeatRequest:
     """Assemble one heartbeat.
@@ -90,8 +91,10 @@ def build_heartbeat(
             its presence *is* the config flag. Absent means ADS-B is off, which
             is not the same as broken, and the spec has no vocabulary for
             "disabled" — so the field is omitted rather than reported ``"down"``.
-        owl_os, retina_node, blah2_image: image and OS versions. Omitted when
-            unknown; ``retina_node`` currently has no readable source at all.
+        owl_os, retina_node, blah2_image, retina_tracker: image and OS
+            versions. Omitted when unknown; ``retina_node`` currently has no
+            readable source at all. ``retina_tracker`` names the release whose
+            tracks the frames carry, and arrived with them in contract 1.6.0.
         errors: bounded list accumulated since the last beat, cleared once a
             beat is acknowledged.
 
@@ -105,7 +108,7 @@ def build_heartbeat(
         config_version=config_version,
         boot_id=boot_id,
         health=_health(host, blah2_up, adsb_present),
-        versions=_versions(owl_os, retina_node, blah2_image),
+        versions=_versions(owl_os, retina_node, blah2_image, retina_tracker),
         errors=list(errors) if errors else [],
     )
 
@@ -144,6 +147,12 @@ def _versions(
     owl_os: str | None,
     retina_node: str | None,
     blah2_image: str | None,
+    retina_tracker: str | None,
 ) -> NodeVersions | None:
-    versions = NodeVersions(owl_os=owl_os, retina_node=retina_node, blah2_image=blah2_image)
+    versions = NodeVersions(
+        owl_os=owl_os,
+        retina_node=retina_node,
+        blah2_image=blah2_image,
+        retina_tracker=retina_tracker,
+    )
     return versions if versions.model_dump(exclude_none=True) else None
