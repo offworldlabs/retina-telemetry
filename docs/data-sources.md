@@ -98,19 +98,104 @@ An empty frame serialises as three empty arrays. That is a normal, meaningful st
 parallel `adsb` array to the object:
 
 ```json
-"adsb": [ { "hex": "4ca1f2", "lat": …, "lon": …, "alt": …,
+"adsb": [ { "hex": "4ca1f2", "lat": …, "lon": …, "alt": …, "gs": …, "track": …,
             "expected_delay": …, "expected_doppler": …,
             "delay_residual": …, "doppler_residual": … }, null ]
 ```
 
+Ten keys, and `AdsbTag` takes all ten under the same names (`server.js:362-372`).
+`gs` and `track` are passed straight through from the aircraft and are absent when it
+did not report them. **`alt` is `alt_geom ?? alt_baro`**, so it is geometric altitude
+where the aircraft gives one and barometric otherwise. Both are feet. The contract's
+own description calls the field barometric, which is not what a node sends whenever
+`alt_geom` is present.
+
 Three consequences for us:
 
-1. When ADS-B is disabled there is **no `adsb` key at all** — synthesise `[null] * n`.
-2. Entries are objects, not hex strings. The spec's `adsb_hex` wants `.hex`.
+1. When ADS-B is disabled there is **no `adsb` key at all**, and the frame then carries
+   no association column either. Sending neither is how a node says it matched nothing.
+2. Entries are objects, and since contract 1.5.0 the wire wants the whole object rather
+   than `.hex` alone: `AdsbTag` carries the position the match was made at, so the
+   server can place the detection without a position source of its own. `adsb_hex` is
+   deprecated and no longer sent. An entry missing a usable hex *or* a finite
+   `lat`/`lon` travels as `null`, which is the one thing the change costs: a match with
+   no position used to go as a bare hex, and the server never read those.
 3. It is a **tolerance-gated single-best match**, not truth. Both tolerances are
    per-node config (`truth.adsb.delay_tolerance: 2.0`, `doppler_tolerance: 5.0`), so
    association strictness varies node to node, which is why v1.1.1 requires both
    tolerances on the wire.
+
+### Tracks come from retina-tracker, through a route added for us
+
+Read from the code on retina-tracker branch `20260925-serve-each-frames-tracks`, and
+verified against production on jonathan-node-1 (`ret3773656d`) on 2026-09-25.
+
+**The live run.** Both branches were mounted into the node's own `retina-tracker` and
+`retina-telemetry` containers through a compose override passed with `-f`, never placed
+in the Mender manifests directory, so any other compose run reverts them. It streamed
+to `api.retina.fm` from 14:04:57Z. A read-only monitor on the node paired blah2-api's
+current frame with the tracker's `/frame` answer for it, and checked each active track's
+`hit` against the detection the tracker's own `events.jsonl` recorded for that track at
+that timestamp. Its last reading, at 14:28:14Z:
+
+| | |
+|---|---|
+| frames paired with the tracker's answer for that exact timestamp | 2,200 of 2,200 |
+| track ids | 11 |
+| states sent | 279 active, 219 coasting, 9 deleted |
+| active hits checked against the tracker's record | 279 correct, 0 wrong |
+| telemetry | `streaming`, `errors[]` empty throughout, so production accepted every frame |
+
+One track was ADS-B bound: `260925-000000` to `a92361`, 14:06:32Z to 14:07:39Z, 82
+detections, four of them carrying an `AdsbTag`. The tracker's `max_velocity_ms` of 228
+matched the aircraft's reported 443.9 kt, and it was sent `deleted` exactly once.
+
+**The node rebooted at about 14:33Z, cause unknown.** `last -x` shows no shutdown
+record, the journal is volatile so nothing of the previous boot survives, and no Mender
+deployment ran that day. The monitor's last line, at 14:28:14Z, was healthy, which fits
+a hang followed by a reset (the node has `bcm2835-wdt`) better than a crash. The test
+added nothing measurable in load, but that is an argument, not evidence. The reboot also
+ended the test in the way it was designed to: `retina-node.service` brought both
+containers back on their stock images.
+
+retina-tracker receives the same bytes blah2-api serves at `/api/detection`:
+`forwardToTracker(detection)` sends the very string it just stored
+(`blah2-arm/api/server.js`). Forwarding is on by default
+(`network.tracker_forward.enabled: true` to `127.0.0.1:30100` in
+`retina-node/config/default.yml`), so on a standard node the two sets of arrays are
+identical and in identical order, which is what lets a track's index into one name a
+detection in the other.
+
+The tracker's older outputs cannot carry a frame's tracks. `events.jsonl` writes nothing
+for a coasting track and nothing at all when one is deleted, and names detections by
+timestamp rather than by index. So `GET /frame?timestamp=<ms>` was added on its control
+port (`127.0.0.1:30101`):
+
+| Field | Meaning |
+|---|---|
+| `run` | minted once per tracker process, e.g. `20260925T101500Z-3fa9c1`; survives `/reset` |
+| `timestamp` | the frame's own, epoch ms |
+| `tracks[].state` | `active` if it took a detection this frame, `coasting` if not, `deleted` on the frame it was removed |
+| `tracks[].hit` | that detection's index in the arrays **as received**, before any rejection or SNR gate |
+| `tracks[].born_timestamp` | epoch ms |
+| everything else | the tracker's own counters and fractions, unconverted |
+
+It holds the last 32 frames. A frame it does not hold is a `404` carrying `run` and
+`latest`, the newest frame it does hold (`null` when it holds none). Only confirmed
+tracks appear; tentative ones have no id.
+
+Three things that are easy to get wrong:
+
+- **Track ids repeat across a restart.** They are `YYMMDD-` plus a hex counter that is
+  per process and resets daily, so a restarted tracker reissues ids it already used
+  that day. `run` is what separates them, and it changes only on a process restart.
+- **`avg_snr` reads high on a young track.** It is `total_snr / n_associated`, and
+  `total_snr` includes the detection that started the track while `n_associated` does
+  not count it. A steady 15 dB reads 20.0 at three associations. Sent as reported,
+  since it is the tracker's figure, and identical to what its `to_dict` has always said.
+- **A track can first appear as `coasting`.** M-of-N promotion fires on the frame
+  count, so a track can be confirmed on a frame it missed. It then has no hit for that
+  frame, and the state follows the hit, not the tracker's internal state.
 
 ### Rate
 

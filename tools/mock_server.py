@@ -701,20 +701,70 @@ def _guard_failures(endpoint: str, body: Any) -> list[_GuardFailure]:
                 failures.append(failure)
 
     if endpoint == "detection":
-        arrays = ("delay", "doppler", "snr", "adsb_hex")
+        # `adsb` joined these in contract 1.5.0 and `adsb_hex` is deprecated
+        # rather than gone, so a node may still send either. Absent columns are
+        # skipped: sending neither association column is how a node says it
+        # matched nothing, and that is not a length mismatch.
+        arrays = ("delay", "doppler", "snr", "adsb_hex", "adsb")
         lengths = {len(body[a]) for a in arrays if isinstance(body.get(a), list)}
         if len(lengths) > 1:
-            # The four arrays are one table on the server's side, so a mismatch
+            # These arrays are one table on the server's side, so a mismatch
             # means the frame does not say what it appears to. A model-level
             # validator there, so the location is the body rather than a field.
             failures.append(
                 _GuardFailure(
                     ["body"],
-                    "Value error, delay, doppler, snr and adsb_hex must be the same length",
+                    "Value error, delay, doppler, snr and the association column "
+                    "must be the same length",
                 )
             )
+        failures += _track_failures(body)
 
     return failures
+
+
+def _track_failures(body: dict[str, Any]) -> list[_GuardFailure]:
+    """The server's ``_tracks_name_this_frames_detections``, word for word.
+
+    Contract 1.6.0 refuses the whole frame when its tracks do not add up,
+    because a track's ``hit`` is an index into this frame's arrays and the two
+    are one unit. A model-level validator on the server, so, like the length
+    check above, it lands on the body rather than a field. Only the first
+    failure is reported, because the server raises on it.
+    """
+    tracks = body.get("tracks")
+    if not isinstance(tracks, list):
+        return []
+
+    def refused(msg: str) -> list[_GuardFailure]:
+        return [_GuardFailure(["body"], f"Value error, {msg}")]
+
+    if body.get("tracker") is None:
+        return refused("tracks need a tracker: a track id is scoped by the run that minted it")
+    delay = body.get("delay")
+    n = len(delay) if isinstance(delay, list) else 0
+    ids: set[Any] = set()
+    hits: set[Any] = set()
+    for i, track in enumerate(tracks):
+        if not isinstance(track, dict):
+            continue  # the schema refuses it on its own terms
+        if track.get("id") in ids:
+            return refused(f"tracks[{i}].id repeats an earlier track's id")
+        ids.add(track.get("id"))
+        hit = track.get("hit")
+        if track.get("state") == "active":
+            if hit is None:
+                return refused(f"tracks[{i}] is active and must name its hit")
+        elif hit is not None:
+            return refused(f"tracks[{i}] is {track.get('state')} and must not name a hit")
+        if hit is None:
+            continue
+        if isinstance(hit, int) and hit >= n:
+            return refused(f"tracks[{i}].hit is outside this frame's {n} detections")
+        if hit in hits:
+            return refused(f"tracks[{i}].hit is already another track's hit")
+        hits.add(hit)
+    return []
 
 
 @dataclass

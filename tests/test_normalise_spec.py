@@ -13,6 +13,7 @@ from tools.normalise_spec import name_enums, normalise
 
 SPEC = Path(__file__).resolve().parents[1] / "docs" / "node-ingest-v1.yml"
 
+TRACK_STATE_VALUES = ["active", "coasting", "deleted"]
 CLAIM_VALUES = ["unclaimed", "pending", "owned"]
 NODE_STATE_VALUES = ["starting", "streaming", "stalled", "paused", "error", "stopping"]
 
@@ -130,11 +131,15 @@ def test_no_two_inline_enums_share_a_title():
     assert collisions == {}
 
 
-def test_the_claim_enum_is_the_only_thing_hoisted():
+def test_only_the_named_enums_are_hoisted():
     """Keeps the table honest: an entry that stops matching the contract shows
     up as a component nothing refs."""
     document = name_enums(normalise(spec()))
     schemas = document["components"]["schemas"]
 
     assert schemas["ClaimState"]["enum"] == CLAIM_VALUES
-    assert [name for name in schemas if name.endswith("State")] == ["ClaimState"]
+    assert schemas["TrackState"]["enum"] == TRACK_STATE_VALUES
+    assert sorted(name for name in schemas if name.endswith("State")) == [
+        "ClaimState",
+        "TrackState",
+    ]

@@ -78,6 +78,7 @@ components, and carries the name in ``title``::
 ``datamodel-codegen`` names a generated enum class after that title, and two
 unrelated enums in 1.4.0 both answer to ``State``: the node's own six-value
 state on ``HeartbeatRequest``, and where a claim stands on ``ClaimResponse``.
+1.6.0 added a third, where a track stands on ``Track``.
 Faced with the collision the generator keeps the first it meets and renames the
 second ``State1``.
 
@@ -117,11 +118,13 @@ NULL_BRANCH = {"type": "null"}
 #: claim-state fields do not agree on one anyway (``State`` on
 #: ``ClaimResponse.state``, ``Claim State`` on the other two).
 #:
-#: One entry, added when 1.4.0 introduced a second enum titled ``State``.
+#: The first entry arrived when 1.4.0 introduced a second enum titled
+#: ``State``, and the second when 1.6.0 introduced a third, on ``Track.state``.
 #: A revision that collides again adds a line here rather than renaming
 #: whatever the generator happened to demote that time.
 NAMED_ENUMS: dict[tuple[str, ...], str] = {
     ("unclaimed", "pending", "owned"): "ClaimState",
+    ("active", "coasting", "deleted"): "TrackState",
 }
 
 

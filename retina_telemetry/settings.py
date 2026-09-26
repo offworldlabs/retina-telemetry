@@ -19,6 +19,7 @@ from retina_telemetry.collect.contact import DEFAULT_CONTACT_PATH
 from retina_telemetry.collect.host import DEFAULT_DISK_PATH
 from retina_telemetry.collect.identity import DEFAULT_DEVICE_TYPE_PATH, DEFAULT_NODE_ID_PATH
 from retina_telemetry.collect.node_config import DEFAULT_CONFIG_PATH
+from retina_telemetry.collect.tracker import DEFAULT_BASE_URL as TRACKER_URL
 from retina_telemetry.collect.wizard import DEFAULT_WIZARD_FLAG_PATH
 from retina_telemetry.comms.client import DEFAULT_BASE_URL as API_URL
 from retina_telemetry.state import DEFAULT_TOKEN_PATH
@@ -40,6 +41,7 @@ def _float(name: str, default: float) -> float:
 class Settings:
     api_url: str = field(default_factory=lambda: os.environ.get("RETINA_API_URL") or API_URL)
     blah2_url: str = field(default_factory=lambda: os.environ.get("BLAH2_API_URL") or BLAH2_URL)
+    tracker_url: str = field(default_factory=lambda: os.environ.get("TRACKER_URL") or TRACKER_URL)
 
     token_path: Path = field(default_factory=lambda: _path("TOKEN_PATH", DEFAULT_TOKEN_PATH))
     status_path: Path = field(default_factory=lambda: _path("STATUS_PATH", DEFAULT_STATUS_PATH))
@@ -78,5 +80,6 @@ class Settings:
     owl_os: str | None = field(default_factory=lambda: os.environ.get("OWL_OS_V"))
     retina_node: str | None = field(default_factory=lambda: os.environ.get("RETINA_NODE_V"))
     blah2_image: str | None = field(default_factory=lambda: os.environ.get("BLAH2_V"))
+    retina_tracker: str | None = field(default_factory=lambda: os.environ.get("RETINA_TRACKER_V"))
 
     log_level: str = field(default_factory=lambda: os.environ.get("LOG_LEVEL") or "INFO")

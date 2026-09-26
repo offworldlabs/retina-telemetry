@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import sys
 from collections import Counter
+from pathlib import Path
 
 BOLD, DIM, GREEN, RESET = "\033[1m", "\033[2m", "\033[32m", "\033[0m"
 RED = "\033[31m"
@@ -37,6 +38,55 @@ def timeline(requests: list[dict]) -> None:
         other = "".join(glyph[name] * counts[name] for name in ("register", "config", "heartbeat"))
         marker = "" if counts else f"{DIM}  — nothing{RESET}"
         print(f"  {second:>3}   {dots:<20} {GREEN}{other}{RESET}{marker}")
+
+
+def tracks_summary(detections: list[dict]) -> None:
+    """What contract 1.6.0's tracks looked like across the run.
+
+    Every frame is also re-checked here against the server's own track rules
+    and the generated model, because the mock does not record what it answered:
+    a tracked frame it refused would otherwise look exactly like one it took.
+    """
+    # Run as a script, only tools/ is on the path; the checks live beside it.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from pydantic import ValidationError
+
+    from retina_telemetry.wire.models import DetectionFrame
+    from tools.mock_server import _track_failures
+
+    tracked = [r["body"] for r in detections if "tracker" in r["body"]]
+    print(f"\n  {BOLD}tracks{RESET}")
+    if not tracked:
+        print(f"    {DIM}no frame carried a tracker{RESET}")
+        return
+    runs = sorted({b["tracker"]["run"] for b in tracked})
+    held = [b for b in tracked if b.get("tracks") is not None]
+    states = Counter(t["state"] for b in held for t in b["tracks"])
+    ids = {t["id"] for b in held for t in b["tracks"]}
+    refused = []
+    for b in detections:
+        body = b["body"]
+        failures = _track_failures(body)
+        try:
+            DetectionFrame.model_validate(body)
+        except ValidationError as exc:
+            failures = [*failures, exc.errors()[0]["msg"]]
+        if failures:
+            refused.append(failures[0])
+    deletions = Counter(t["id"] for b in held for t in b["tracks"] if t["state"] == "deleted")
+    print(
+        f"    {DIM}frames        {len(tracked)} of {len(detections)} carried a tracker, "
+        f"{len(held)} with tracks{RESET}"
+    )
+    print(f"    {DIM}runs          {runs}{RESET}")
+    print(f"    {DIM}tracks        {len(ids)} distinct ids; states sent {dict(states)}{RESET}")
+    twice = [i for i, n in deletions.items() if n > 1]
+    if twice:
+        print(f"    {RED}deleted more than once: {twice}{RESET}")
+    if refused:
+        print(f"    {RED}{len(refused)} frame(s) the server would refuse: {refused[0]}{RESET}")
+    else:
+        print(f"    {DIM}server rules  every frame passes{RESET}")
 
 
 def main() -> int:
@@ -87,7 +137,14 @@ def main() -> int:
             print(f"    {DIM}delay       {sample['delay'][:4]}  (microseconds){RESET}")
             print(f"    {DIM}doppler     {sample['doppler'][:4]}  (Hz){RESET}")
             print(f"    {DIM}snr         {sample['snr'][:4]}  (dB){RESET}")
-            print(f"    {DIM}adsb_hex    {sample['adsb_hex'][:4]}{RESET}")
+            tags = sample.get("adsb")
+            if tags is None:
+                print(f"    {DIM}adsb        absent: association is off{RESET}")
+            else:
+                placed = [f"{t['hex']} @ {t['lat']},{t['lon']}" for t in tags[:4] if t]
+                print(f"    {DIM}adsb        {placed or 'nothing placed'}{RESET}")
+
+        tracks_summary(detections)
 
     beats = [r for r in requests if r["endpoint"] == "heartbeat"]
     if beats:

@@ -31,7 +31,7 @@ def test_every_field_traced_to_its_source():
     assert frame.delay == [41.362, 100.403]  # delay_km × 3.335641
     assert frame.doppler == [-118.0, 44.5]  # unchanged
     assert frame.snr == [14.2, 9.8]  # unchanged
-    assert frame.adsb_hex == [None, None]  # synthesised, ADS-B off
+    assert frame.adsb is None  # ADS-B off, so no association column at all
 
 
 def test_doppler_and_snr_are_not_converted():
@@ -48,33 +48,18 @@ def test_doppler_and_snr_are_not_converted():
     assert frame.snr == [2.0]
 
 
-# ── adsb_hex ─────────────────────────────────────────────────────────
+# ── the association column ───────────────────────────────────────────
 
 
-def test_absent_adsb_synthesises_nulls_of_the_right_length():
-    """All four arrays must be equal-length, so a disabled ADS-B produces
-    nulls rather than an omitted field."""
-    frame = build_detection_frame(
-        poll(adsb=None), boot_id="28a156bd3f8652f4", seq=1, config_version=1
-    )
-
-    assert frame.adsb_hex == [None, None]
-    assert len(frame.adsb_hex) == len(frame.delay)
-
-
-def test_associations_reduced_to_hex():
-    """blah2-api sends objects; the spec wants the ICAO hex only.
-
-    Asserted on the serialised payload rather than the model attribute: the
-    spec's ``^[0-9a-f]{6}$`` on the array items makes the generator wrap them in
-    a RootModel, which is transparent through serialisation and visible only to
-    direct attribute access.
-    """
+def test_the_deprecated_hex_column_is_never_sent():
+    """Contract 1.5.0 deprecated ``adsb_hex``: the tag says which aircraft was
+    matched as well as where it was, so sending both put every match on the
+    wire twice and nothing on the server read the hex column."""
     frame = build_detection_frame(
         poll(adsb=[ASSOCIATION, None]), boot_id="28a156bd3f8652f4", seq=1, config_version=1
     )
 
-    assert to_wire(frame)["adsb_hex"] == ["4ca1f2", None]
+    assert "adsb_hex" not in to_wire(frame)
 
 
 def test_malformed_association_costs_one_entry_not_the_frame():
@@ -86,7 +71,9 @@ def test_malformed_association_costs_one_entry_not_the_frame():
         config_version=1,
     )
 
-    assert to_wire(frame)["adsb_hex"] == [None, "4ca1f2"]
+    tags = to_wire(frame)["adsb"]
+    assert tags[0] is None
+    assert tags[1]["hex"] == "4ca1f2"
 
 
 # ── empty frames ─────────────────────────────────────────────────────
@@ -102,7 +89,7 @@ def test_empty_frame_is_a_valid_payload():
     )
 
     assert frame.delay == []
-    assert frame.adsb_hex == []
+    assert frame.adsb is None  # association off
     assert frame.model_dump()["delay"] == []
 
 
@@ -114,7 +101,7 @@ def test_empty_frame_with_adsb_enabled():
         config_version=1,
     )
 
-    assert frame.adsb_hex == []
+    assert frame.adsb == []
 
 
 # ── the arrays stay parallel ─────────────────────────────────────────
@@ -137,7 +124,7 @@ def test_all_four_arrays_are_the_same_length():
             len(frame.delay),
             len(frame.doppler),
             len(frame.snr),
-            len(frame.adsb_hex),
+            len(frame.adsb),
         }
         assert lengths == {n}
 
@@ -174,7 +161,9 @@ def test_a_hex_that_is_not_icao_becomes_null():
         config_version=1,
     )
 
-    assert to_wire(frame)["adsb_hex"] == [None, "4ca1f2"]
+    tags = to_wire(frame)["adsb"]
+    assert tags[0] is None
+    assert tags[1]["hex"] == "4ca1f2"
 
 
 def test_uppercase_hex_becomes_null():
@@ -184,7 +173,7 @@ def test_uppercase_hex_becomes_null():
         poll(adsb=[{"hex": "4CA1F2"}]), boot_id="28a156bd3f8652f4", seq=1, config_version=1
     )
 
-    assert to_wire(frame)["adsb_hex"] == [None]
+    assert to_wire(frame)["adsb"] == [None]
 
 
 def test_arrays_are_capped_at_the_spec_bound():
@@ -192,7 +181,12 @@ def test_arrays_are_capped_at_the_spec_bound():
     something pathological — and a truncated frame beats no frame."""
     n = 600
     frame = build_detection_frame(
-        poll(delay_km=[1.0] * n, doppler_hz=[2.0] * n, snr_db=[3.0] * n, adsb=None),
+        poll(
+            delay_km=[1.0] * n,
+            doppler_hz=[2.0] * n,
+            snr_db=[3.0] * n,
+            adsb=[ASSOCIATION] * n,
+        ),
         boot_id="28a156bd3f8652f4",
         seq=1,
         config_version=1,
@@ -200,7 +194,7 @@ def test_arrays_are_capped_at_the_spec_bound():
 
     payload = to_wire(frame)
     assert len(payload["delay"]) == 512
-    assert len({len(payload[k]) for k in ("delay", "doppler", "snr", "adsb_hex")}) == 1
+    assert len({len(payload[k]) for k in ("delay", "doppler", "snr", "adsb")}) == 1
 
 
 # ── values that cannot survive JSON ──────────────────────────────────
@@ -221,27 +215,7 @@ def test_a_non_finite_value_costs_one_detection_not_the_frame():
     payload = to_wire(frame)
 
     assert payload["delay"] == [41.362]
-    assert len({len(payload[k]) for k in ("delay", "doppler", "snr", "adsb_hex")}) == 1
-
-
-def test_a_dropped_detection_takes_its_adsb_entry_with_it():
-    """All four arrays must stay parallel, so the index goes from every one."""
-    frame = build_detection_frame(
-        poll(
-            delay_km=[12.4, 30.1],
-            doppler_hz=[float("nan"), 44.5],
-            snr_db=[14.2, 9.8],
-            adsb=[ASSOCIATION, None],
-        ),
-        seq=1,
-        boot_id="28a156bd3f8652f4",
-        config_version=1,
-    )
-
-    payload = to_wire(frame)
-
-    assert payload["doppler"] == [44.5]
-    assert payload["adsb_hex"] == [None]
+    assert len({len(payload[k]) for k in ("delay", "doppler", "snr")}) == 1
 
 
 def test_every_frame_survives_a_strict_json_parser():
@@ -276,3 +250,103 @@ def test_a_wholly_non_finite_frame_becomes_an_empty_one():
     )
 
     assert to_wire(frame)["delay"] == []
+
+
+class TestPositionTags:
+    """``adsb`` — the association said again with the position it was made at."""
+
+    def test_an_association_carries_its_position(self):
+        frame = build_detection_frame(
+            poll(adsb=[ASSOCIATION, None]), boot_id="28a156bd3f8652f4", seq=1, config_version=7
+        )
+
+        tag, none = frame.adsb
+        assert none is None
+        assert (tag.hex, tag.lat, tag.lon, tag.alt) == ("4ca1f2", 51.5, -0.1, 11000.0)
+        assert (tag.expected_delay, tag.expected_doppler) == (12.3, -117.5)
+        assert (tag.delay_residual, tag.doppler_residual) == (0.1, -0.5)
+        assert (tag.gs, tag.track) == (412.0, 78.5)  # passed through from the aircraft
+
+    def test_the_column_is_omitted_when_association_is_off(self):
+        frame = build_detection_frame(poll(), boot_id="28a156bd3f8652f4", seq=1, config_version=7)
+
+        assert frame.adsb is None
+        # Neither column. That is how a node says it matched nothing.
+        assert "adsb" not in to_wire(frame)
+        assert "adsb_hex" not in to_wire(frame)
+
+    def test_the_wire_shape_matches_the_documented_frame(self):
+        frame = build_detection_frame(
+            poll(adsb=[ASSOCIATION, None]), boot_id="28a156bd3f8652f4", seq=1, config_version=7
+        )
+
+        assert to_wire(frame)["adsb"] == [
+            {
+                "hex": "4ca1f2",
+                "lat": 51.5,
+                "lon": -0.1,
+                "alt": 11000.0,
+                "gs": 412.0,
+                "track": 78.5,
+                "expected_delay": 12.3,
+                "expected_doppler": -117.5,
+                "delay_residual": 0.1,
+                "doppler_residual": -0.5,
+            },
+            None,
+        ]
+
+    def test_unreported_optionals_are_left_out_of_the_tag(self):
+        """``to_wire``'s one rule reaches into lists since contract 1.6.0, so an
+        optional a tag does not carry is absent rather than ``null``, as it is
+        on every other payload. The server drops nulls on filing anyway, so
+        the two read the same to it. blah2-api leaves these out when the
+        aircraft did not report them, which for `gs` and `track` is common
+        enough."""
+        spare = {k: v for k, v in ASSOCIATION.items() if k not in ("gs", "track")}
+        frame = build_detection_frame(
+            poll(adsb=[spare]), boot_id="28a156bd3f8652f4", seq=1, config_version=7
+        )
+
+        tag = to_wire(frame)["adsb"][0]
+        assert "gs" not in tag and "track" not in tag
+        assert tag["hex"] == "4ca1f2"  # the rest of the tag is unaffected
+
+    def test_an_association_without_a_position_is_dropped(self):
+        """What the deprecation costs, and the server author signed it off: a
+        match with no usable position used to travel as a bare hex and now
+        travels as null. Nothing on the server reads a bare hex."""
+        frame = build_detection_frame(
+            poll(adsb=[{"hex": "4ca1f2"}, {"hex": "abc123", "lat": 51.5, "lon": None}]),
+            boot_id="28a156bd3f8652f4",
+            seq=1,
+            config_version=7,
+        )
+
+        assert frame.adsb == [None, None]
+
+    @pytest.mark.parametrize(
+        "bad", [{"lat": 95.0}, {"lon": "-0.1"}, {"lat": float("nan")}, {"lat": True}]
+    )
+    def test_a_position_the_spec_refuses_costs_that_tag_only(self, bad):
+        frame = build_detection_frame(
+            poll(adsb=[ASSOCIATION | bad, ASSOCIATION]),
+            boot_id="28a156bd3f8652f4",
+            seq=1,
+            config_version=7,
+        )
+
+        assert frame.adsb[0] is None
+        assert frame.adsb[1] is not None
+
+    def test_a_dropped_detection_takes_its_tag_with_it(self):
+        frame = build_detection_frame(
+            poll(
+                delay_km=[float("nan"), 30.1], adsb=[ASSOCIATION, ASSOCIATION | {"hex": "abc123"}]
+            ),
+            boot_id="28a156bd3f8652f4",
+            seq=1,
+            config_version=7,
+        )
+
+        assert [t.hex for t in frame.adsb] == ["abc123"]

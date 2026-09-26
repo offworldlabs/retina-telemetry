@@ -55,6 +55,7 @@ from retina_telemetry.collect.contact import Contact
 from retina_telemetry.collect.host import HostReader
 from retina_telemetry.collect.identity import IdentityUnavailable
 from retina_telemetry.collect.node_config import ConfigUnavailable, NodeConfigRaw
+from retina_telemetry.collect.tracker import TrackerClient, TrackerFrame
 from retina_telemetry.comms.client import Client, Kind, Outcome
 from retina_telemetry.comms.levels import apply_response
 from retina_telemetry.comms.lifecycle import NodeState, Registrar, derive_state, explain
@@ -71,6 +72,7 @@ from retina_telemetry.wire.detection import build_detection_frame
 from retina_telemetry.wire.heartbeat import build_heartbeat
 from retina_telemetry.wire.registration import IncompletePayload, build_registration
 from retina_telemetry.wire.serialise import to_wire
+from retina_telemetry.wire.tracks import TrackLedger
 
 log = logging.getLogger("retina_telemetry")
 
@@ -139,6 +141,11 @@ class Service:
         self.slot = Slot()
 
         self.blah2 = Blah2Client(self.settings.blah2_url)
+        self.tracker = TrackerClient(self.settings.tracker_url)
+        #: What earlier frames told the server about each track, so a track
+        #: that died between two polls is still sent once as deleted. Touched
+        #: only by the poll loop.
+        self.tracks = TrackLedger()
         self.host = HostReader(disk_path=self.settings.disk_path)
 
         self.client = Client(self.settings.api_url)
@@ -234,6 +241,8 @@ class Service:
                             seq=self.state.next_seq(),
                             boot_id=snapshot.boot_id,
                             config_version=snapshot.config_version,
+                            tracker=self._tracker_frame(poll.timestamp_ms),
+                            ledger=self.tracks,
                         )
                     except pydantic.ValidationError as exc:
                         # The spec bounds every field, so a value outside them
@@ -247,6 +256,17 @@ class Service:
             elif self.blah2.last_error:
                 self.errors.add(self.blah2.last_error)
             self.stop.wait(self.settings.poll_interval_s)
+
+    def _tracker_frame(self, timestamp_ms: int) -> TrackerFrame | None:
+        """The tracker's result for this frame, noting a tracker that failed.
+
+        Asked only once a frame will actually be built: the answer is paired
+        to this frame's arrays and means nothing for any other.
+        """
+        frame = self.tracker.frame(timestamp_ms)
+        if self.tracker.last_error:
+            self.errors.add(self.tracker.last_error)
+        return frame
 
     def send_loop(self) -> None:
         while not self.stop.is_set():
@@ -415,6 +435,7 @@ class Service:
                     owl_os=self.settings.owl_os,
                     retina_node=self.settings.retina_node,
                     blah2_image=self.settings.blah2_image,
+                    retina_tracker=self.settings.retina_tracker,
                     errors=batch.messages,
                 )
             )
@@ -799,6 +820,7 @@ class Service:
         for thread in threads:
             thread.join(timeout=5)
         self.blah2.close()
+        self.tracker.close()
         self.write_status()
         return 0
 

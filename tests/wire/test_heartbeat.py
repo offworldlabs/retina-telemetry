@@ -163,6 +163,14 @@ def test_partial_versions_send_what_is_readable():
     assert beat.versions.retina_node is None
 
 
+def test_the_trackers_release_is_reported():
+    """Contract 1.6.0: the release whose tracks the frames carry. From
+    ``RETINA_TRACKER_V``, the same compose variable that pins its image."""
+    beat = build(retina_tracker="v0.4.0")
+
+    assert to_wire(beat)["versions"] == {"retina_tracker": "v0.4.0"}
+
+
 # ── errors ───────────────────────────────────────────────────────────
 
 

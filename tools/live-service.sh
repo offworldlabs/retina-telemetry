@@ -39,6 +39,23 @@
 # tower registers with seven explicit nulls rather than holding. The node's own
 # config.yml is never written to, here or anywhere in this script.
 #
+# ## TRACKS=synthetic | TRACKS=relay
+#
+# Tries a retina-tracker build beside the node's own, to exercise the tracks a
+# frame carries since node ingest 1.6.0. TRACKER_SRC names a retina-tracker
+# checkout (default: the sibling repo, on whatever branch it has out). Two
+# throwaway containers join the run, both on loopback ports nothing else uses:
+#
+#   - a tracker: the node's own retina-tracker image with TRACKER_SRC's package
+#     mounted over it, control on 39101, ingest on 39100
+#   - tools/frame_source.py on 13000, standing in for blah2-api's detection
+#     path: it stores each frame, serves it, and forwards the same bytes to
+#     that tracker. `synthetic` makes frames consistent with the node's own
+#     centre frequency and span; `relay` passes on blah2-api's real ones.
+#
+# The service is pointed at the pair instead of blah2-api and the node's
+# tracker. The real tracker, and the real blah2-api, are never written to.
+#
 # ## Safety
 #
 # Read-only mounts for everything belonging to the node. The scratch directory
@@ -56,6 +73,22 @@ UNSITE="${UNSITE:-0}"
 #: node's own file is used and a node whose owner skipped that step correctly
 #: sends nothing at all. The node's /data is never written to either way.
 CONTACT="${CONTACT:-0}"
+#: Where the service asks for tracks. The node's own retina-tracker by default;
+#: point it elsewhere to try a tracker build beside the running one.
+TRACKER_URL_GIVEN="${TRACKER_URL:-}"
+TRACKER_URL="${TRACKER_URL:-http://127.0.0.1:30101}"
+TRACKS="${TRACKS:-}"
+TRACKER_SRC="${TRACKER_SRC:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../retina-tracker" 2>/dev/null && pwd)}"
+BLAH2_URL="http://127.0.0.1:3000"
+if [[ -n "$TRACKS" ]]; then
+  [[ "$TRACKS" == synthetic || "$TRACKS" == relay ]] || { echo "TRACKS is synthetic or relay" >&2; exit 1; }
+  [[ -d "$TRACKER_SRC/retina_tracker" ]] || { echo "no retina-tracker checkout at $TRACKER_SRC" >&2; exit 1; }
+  # Unless one was named: TRACKER_URL=http://127.0.0.1:30101 feeds the node's
+  # own tracker nothing and asks it anyway, which is what every node does until
+  # a tracker with /frame is released.
+  TRACKER_URL="${TRACKER_URL_GIVEN:-http://127.0.0.1:39101}"
+  BLAH2_URL="http://127.0.0.1:13000"
+fi
 PORT="${MOCK_PORT:-18080}"
 IMAGE="${PROBE_IMAGE:-python:3.11-slim}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -80,14 +113,19 @@ curl -sf "http://127.0.0.1:$PORT/_control/state" >/dev/null || {
 
 echo "→ shipping package to $HOST"
 REMOTE_DIR="/tmp/retina-live.$$"
-tar czf - -C "$REPO_ROOT" retina_telemetry \
+tar czf - -C "$REPO_ROOT" retina_telemetry tools/frame_source.py \
   | ssh "$HOST" "mkdir -p '$REMOTE_DIR/app' && tar xzf - -C '$REMOTE_DIR/app'"
+if [[ -n "$TRACKS" ]]; then
+  echo "→ shipping retina-tracker from $TRACKER_SRC ($(git -C "$TRACKER_SRC" rev-parse --abbrev-ref HEAD) $(git -C "$TRACKER_SRC" rev-parse --short HEAD))"
+  tar czf - -C "$TRACKER_SRC" --exclude=__pycache__ retina_tracker \
+    | ssh "$HOST" "mkdir -p '$REMOTE_DIR/tracker' && tar xzf - -C '$REMOTE_DIR/tracker'"
+fi
 
 echo "→ running the service on $HOST for ${SECONDS_TO_RUN}s, against the tunnelled mock"
 echo
 
 ssh -o ExitOnForwardFailure=yes -R "$PORT:127.0.0.1:$PORT" "$HOST" \
-  "REMOTE_DIR='$REMOTE_DIR' PORT='$PORT' IMAGE='$IMAGE' RUN_FOR='$SECONDS_TO_RUN' UNSITE='$UNSITE' CONTACT='$CONTACT' bash -s" <<'REMOTE'
+  "REMOTE_DIR='$REMOTE_DIR' PORT='$PORT' IMAGE='$IMAGE' RUN_FOR='$SECONDS_TO_RUN' UNSITE='$UNSITE' CONTACT='$CONTACT' TRACKER_URL='$TRACKER_URL' TRACKS='$TRACKS' BLAH2_URL='$BLAH2_URL' bash -s" <<'REMOTE'
 set -euo pipefail
 SCRATCH="$REMOTE_DIR/scratch"
 mkdir -p "$SCRATCH"
@@ -150,6 +188,40 @@ print(f"   fc {config['capture']['fc']}  fs {config['capture']['fs']}"
 PY
 echo
 
+# The tag of the tracker image actually running, so versions.retina_tracker
+# says what compose would pass as RETINA_TRACKER_V.
+TRACKER_IMAGE="$(docker inspect retina-tracker --format '{{.Config.Image}}' 2>/dev/null || true)"
+TRACKER_V="${TRACKER_IMAGE##*:}"
+
+if [ -n "$TRACKS" ]; then
+  [ -n "$TRACKER_IMAGE" ] || { echo "no retina-tracker image on this node to borrow" >&2; exit 1; }
+  case "$TRACKER_URL" in *:39101*) TRACKER_V="$TRACKER_V+branch" ;; esac
+  side_down() { docker rm -f live-tracker live-frames >/dev/null 2>&1 || true; }
+  trap side_down EXIT
+  side_down
+  GEOMETRY="$(python3 -c '
+import yaml
+c = yaml.safe_load(open("/data/retina-node/config/config.yml"))
+amb = c["process"]["ambiguity"]
+print(c["capture"]["fc"], amb["delayMax"] * 299792.458 / c["capture"]["fs"], amb["dopplerMax"])
+')"
+  read -r FC MAXKM DOPMAX <<< "$GEOMETRY"
+  docker run -d --rm --name live-tracker --network host \
+    -v "$REMOTE_DIR/tracker/retina_tracker:/app/retina_tracker:ro" \
+    -v /data/retina-node/config:/config:ro \
+    "$TRACKER_IMAGE" \
+    python -m retina_tracker.track_detections --tcp --tcp-host 127.0.0.1 --tcp-port 39100 \
+      --control-host 127.0.0.1 --control-port 39101 -s /tmp/events.jsonl \
+      -c /config/retina-tracker.yaml --blah2-config /config/config.yml >/dev/null
+  docker run -d --rm --name live-frames --network host \
+    -v "$REMOTE_DIR/app/tools:/tools:ro" python:3.11-slim \
+    python -u /tools/frame_source.py --source "$TRACKS" --serve-port 13000 --tracker-port 39100 \
+      --fc-hz "$FC" --max-delay-km "$MAXKM" --doppler-max-hz "$DOPMAX" >/dev/null
+  echo "   TRACKS=$TRACKS: side tracker on 39100/39101, frames on 13000 (fc $FC, ${MAXKM%.*} km, +-$DOPMAX Hz)"
+  sleep 3
+fi
+echo "   tracker: ${TRACKER_V:-none running}, asked at $TRACKER_URL"
+
 # CONFIG_POLL_S: the default 30 s is longer than a short run, and that loop is
 # also what notices a changed contact document, so it has to tick at least once.
 docker run --rm --network host \
@@ -158,7 +230,9 @@ docker run --rm --network host \
   -e PYTHONUNBUFFERED=1 \
   -e LOG_LEVEL=INFO \
   -e RETINA_API_URL="http://127.0.0.1:${PORT}/v1" \
-  -e BLAH2_API_URL="http://127.0.0.1:3000" \
+  -e BLAH2_API_URL="$BLAH2_URL" \
+  -e TRACKER_URL="$TRACKER_URL" \
+  -e RETINA_TRACKER_V="$TRACKER_V" \
   -e NODE_ID_PATH=/data/mender/node_id \
   -e DEVICE_TYPE_PATH=/data/mender/device_type \
   -e CONFIG_PATH=/scratch/config.yml \
@@ -183,10 +257,19 @@ docker run --rm --network host \
 echo
 echo "── the status document the node wrote ──────────────────────"
 cat "$SCRATCH/status.json"
+if [ -n "$TRACKS" ]; then
+  echo
+  echo "── the side tracker, as it finished ────────────────────────"
+  curl -s -m3 http://127.0.0.1:39101/health; echo
+  docker logs live-frames 2>&1 | tail -2
+fi
 rm -rf "$REMOTE_DIR"
 REMOTE
 
 echo
 echo "── what the mock received ──────────────────────────────────"
-curl -s "http://127.0.0.1:$PORT/_control/requests" \
-  | "$PYTHON" "$REPO_ROOT/tools/summarise_run.py"
+REQUESTS_JSON="$(curl -s "http://127.0.0.1:$PORT/_control/requests")"
+#: REQUESTS_OUT=path keeps every request the mock received, bodies included,
+#: for checks the summary does not make.
+[[ -n "${REQUESTS_OUT:-}" ]] && printf '%s' "$REQUESTS_JSON" > "$REQUESTS_OUT"
+printf '%s' "$REQUESTS_JSON" | "$PYTHON" "$REPO_ROOT/tools/summarise_run.py"
