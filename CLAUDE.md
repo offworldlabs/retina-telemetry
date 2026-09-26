@@ -5,7 +5,10 @@ node, owning everything sent to the server: registration, detection streaming,
 heartbeat, config sync. Nothing else on the node talks to `api.retina.fm`.
 
 **Status: built, and implementing spec v1.6.1.** Tracks and ADS-B position tags
-(1.5.0 and 1.6.0) are built and tested against the mock but not yet run on a node. Verified end to end on the Owl node
+(1.5.0 and 1.6.0) were run against **production** on jonathan-node-1 on 2026-09-25,
+with the branch code mounted into both containers for about half an hour: every frame
+accepted, and every track's `hit` checked against the tracker's own record. Details in
+`docs/data-sources.md`. Verified end to end on the Owl node
 against a tunnelled mock — every endpoint, every reachable state including `stalled`,
 and the refusal paths.
 

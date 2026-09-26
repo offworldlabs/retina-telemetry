@@ -127,8 +127,36 @@ Three consequences for us:
 
 ### Tracks come from retina-tracker, through a route added for us
 
-Read from the code on retina-tracker branch `20260925-serve-each-frames-tracks`
-(2026-09-25). **Not yet verified on a node**, unlike most of this document.
+Read from the code on retina-tracker branch `20260925-serve-each-frames-tracks`, and
+verified against production on jonathan-node-1 (`ret3773656d`) on 2026-09-25.
+
+**The live run.** Both branches were mounted into the node's own `retina-tracker` and
+`retina-telemetry` containers through a compose override passed with `-f`, never placed
+in the Mender manifests directory, so any other compose run reverts them. It streamed
+to `api.retina.fm` from 14:04:57Z. A read-only monitor on the node paired blah2-api's
+current frame with the tracker's `/frame` answer for it, and checked each active track's
+`hit` against the detection the tracker's own `events.jsonl` recorded for that track at
+that timestamp. Its last reading, at 14:28:14Z:
+
+| | |
+|---|---|
+| frames paired with the tracker's answer for that exact timestamp | 2,200 of 2,200 |
+| track ids | 11 |
+| states sent | 279 active, 219 coasting, 9 deleted |
+| active hits checked against the tracker's record | 279 correct, 0 wrong |
+| telemetry | `streaming`, `errors[]` empty throughout, so production accepted every frame |
+
+One track was ADS-B bound: `260925-000000` to `a92361`, 14:06:32Z to 14:07:39Z, 82
+detections, four of them carrying an `AdsbTag`. The tracker's `max_velocity_ms` of 228
+matched the aircraft's reported 443.9 kt, and it was sent `deleted` exactly once.
+
+**The node rebooted at about 14:33Z, cause unknown.** `last -x` shows no shutdown
+record, the journal is volatile so nothing of the previous boot survives, and no Mender
+deployment ran that day. The monitor's last line, at 14:28:14Z, was healthy, which fits
+a hang followed by a reset (the node has `bcm2835-wdt`) better than a crash. The test
+added nothing measurable in load, but that is an argument, not evidence. The reboot also
+ended the test in the way it was designed to: `retina-node.service` brought both
+containers back on their stock images.
 
 retina-tracker receives the same bytes blah2-api serves at `/api/detection`:
 `forwardToTracker(detection)` sends the very string it just stored
