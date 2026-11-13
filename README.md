@@ -92,3 +92,19 @@ Registration, config and heartbeat are the opposite and retry until they land. T
 service must never share fate with the stack it reports on: it carries no health-gated
 dependency on blah2, because the moment blah2 is crash-looping is the moment its
 telemetry matters most.
+
+## License
+
+Copyright (C) 2026 Offworld Labs
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU Affero General Public License as published by
+the Free Software Foundation, either version 3 of the License, or (at your
+option) any later version.
+
+This program is distributed in the hope that it will be useful, but
+WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero
+General Public License for more details.
+
+The full licence text is in [LICENSE](LICENSE).
